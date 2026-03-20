@@ -1,0 +1,234 @@
+#!/usr/bin/env bash
+# pdf-agent — unified PDF processing CLI for Hermes
+# Usage: pdf-agent <command> [args...]
+#
+# Commands:
+#   ocr     <input.pdf> [output.pdf] [--lang eng+hin] [--no-deskew] [--no-rotate]
+#   split   <input.pdf> [output.zip]
+#   merge   <out.pdf> <in1.pdf> <in2.pdf> [...]
+#   images  <input.pdf> [output.zip] [--dpi 150] [--format jpg]
+#   extract-page-image <input.pdf> <page> [output.jpg] [--dpi 150]
+#   rotate  <input.pdf> <degrees> [output.pdf] [--pages all]
+#   compress <input.pdf> [output.pdf] [--quality ebook]
+#   info    <input.pdf>
+
+set -euo pipefail
+
+die() { echo "ERROR: $*" >&2; exit 1; }
+usage() {
+    grep '^#' "$0" | sed 's/^# \?//'
+    exit 1
+}
+
+[[ $# -lt 1 ]] && usage
+CMD="$1"; shift
+
+case "$CMD" in
+
+ocr)
+    [[ $# -lt 1 ]] && die "Usage: pdf-agent ocr <input.pdf> [output.pdf] [--lang eng] [--no-deskew] [--no-rotate]"
+    INPUT="$1"; shift
+    [[ -f "$INPUT" ]] || die "File not found: $INPUT"
+
+    OUTPUT="${INPUT%.pdf}_ocr.pdf"
+    LANG="eng"
+    DESKEW="--deskew"
+    ROTATE="--rotate-pages"
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --lang)    LANG="$2"; shift 2 ;;
+            --no-deskew) DESKEW=""; shift ;;
+            --no-rotate) ROTATE=""; shift ;;
+            *.pdf)     OUTPUT="$1"; shift ;;
+            *)         die "Unknown argument: $1" ;;
+        esac
+    done
+
+    echo "Running OCR: $INPUT -> $OUTPUT (lang=$LANG)"
+    ocrmypdf -l "$LANG" $DESKEW $ROTATE --output-type pdf "$INPUT" "$OUTPUT"
+    SIZE=$(du -sh "$OUTPUT" | cut -f1)
+    echo "Done: $OUTPUT ($SIZE)"
+    ;;
+
+split)
+    [[ $# -lt 1 ]] && die "Usage: pdf-agent split <input.pdf> [output.zip]"
+    INPUT="$1"; shift
+    [[ -f "$INPUT" ]] || die "File not found: $INPUT"
+    BASE="${INPUT%.pdf}"
+    OUTPUT="${2:-${BASE}_split.zip}"
+
+    TMPDIR=$(mktemp -d)
+    trap "rm -rf $TMPDIR" EXIT
+
+    PAGE_COUNT=$(pdfinfo "$INPUT" | grep "^Pages:" | awk '{print $2}')
+    echo "Splitting $PAGE_COUNT pages..."
+
+    for i in $(seq 1 "$PAGE_COUNT"); do
+        PADDED=$(printf "%04d" "$i")
+        qpdf "$INPUT" --pages "$INPUT" "$i" -- "$TMPDIR/page_${PADDED}.pdf"
+    done
+
+    (cd "$TMPDIR" && zip -q "$OUTPUT" *.pdf)
+    mv "$TMPDIR/$(basename "$OUTPUT")" "$OUTPUT" 2>/dev/null || true
+    [[ -f "$OUTPUT" ]] || { cd "$TMPDIR" && zip -q - *.pdf > "$(pwd)/$OUTPUT"; }
+
+    echo "Done: $OUTPUT ($PAGE_COUNT pages)"
+    ;;
+
+merge)
+    [[ $# -lt 3 ]] && die "Usage: pdf-agent merge <output.pdf> <in1.pdf> <in2.pdf> [...]"
+    OUTPUT="$1"; shift
+    INPUTS=("$@")
+
+    for f in "${INPUTS[@]}"; do
+        [[ -f "$f" ]] || die "File not found: $f"
+    done
+
+    echo "Merging ${#INPUTS[@]} files -> $OUTPUT"
+    qpdf --empty --pages "${INPUTS[@]}" -- "$OUTPUT"
+    SIZE=$(du -sh "$OUTPUT" | cut -f1)
+    echo "Done: $OUTPUT ($SIZE)"
+    ;;
+
+images)
+    [[ $# -lt 1 ]] && die "Usage: pdf-agent images <input.pdf> [output.zip] [--dpi 150] [--format jpg]"
+    INPUT="$1"; shift
+    [[ -f "$INPUT" ]] || die "File not found: $INPUT"
+
+    BASE="${INPUT%.pdf}"
+    OUTPUT="${BASE}_images.zip"
+    DPI=150
+    FMT="jpeg"
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --dpi)    DPI="$2"; shift 2 ;;
+            --format) FMT="$2"; shift 2 ;;
+            *.zip)    OUTPUT="$1"; shift ;;
+            *)        die "Unknown argument: $1" ;;
+        esac
+    done
+
+    TMPDIR=$(mktemp -d)
+    trap "rm -rf $TMPDIR" EXIT
+
+    echo "Converting $INPUT to images (dpi=$DPI, format=$FMT)..."
+    pdftoppm -r "$DPI" -"$FMT" "$INPUT" "$TMPDIR/page"
+
+    COUNT=$(ls "$TMPDIR"/ | wc -l)
+    if command -v zip &>/dev/null; then
+        (cd "$TMPDIR" && zip -q - *) > "$OUTPUT"
+    else
+        python3 -c "
+import zipfile, glob, os, sys
+files = sorted(glob.glob('$TMPDIR/*'))
+with zipfile.ZipFile('$OUTPUT', 'w', zipfile.ZIP_DEFLATED) as zf:
+    for f in files:
+        zf.write(f, os.path.basename(f))
+sys.exit(0)
+"
+    fi
+    echo "Done: $OUTPUT ($COUNT images)"
+    ;;
+
+extract-page-image)
+    [[ $# -lt 2 ]] && die "Usage: pdf-agent extract-page-image <input.pdf> <page> [output.jpg] [--dpi 150]"
+    INPUT="$1"; PAGE="$2"; shift 2
+    [[ -f "$INPUT" ]] || die "File not found: $INPUT"
+
+    BASE="${INPUT%.pdf}"
+    PADDED=$(printf "%04d" "$PAGE")
+    OUTPUT="${BASE}_page_${PADDED}.jpg"
+    DPI=150
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --dpi) DPI="$2"; shift 2 ;;
+            *.jpg|*.png) OUTPUT="$1"; shift ;;
+            *) die "Unknown argument: $1" ;;
+        esac
+    done
+
+    EXT="${OUTPUT##*.}"
+    FMT="jpeg"
+    [[ "$EXT" == "png" ]] && FMT="png"
+
+    TMPDIR=$(mktemp -d)
+    trap "rm -rf $TMPDIR" EXIT
+
+    pdftoppm -r "$DPI" -"$FMT" -f "$PAGE" -l "$PAGE" "$INPUT" "$TMPDIR/page"
+    RENDERED=$(ls "$TMPDIR"/ | head -1)
+    cp "$TMPDIR/$RENDERED" "$OUTPUT"
+    echo "Done: $OUTPUT"
+    ;;
+
+rotate)
+    [[ $# -lt 2 ]] && die "Usage: pdf-agent rotate <input.pdf> <degrees> [output.pdf] [--pages all]"
+    INPUT="$1"; DEGREES="$2"; shift 2
+    [[ -f "$INPUT" ]] || die "File not found: $INPUT"
+    [[ "$DEGREES" =~ ^(90|180|270)$ ]] || die "degrees must be 90, 180, or 270"
+
+    BASE="${INPUT%.pdf}"
+    OUTPUT="${BASE}_rotated_${DEGREES}.pdf"
+    PAGES="1-z"
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --pages) PAGES="$2"; shift 2 ;;
+            *.pdf)   OUTPUT="$1"; shift ;;
+            *)       die "Unknown argument: $1" ;;
+        esac
+    done
+
+    echo "Rotating pages ($PAGES) by ${DEGREES}°: $INPUT -> $OUTPUT"
+    qpdf "$INPUT" --rotate="+${DEGREES}:${PAGES}" -- "$OUTPUT"
+    echo "Done: $OUTPUT"
+    ;;
+
+compress)
+    [[ $# -lt 1 ]] && die "Usage: pdf-agent compress <input.pdf> [output.pdf] [--quality ebook]"
+    INPUT="$1"; shift
+    [[ -f "$INPUT" ]] || die "File not found: $INPUT"
+
+    BASE="${INPUT%.pdf}"
+    OUTPUT="${BASE}_compressed.pdf"
+    QUALITY="ebook"
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --quality) QUALITY="$2"; shift 2 ;;
+            *.pdf)     OUTPUT="$1"; shift ;;
+            *)         die "Unknown argument: $1" ;;
+        esac
+    done
+
+    VALID_QUALITIES="screen ebook printer prepress"
+    [[ " $VALID_QUALITIES " == *" $QUALITY "* ]] || die "quality must be one of: $VALID_QUALITIES"
+
+    IN_SIZE=$(du -sh "$INPUT" | cut -f1)
+    echo "Compressing $INPUT (quality=$QUALITY, original=$IN_SIZE)..."
+
+    gs -sDEVICE=pdfwrite \
+       -dCompatibilityLevel=1.4 \
+       "-dPDFSETTINGS=/$QUALITY" \
+       -dNOPAUSE -dQUIET -dBATCH \
+       "-sOutputFile=$OUTPUT" \
+       "$INPUT"
+
+    OUT_SIZE=$(du -sh "$OUTPUT" | cut -f1)
+    echo "Done: $OUTPUT (original=$IN_SIZE compressed=$OUT_SIZE)"
+    ;;
+
+info)
+    [[ $# -lt 1 ]] && die "Usage: pdf-agent info <input.pdf>"
+    INPUT="$1"
+    [[ -f "$INPUT" ]] || die "File not found: $INPUT"
+    pdfinfo "$INPUT"
+    ;;
+
+*)
+    die "Unknown command: $CMD. Run pdf-agent with no args for usage."
+    ;;
+
+esac
