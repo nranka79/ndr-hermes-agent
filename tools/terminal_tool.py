@@ -2312,6 +2312,14 @@ def terminal_tool(
                             default_cwd=cwd,
                         ),
                     }
+                    # Inject session user identity so gws_auth.py can find the right token.
+                    try:
+                        from gateway.session_context import get_session_env as _gse_t
+                        _session_tid = _gse_t("HERMES_SESSION_USER_ID", "")
+                        if _session_tid:
+                            env.env["HERMES_SESSION_USER_ID"] = _session_tid
+                    except Exception:
+                        pass
                     result = env.execute(command, **execute_kwargs)
                 except Exception as e:
                     error_str = str(e).lower()
