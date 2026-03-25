@@ -118,6 +118,71 @@ def setup_credentials():
     print("="*80 + "\n")
     return True
 
+
+def setup_model_config():
+    """Write config.yaml to configure MiniMax as default model provider."""
+    print("\n" + "="*80)
+    print("HERMES MODEL CONFIGURATION SETUP")
+    print("="*80)
+
+    hermes_home = "/data/hermes"
+    config_path = os.path.join(hermes_home, "config.yaml")
+
+    # Check if Minimax API key is configured
+    minimax_key = os.environ.get("MINIMAX_API_KEY")
+    if not minimax_key:
+        print("\n⚠ MINIMAX_API_KEY not set — skipping model config write")
+        print("  Set MINIMAX_API_KEY in Railway Variables to use MiniMax as default model")
+        print("="*80 + "\n")
+        return False
+
+    config = {
+        "model": {
+            "provider": "minimax",
+            "default": "MiniMax-M2.7",
+            "base_url": "https://api.minimax.io/v1"
+        }
+    }
+
+    # Merge with existing config.yaml if present (preserve other settings)
+    existing = {}
+    if os.path.exists(config_path):
+        try:
+            import yaml
+            with open(config_path) as f:
+                existing = yaml.safe_load(f) or {}
+            print(f"\n✓ Found existing {config_path} — merging configuration")
+        except Exception as e:
+            print(f"\n⚠ Warning: could not read existing {config_path}: {e}")
+            print("  Will create new config file")
+
+    # Update or set model section
+    existing["model"] = config["model"]
+
+    # Write config.yaml
+    try:
+        import yaml
+        with open(config_path, "w") as f:
+            yaml.dump(existing, f, default_flow_style=False, sort_keys=False)
+        print(f"\n✓ Wrote {config_path}")
+        print("  - provider: minimax")
+        print("  - model: MiniMax-M2.7")
+        print("  - base_url: https://api.minimax.io/v1")
+        print("\n✓ MiniMax-M2.7 is now the default model!")
+        print("="*80 + "\n")
+        return True
+    except Exception as e:
+        print(f"\n✗ Error writing {config_path}: {e}")
+        print("="*80 + "\n")
+        return False
+
 if __name__ == "__main__":
-    success = setup_credentials()
-    sys.exit(0 if success else 1)
+    # Setup OAuth credentials first
+    oauth_success = setup_credentials()
+
+    # Then setup model configuration
+    model_success = setup_model_config()
+
+    # Exit with success only if both succeed (or model config is optional in future)
+    # For now, OAuth is required, model config is nice-to-have
+    sys.exit(0 if oauth_success else 1)
