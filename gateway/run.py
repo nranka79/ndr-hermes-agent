@@ -968,18 +968,31 @@ class GatewayRunner:
                             logger.warning("Failed to create adapter for TELEGRAM_BOT_TOKEN_%d", idx)
                             continue
 
-                        # Register handlers
-                        secondary_adapter.set_message_handler(self._handle_message)
+                        # Store bot_id for session isolation
+                        bot_id = f"bot{idx}"
+                        secondary_adapter._bot_id = bot_id
+
+                        # Create a scoped message handler for this bot to isolate sessions
+                        def make_bot_handler(adapter, bid):
+                            async def scoped_handle_message(event):
+                                # Prefix session source with bot_id to isolate sessions
+                                if event.source:
+                                    event.source._bot_id = bid
+                                return await self._handle_message(event)
+                            return scoped_handle_message
+
+                        # Register scoped handler
+                        secondary_adapter.set_message_handler(make_bot_handler(secondary_adapter, bot_id))
                         secondary_adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
 
                         # Connect
                         logger.info("Connecting to Telegram bot %d...", idx)
                         success = await secondary_adapter.connect()
                         if success:
-                            self._additional_telegram_adapters.append(secondary_adapter)
+                            self._additional_telegram_adapters.append((bot_id, secondary_adapter))
                             self._sync_voice_mode_state_to_adapter(secondary_adapter)
                             connected_count += 1
-                            logger.info("✓ Telegram bot %d connected", idx)
+                            logger.info("✓ Telegram bot %d connected (session isolation: %s)", idx, bot_id)
                         else:
                             logger.warning("✗ Telegram bot %d failed to connect", idx)
                     except Exception as e:

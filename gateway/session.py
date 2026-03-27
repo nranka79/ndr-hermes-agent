@@ -432,6 +432,10 @@ def build_session_key(source: SessionSource, group_sessions_per_user: bool = Tru
       - Without identifiers, messages fall back to one session per platform/chat_type.
     """
     platform = source.platform.value
+    # Include bot_id if present (for multi-bot scenarios like telegram:bot2)
+    if hasattr(source, '_bot_id') and source._bot_id:
+        platform = f"{platform}:{source._bot_id}"
+
     if source.chat_type == "dm":
         if source.chat_id:
             if source.thread_id:
