@@ -545,13 +545,23 @@ def load_gateway_config() -> GatewayConfig:
 def _apply_env_overrides(config: GatewayConfig) -> None:
     """Apply environment variable overrides to config."""
     
-    # Telegram
+    # Telegram (support multiple bots)
     telegram_token = os.getenv("TELEGRAM_BOT_TOKEN")
     if telegram_token:
         if Platform.TELEGRAM not in config.platforms:
             config.platforms[Platform.TELEGRAM] = PlatformConfig()
         config.platforms[Platform.TELEGRAM].enabled = True
         config.platforms[Platform.TELEGRAM].token = telegram_token
+
+        # Collect additional bot tokens (TELEGRAM_BOT_TOKEN_2, _3, etc.)
+        additional_tokens = []
+        for i in range(2, 6):  # Support up to 5 bots
+            extra_token = os.getenv(f"TELEGRAM_BOT_TOKEN_{i}")
+            if extra_token:
+                additional_tokens.append(extra_token)
+        if additional_tokens:
+            config.platforms[Platform.TELEGRAM].extra["additional_tokens"] = additional_tokens
+            logger.info(f"Loaded {len(additional_tokens)} additional Telegram bot token(s)")
     
     telegram_home = os.getenv("TELEGRAM_HOME_CHANNEL")
     if telegram_home and Platform.TELEGRAM in config.platforms:

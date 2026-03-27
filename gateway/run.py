@@ -207,6 +207,7 @@ if not _configured_cwd or _configured_cwd in (".", "auto", "cwd"):
 from gateway.config import (
     Platform,
     GatewayConfig,
+    PlatformConfig,
     load_gateway_config,
 )
 from gateway.session import (
@@ -880,7 +881,8 @@ class GatewayRunner:
         enabled_platform_count = 0
         startup_nonretryable_errors: list[str] = []
         startup_retryable_errors: list[str] = []
-        
+        self._additional_telegram_adapters = []  # For secondary Telegram bots
+
         # Initialize and connect each configured platform
         for platform, platform_config in self.config.platforms.items():
             if not platform_config.enabled:
@@ -947,6 +949,42 @@ class GatewayRunner:
             logger.warning("No messaging platforms enabled.")
             logger.info("Gateway will continue running for cron job execution.")
         
+        # Handle additional Telegram bots (if configured)
+        if Platform.TELEGRAM in self.config.platforms:
+            telegram_config = self.config.platforms[Platform.TELEGRAM]
+            additional_tokens = telegram_config.extra.get("additional_tokens", [])
+            if additional_tokens:
+                logger.info("Registering %d additional Telegram bot(s)...", len(additional_tokens))
+                for idx, token in enumerate(additional_tokens, start=2):
+                    try:
+                        # Create config for secondary bot (reuse primary settings)
+                        secondary_config = PlatformConfig(
+                            enabled=True,
+                            token=token,
+                            extra=telegram_config.extra.copy()
+                        )
+                        secondary_adapter = self._create_adapter(Platform.TELEGRAM, secondary_config)
+                        if not secondary_adapter:
+                            logger.warning("Failed to create adapter for TELEGRAM_BOT_TOKEN_%d", idx)
+                            continue
+
+                        # Register handlers
+                        secondary_adapter.set_message_handler(self._handle_message)
+                        secondary_adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
+
+                        # Connect
+                        logger.info("Connecting to Telegram bot %d...", idx)
+                        success = await secondary_adapter.connect()
+                        if success:
+                            self._additional_telegram_adapters.append(secondary_adapter)
+                            self._sync_voice_mode_state_to_adapter(secondary_adapter)
+                            connected_count += 1
+                            logger.info("✓ Telegram bot %d connected", idx)
+                        else:
+                            logger.warning("✗ Telegram bot %d failed to connect", idx)
+                    except Exception as e:
+                        logger.error("✗ Telegram bot %d error: %s", idx, e)
+
         # Update delivery router with adapters
         self.delivery_router.adapters = self.adapters
         
