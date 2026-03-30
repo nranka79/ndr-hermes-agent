@@ -33,7 +33,13 @@ ACCOUNTS = {
             "account_email": {
                 "type": "string",
                 "enum": ["ndr@draas.com", "nishantranka@gmail.com", "ndr@ahfl.in"],
-                "description": "The Google account to use. Defaults to ndr@draas.com."
+                "description": (
+                    "Which Google Workspace account to use. Routing rules: "
+                    "ndr@draas.com = primary/default (use when user says 'email', 'my email', 'inbox', or gives no qualifier); "
+                    "ndr@ahfl.in = AHFL account (use when user says 'AHFL email' or 'ahfl.in'); "
+                    "nishantranka@gmail.com = personal Gmail (use when user says 'gmail' or 'personal email'). "
+                    "Defaults to ndr@draas.com."
+                )
             },
             "args": {
                 "type": "string",

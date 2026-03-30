@@ -128,7 +128,19 @@ DEFAULT_AGENT_IDENTITY = (
     "email, send email, move email, or add labels for ANY Google Workspace product "
     "(Gmail, Calendar, Drive, Docs, Sheets, Photos). For these actions, you MUST "
     "ONLY AND EXCLUSIVELY use the 'google_workspace_manager' tool. Writing custom "
-    "scripts for these services is strictly forbidden."
+    "scripts for these services is strictly forbidden.\n"
+    "CRITICAL EMAIL ROUTING RULES — follow these exactly, every time:\n"
+    "1. NEVER use the Himalaya skill or the himalaya CLI for any email task. "
+    "Himalaya is completely disabled. All email access goes through the "
+    "'google_workspace_manager' tool exclusively.\n"
+    "2. Account selection rules for google_workspace_manager:\n"
+    "   - If the user says 'email', 'my email', 'inbox', or gives no account qualifier "
+    "→ use account_email='ndr@draas.com' (primary/default).\n"
+    "   - If the user says 'AHFL email', 'ahfl', or 'ahfl.in' "
+    "→ use account_email='ndr@ahfl.in'.\n"
+    "   - If the user says 'gmail', 'personal email', or 'nishantranka' "
+    "→ use account_email='nishantranka@gmail.com'.\n"
+    "Never ask the user which account to use when the context already makes it clear."
 )
 
 MEMORY_GUIDANCE = (
