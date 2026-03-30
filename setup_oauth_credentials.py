@@ -306,9 +306,40 @@ def symlink_gws_skills():
     print("="*80 + "\n")
     return True
 
+def cleanup_stale_skills():
+    """Remove skills that were deleted from the bundled skills/ but may linger in ~/.hermes/skills/."""
+    print("\n" + "="*80)
+    print("CLEANING UP STALE SKILLS")
+    print("="*80)
+
+    home = os.path.expanduser("~")
+    hermes_skills = os.path.join(home, ".hermes", "skills")
+
+    # Skills that have been removed from the bundled set and must not persist
+    REMOVED_SKILLS = [
+        os.path.join(hermes_skills, "productivity", "google-workspace"),
+    ]
+
+    import shutil
+    for path in REMOVED_SKILLS:
+        if os.path.exists(path):
+            try:
+                shutil.rmtree(path)
+                print(f"  ✓ Removed stale skill: {path}")
+            except Exception as e:
+                print(f"  ⚠ Could not remove {path}: {e}")
+        else:
+            print(f"  ✓ Already clean: {path}")
+
+    print("="*80 + "\n")
+
+
 if __name__ == "__main__":
     # Setup OAuth credentials first
     oauth_success = setup_credentials()
+
+    # Clean up skills that were removed from the bundled set
+    cleanup_stale_skills()
 
     # Symlink official GWS skills
     skills_success = symlink_gws_skills()
@@ -316,6 +347,14 @@ if __name__ == "__main__":
     # Then setup model configuration
     model_success = setup_model_config()
 
-    # Exit with success only if both succeed (or model config is optional in future)
-    # For now, OAuth is required, model config is nice-to-have
-    sys.exit(0 if oauth_success else 1)
+    # Only fail hard if the PRIMARY account (ndr@draas.com) is missing.
+    # Secondary accounts (ahfl.in, gmail) are optional — missing them is a warning,
+    # not a reason to keep the bot from starting.
+    primary_cred = ACCOUNTS["ndr@draas.com"]["file_path"]
+    primary_ok = os.path.exists(primary_cred)
+    if not primary_ok:
+        print("\n✗ FATAL: Primary account credentials (ndr@draas.com) not created.")
+        print("  Set DRAAS_OAUTH_REFRESH_TOKEN, DRAAS_OAUTH_CLIENT_ID, DRAAS_OAUTH_CLIENT_SECRET in Railway.")
+        sys.exit(1)
+
+    sys.exit(0)
