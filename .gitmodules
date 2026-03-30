@@ -4,3 +4,6 @@
 [submodule "tinker-atropos"]
 	path = tinker-atropos
 	url = https://github.com/nousresearch/tinker-atropos
+[submodule "vendor/googleworkspace-cli"]
+	path = vendor/googleworkspace-cli
+	url = https://github.com/googleworkspace/cli

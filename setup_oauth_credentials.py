@@ -176,9 +176,70 @@ def setup_model_config():
         print("="*80 + "\n")
         return False
 
+def symlink_gws_skills():
+    """Symlink official GWS skills from vendor into Hermes skills folder."""
+    print("\n" + "="*80)
+    print("SYMLINKING GOOGLE WORKSPACE CLI SKILLS")
+    print("="*80)
+
+    # Current working directory (root of Core_Platform_Code)
+    root = os.getcwd()
+    vendor_skills = os.path.join(root, "vendor", "googleworkspace-cli", "skills")
+    hermes_skills = os.path.join(root, "skills")
+
+    if not os.path.exists(vendor_skills):
+        print(f"\n✗ Error: vendor skills not found at {vendor_skills}")
+        print("  Run: git submodule update --init --recursive")
+        return False
+
+    # Get all gws-* folders from vendor
+    gws_folders = [f for f in os.listdir(vendor_skills) if f.startswith("gws-")]
+
+    if not gws_folders:
+        print(f"\n⚠ Warning: No gws-* folders found in {vendor_skills}")
+        return False
+
+    print(f"\n✓ Found {len(gws_folders)} GWS skill(s) in vendor")
+
+    for folder in gws_folders:
+        src = os.path.join(vendor_skills, folder)
+        dst = os.path.join(hermes_skills, folder)
+
+        # Create symlink (remove existing if it's already there)
+        if os.path.lexists(dst):
+            try:
+                if os.path.islink(dst) or os.path.isfile(dst):
+                    os.remove(dst)
+                elif os.path.isdir(dst):
+                    import shutil
+                    shutil.rmtree(dst)
+            except Exception as e:
+                print(f"  ✗ Could not remove existing skill {dst}: {e}")
+                continue
+
+        try:
+            # On windows, symlinking needs special privileges unless using junctions
+            # On Linux (Railway), standard symlink works fine.
+            if sys.platform == "win32":
+                # For Windows testing/dev
+                import subprocess
+                subprocess.call(['mklink', '/J', dst, src], shell=True)
+            else:
+                os.symlink(src, dst)
+            print(f"  ✓ Linked {folder}")
+        except Exception as e:
+            print(f"  ✗ Error linking {folder}: {e}")
+
+    print("\n✓ Official GWS skills are now integrated!")
+    print("="*80 + "\n")
+    return True
+
 if __name__ == "__main__":
     # Setup OAuth credentials first
     oauth_success = setup_credentials()
+
+    # Symlink official GWS skills
+    skills_success = symlink_gws_skills()
 
     # Then setup model configuration
     model_success = setup_model_config()
