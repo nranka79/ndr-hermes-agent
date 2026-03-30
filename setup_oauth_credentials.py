@@ -33,8 +33,43 @@ ACCOUNTS = {
     }
 }
 
+def init_submodules():
+    """Ensure git submodules are initialized and updated."""
+    print("\n" + "="*80)
+    print("INITIALIZING GIT SUBMODULES")
+    print("="*80)
+    
+    try:
+        import subprocess
+        # Check if we are in a git repo
+        if not os.path.exists(".git"):
+            print("⚠ Warning: Not in a git repository. Skipping submodule update.")
+            return True
+            
+        print("→ Updating submodules (recursive)...")
+        result = subprocess.run(
+            ["git", "submodule", "update", "--init", "--recursive"],
+            capture_output=True,
+            text=True
+        )
+        
+        if result.returncode == 0:
+            print("✓ Submodules initialized successfully")
+            return True
+        else:
+            print(f"⚠ Warning: Submodule update returned code {result.returncode}")
+            print(f"  Error: {result.stderr}")
+            # Don't fail the whole setup, maybe some files are there
+            return True 
+    except Exception as e:
+        print(f"✗ Error during submodule initialization: {e}")
+        return True
+
 def setup_credentials():
     """Read OAuth tokens from environment and create credential files."""
+    # First, init submodules to ensure file paths exist
+    init_submodules()
+
     print("\n" + "="*80)
     print("HERMES OAUTH CREDENTIALS SETUP")
     print("="*80)
