@@ -53,3 +53,14 @@ environments/benchmarks/evals/
 
 # Release script temp files
 .release_notes.md
+
+# Google Workspace Credentials & Tokens
+*-token.json
+oauth-*.json
+gmail_credentials.json
+workspace_power_token.json
+ks.json
+calendar_token.json
+drive_token.json
+gmail_token.json
+gmail_token_modify.json

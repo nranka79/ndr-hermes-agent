@@ -1,0 +1,225 @@
+# ==========================================
+# HERMES AGENT - ULTRA-SECURE GITIGNORE
+# ==========================================
+# Blocks ALL sensitive files from syncing to GitHub
+# Including: credentials, memory, knowledge graphs, sessions, temp files
+
+# ==========================================
+# CREDENTIALS & SECRETS (CRITICAL!)
+# ==========================================
+*.json                          # All JSON files (creds, config, etc)
+*.key                           # Private keys
+*.pem                           # PEM certificates
+*.p12                           # PKCS12 keys
+*.pfx                           # Windows certificates
+sa-key.json                     # Google Service Account
+service-account-key.json        # Service account
+credentials.json                # Any credentials file
+client_secret.json              # OAuth secrets
+token.json                       # Access tokens
+refresh_token.json              # Refresh tokens
+.env                            # Environment variables
+.env.local                      # Local overrides
+.env.*.local                    # Environment-specific secrets
+.env.production                 # Production secrets
+secrets.yaml                    # YAML secrets
+secrets.yml                     # YAML secrets
+.secrets/                       # Secret directories
+secrets/                        # Secret directories
+
+# ==========================================
+# HERMES AGENT - MEMORY, SESSIONS, KNOWLEDGE
+# ==========================================
+.hermes/                        # Hermes home directory
+.hermes/**                      # All Hermes data
+hermes/                         # Hermes folder
+hermes/**                       # All Hermes data
+hermes_sessions/                # Session files
+hermes_agent/                   # Agent data
+hermes_memory/                  # Memory files
+hermes_knowledge/               # Knowledge graph
+hermes_cache/                   # Cache files
+hermes_skills/                  # Skills directory
+hermes_trajectories/            # Trajectory logs
+hermes_context/                 # Context files
+hermes_state/                   # State files
+hermes_logs/                    # Logs directory
+.cache/                         # Cache
+cache/                          # Cache
+memory/                         # Memory files
+knowledge/                      # Knowledge files
+*.memory                        # Memory files
+*.session                       # Session files
+*.state                         # State files
+*.context                       # Context files
+*.trajectory                    # Trajectory files
+*.db                            # SQLite databases
+*.sqlite                        # SQLite databases
+*.sqlite3                       # SQLite3 databases
+*.pkl                           # Pickled Python objects
+*.pickle                        # Pickle files
+*.msgpack                       # MessagePack files
+vectorstore/                    # Vector databases
+embeddings/                     # Embeddings
+vector_stores/                  # Vector stores
+embedding_cache/                # Embedding cache
+conversation_history.json       # Chat history
+chat_history.json               # Chat history
+conversation_history.jsonl      # Chat history NDJSON
+chat_history.jsonl              # Chat history NDJSON
+*.ndjson                        # NDJSON logs
+trajectory.jsonl                # Trajectory logs
+trajectories.jsonl              # Trajectories NDJSON
+*.jsonl                         # All JSONL files (conversation logs)
+skill_history.json              # Skill history
+skill_trajectories.json         # Skill trajectories
+learned_skills/                 # Learned skills
+user_profile.json               # User profiles
+profiles/                       # Profile directory
+sessions/                       # Sessions folder
+session_data/                   # Session data
+.sessions/                      # Hidden sessions
+
+# ==========================================
+# PYTHON & NODE ARTIFACTS
+# ==========================================
+__pycache__/                    # Python cache
+*.py[cod]                       # Compiled Python
+*.so                            # Compiled extensions
+*.egg                           # Eggs
+*.egg-info/                     # Egg info
+dist/                           # Distribution
+build/                          # Build artifacts
+.Python                         # Python venv
+venv/                           # Virtual env
+env/                            # Virtual env
+ENV/                            # Virtual env
+.venv/                          # Virtual env
+node_modules/                   # NPM packages
+package-lock.json               # NPM lock
+yarn.lock                       # Yarn lock
+.npm/                           # NPM cache
+
+# ==========================================
+# LOGS, DUMPS, TEMPORARY FILES
+# ==========================================
+*.log                           # Log files
+*.logs                          # Log files
+logs/                           # Log directory
+*.tmp                           # Temp files
+*.temp                          # Temp files
+*.bak                           # Backup files
+*.swp                           # Vim swap
+*.swo                           # Vim swap
+*~                              # Backup
+dump.rdb                        # Redis dump
+*.dump                          # Memory dumps
+core                            # Core dumps
+*.core                          # Core dumps
+.DS_Store                       # macOS
+Thumbs.db                       # Windows
+desktop.ini                     # Windows
+.Spotlight-V100                 # macOS
+.Trashes                        # macOS
+
+# ==========================================
+# IDE & EDITOR FILES
+# ==========================================
+.vscode/                        # VS Code
+.idea/                          # IntelliJ
+*.sublime-project               # Sublime
+*.sublime-workspace             # Sublime
+*.code-workspace                # VS Code workspace
+.project                        # Eclipse
+.pydevproject                   # Eclipse
+.settings/                      # Eclipse
+*.iml                           # IntelliJ
+.classpath                      # Eclipse
+.c9/                            # Cloud9
+
+# ==========================================
+# GIT & VERSION CONTROL
+# ==========================================
+.git/                           # Git folder
+.gitignore                      # This file
+.github/                        # GitHub workflows
+.git-sync-history/              # Sync history
+.gitkeep                        # Git keep files
+
+# ==========================================
+# RAILWAY & INFRASTRUCTURE
+# ==========================================
+.railway/                       # Railway config
+railway.log                     # Railway logs
+.env.railway                    # Railway env
+docker-compose.override.yml     # Local Docker overrides
+
+# ==========================================
+# LARGE FILES (don't sync)
+# ==========================================
+*.tar.gz                        # Compressed archives
+*.tar.bz2                       # Compressed archives
+*.zip                           # ZIP archives
+*.7z                            # 7Z archives
+*.rar                           # RAR archives
+*.iso                           # ISO files
+*.dmg                           # macOS images
+*.exe                           # Executables
+*.msi                           # Windows installers
+*.deb                           # Debian packages
+*.rpm                           # RPM packages
+
+# ==========================================
+# DATA & MODEL FILES
+# ==========================================
+*.h5                            # HDF5
+*.hdf5                          # HDF5
+*.pb                            # TensorFlow
+*.onnx                          # ONNX models
+*.pt                            # PyTorch models
+*.pth                           # PyTorch
+*.joblib                        # Scikit-learn
+*.joblib                        # Dask
+models/                         # Model directory
+model_cache/                    # Model cache
+pretrained/                     # Pretrained models
+checkpoints/                    # Model checkpoints
+
+# ==========================================
+# MONOREPO/BUILD
+# ==========================================
+dist/                           # Distribution
+build/                          # Build output
+*.whl                           # Wheel files
+*.egg-info/                     # Package info
+.tox/                           # Tox
+.pytest_cache/                  # Pytest
+htmlcov/                        # Coverage
+.coverage                       # Coverage
+coverage.xml                    # Coverage
+
+# ==========================================
+# SYSTEM & TEMPORARY DIRECTORIES
+# ==========================================
+/data/                          # Data mount
+/tmp/                           # Temp directory
+/var/                           # Variable data
+/run/                           # Runtime
+/proc/                          # Process info
+/sys/                           # System info
+/dev/                           # Devices
+
+# ==========================================
+# WHITELIST - Only sync these (comment out if needed)
+# ==========================================
+# The git-sync script will respect this .gitignore
+# and only sync files not listed above
+
+!README.md                      # Keep README
+!.gitignore                     # Keep gitignore
+!requirements.txt               # Keep dependencies
+!setup.py                       # Keep setup
+!pyproject.toml                 # Keep project config
+!Dockerfile                     # Keep Dockerfile (no secrets!)
+!docker-compose.yml             # Keep docker-compose (no secrets!)
+

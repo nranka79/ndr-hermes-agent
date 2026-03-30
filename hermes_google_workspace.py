@@ -134,6 +134,85 @@ def get_drive_file_content(file_id, account_email=None):
     except Exception as e:
         return {"success": False, "error": str(e)}
 
+def create_drive_file(name, mime_type="text/plain", content=None, parent_id=None, account_email=None):
+    """Create a new file in Google Drive."""
+    try:
+        credentials = get_credentials(account_email)
+        service = build("drive", "v3", credentials=credentials)
+
+        file_metadata = {'name': name, 'mimeType': mime_type}
+        if parent_id:
+            file_metadata['parents'] = [parent_id]
+
+        if content:
+            from googleapiclient.http import MediaInMemoryUpload
+            media = MediaInMemoryUpload(content.encode('utf-8'), mimetype=mime_type, resumable=True)
+            file = service.files().create(body=file_metadata, media_body=media, fields='id, webViewLink').execute()
+        else:
+            file = service.files().create(body=file_metadata, fields='id, webViewLink').execute()
+
+        return {"success": True, "file": file}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+def update_drive_file_permissions(file_id, role, type="user", email_address=None, account_email=None):
+    """Add or update a permission on a Drive file."""
+    try:
+        credentials = get_credentials(account_email)
+        service = build("drive", "v3", credentials=credentials)
+
+        permission = {'role': role, 'type': type}
+        if email_address:
+            permission['emailAddress'] = email_address
+
+        res = service.permissions().create(fileId=file_id, body=permission).execute()
+        return {"success": True, "permission": res}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+def list_drive_file_permissions(file_id, account_email=None):
+    """List all permissions for a file."""
+    try:
+        credentials = get_credentials(account_email)
+        service = build("drive", "v3", credentials=credentials)
+        res = service.permissions().list(fileId=file_id, fields="permissions(id, role, type, emailAddress)").execute()
+        return {"success": True, "permissions": res.get('permissions', [])}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+def get_gmail_message_content(message_id, account_email=None):
+    """Retrieve full content of a specific Gmail message."""
+    try:
+        credentials = get_credentials(account_email)
+        service = build("gmail", "v1", credentials=credentials)
+        msg_data = service.users().messages().get(userId="me", id=message_id).execute()
+        
+        headers = {h["name"]: h["value"] for h in msg_data["payload"].get("headers", [])}
+        
+        # Simple body extraction logic
+        body = ""
+        if 'parts' in msg_data['payload']:
+            parts = msg_data['payload']['parts']
+            for part in parts:
+                if part['mimeType'] == 'text/plain':
+                    import base64
+                    body = base64.urlsafe_b64decode(part['body']['data']).decode()
+                    break
+        else:
+            import base64
+            body = base64.urlsafe_b64decode(msg_data['payload']['body']['data']).decode()
+
+        return {
+            "success": True,
+            "id": message_id,
+            "from": headers.get("From"),
+            "subject": headers.get("Subject"),
+            "date": headers.get("Date"),
+            "body": body
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
 # ============================================================================
 # GMAIL API
 # ============================================================================
@@ -176,9 +255,123 @@ def list_gmail_messages(max_results=5, query=None, account_email=None):
     except Exception as e:
         return {"success": False, "error": str(e)}
 
+def _create_message_raw(to, subject, body):
+    """Helper to create a base64url encoded message."""
+    import base64
+    from email.message import EmailMessage
+    message = EmailMessage()
+    message.set_content(body)
+    message['To'] = to
+    message['From'] = 'me'
+    message['Subject'] = subject
+    encoded_message = base64.urlsafe_b64encode(message.as_bytes()).decode()
+    return {'raw': encoded_message}
+
+def send_gmail_message(to, subject, body, account_email=None):
+    """Create and send an email."""
+    try:
+        credentials = get_credentials(account_email)
+        service = build("gmail", "v1", credentials=credentials)
+        raw_msg = _create_message_raw(to, subject, body)
+        sent_msg = service.users().messages().send(userId="me", body=raw_msg).execute()
+        return {"success": True, "id": sent_msg['id']}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+def create_gmail_draft(to, subject, body, account_email=None):
+    """Create a draft email."""
+    try:
+        credentials = get_credentials(account_email)
+        service = build("gmail", "v1", credentials=credentials)
+        raw_msg = _create_message_raw(to, subject, body)
+        draft = service.users().drafts().create(userId="me", body={'message': raw_msg}).execute()
+        return {"success": True, "id": draft['id']}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+def forward_gmail_message(message_id, to, account_email=None):
+    """Forward an existing email."""
+    try:
+        credentials = get_credentials(account_email)
+        service = build("gmail", "v1", credentials=credentials)
+        # Get original message for context
+        original = service.users().messages().get(userId="me", id=message_id).execute()
+        headers = {h['name']: h['value'] for h in original['payload']['headers']}
+        
+        subject = f"Fwd: {headers.get('Subject', '')}"
+        body = f"---------- Forwarded message ----------\\nFrom: {headers.get('From', '')}\\nDate: {headers.get('Date', '')}\\n\\n"
+        
+        # Simple body extraction
+        parts = original['payload'].get('parts', [])
+        for part in parts:
+            if part['mimeType'] == 'text/plain':
+                import base64
+                body += base64.urlsafe_b64decode(part['body']['data']).decode()
+                break
+
+        return send_gmail_message(to, subject, body, account_email)
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+def archive_gmail_message(message_id, account_email=None):
+    """Remove INBOX label from a message."""
+    try:
+        credentials = get_credentials(account_email)
+        service = build("gmail", "v1", credentials=credentials)
+        service.users().messages().modify(userId="me", id=message_id, body={'removeLabelIds': ['INBOX']}).execute()
+        return {"success": True}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+def add_gmail_label(message_id, label_name, account_email=None):
+    """Add a label to a message."""
+    try:
+        credentials = get_credentials(account_email)
+        service = build("gmail", "v1", credentials=credentials)
+        # Find label ID
+        labels_info = service.users().labels().list(userId="me").execute()
+        label_id = next((l['id'] for l in labels_info['labels'] if l['name'] == label_name), None)
+        
+        if not label_id:
+            # Create label
+            lbl = service.users().labels().create(userId="me", body={'name': label_name}).execute()
+            label_id = lbl['id']
+            
+        service.users().messages().modify(userId="me", id=message_id, body={'addLabelIds': [label_id]}).execute()
+        return {"success": True}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
 # ============================================================================
 # CALENDAR API
 # ============================================================================
+
+def create_calendar_event(summary, start_time, end_time, description=None, location=None, account_email=None):
+    """Create a new calendar event."""
+    try:
+        credentials = get_credentials(account_email)
+        service = build("calendar", "v3", credentials=credentials)
+        event = {
+            'summary': summary,
+            'location': location,
+            'description': description,
+            'start': {'dateTime': start_time}, # '2025-05-28T09:00:00-07:00'
+            'end': {'dateTime': end_time},
+        }
+        event = service.events().insert(calendarId='primary', body=event).execute()
+        return {"success": True, "htmlLink": event.get('htmlLink')}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+def delete_calendar_event(event_id, account_email=None):
+    """Delete a calendar event."""
+    try:
+        credentials = get_credentials(account_email)
+        service = build("calendar", "v3", credentials=credentials)
+        service.events().delete(calendarId='primary', eventId=event_id).execute()
+        return {"success": True}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
 
 def list_calendar_events(calendar_id="primary", max_results=10, time_min=None, account_email=None):
     """List upcoming calendar events for a specific account."""
@@ -204,6 +397,7 @@ def list_calendar_events(calendar_id="primary", max_results=10, time_min=None, a
 
         for event in events:
             event_list.append({
+                "id": event.get("id"),
                 "summary": event.get("summary", "(untitled)"),
                 "start": event.get("start", {}).get("dateTime", event.get("start", {}).get("date")),
                 "end": event.get("end", {}).get("dateTime", event.get("end", {}).get("date")),
