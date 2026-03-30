@@ -128,6 +128,43 @@ def setup_credentials():
             print(f"  ✗ Error creating {file_path}: {e}")
             missing_accounts.append(account)
 
+    # Write .env file so gws CLI can locate credentials without per-invocation setup
+    env_path = os.path.join(hermes_home, ".env")
+    env_lines = [
+        "# Auto-generated at startup from Railway environment variables.",
+        "# Source: setup_oauth_credentials.py — do not edit manually.",
+        "",
+    ]
+    account_env_keys = {
+        "ndr@draas.com":          "GOOGLE_WORKSPACE_CLI_DRAAS_CREDENTIALS",
+        "nishantranka@gmail.com": "GOOGLE_WORKSPACE_CLI_GMAIL_CREDENTIALS",
+        "ndr@ahfl.in":            "GOOGLE_WORKSPACE_CLI_AHFL_CREDENTIALS",
+    }
+    for account in created_accounts:
+        file_path = ACCOUNTS[account]["file_path"]
+        env_key = account_env_keys[account]
+        env_lines.append(f"{env_key}={file_path}")
+
+    # Default GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE points to primary account
+    primary = "ndr@draas.com"
+    if primary in created_accounts:
+        env_lines.append(f"GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE={ACCOUNTS[primary]['file_path']}")
+    elif created_accounts:
+        env_lines.append(f"GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE={ACCOUNTS[created_accounts[0]]['file_path']}")
+
+    try:
+        import tempfile
+        fd, tmp = tempfile.mkstemp(dir=hermes_home, prefix=".env_", suffix=".tmp")
+        with os.fdopen(fd, "w") as f:
+            f.write("\n".join(env_lines) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, env_path)
+        os.chmod(env_path, 0o600)
+        print(f"\n✓ Wrote {env_path} ({len(created_accounts)} account(s))")
+    except Exception as e:
+        print(f"\n⚠ Warning: could not write {env_path}: {e}")
+
     # Summary
     print("\n" + "="*80)
     print("SUMMARY")

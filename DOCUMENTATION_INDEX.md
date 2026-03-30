@@ -116,14 +116,13 @@ Quick navigation guide for all documentation and implementation files.
   - REST API-based (no git binary required)
   - Already deployed and working ✅
 
-- **[hermes_google_workspace.py](hermes_google_workspace.py)**
-  - Python wrapper for Google Workspace APIs
-  - Available if needed for direct API access
-  - Included as fallback option
+- **[tools/google_workspace_power_tool.py](tools/google_workspace_power_tool.py)**
+  - Sole Google Workspace integration — bridges to the official gws CLI (`npx gws`)
+  - Handles all three accounts (draas.com, ahfl.in, gmail.com) via `account_email` parameter
+  - Credentials written at startup by `setup_oauth_credentials.py`
 
 - **[deploy_integrations.py](deploy_integrations.py)**
-  - Original integration deployment script
-  - Used to deploy github_sync_daemon.py and hermes_google_workspace.py
+  - Original integration deployment script (legacy reference only)
 
 ---
 

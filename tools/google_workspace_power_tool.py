@@ -58,14 +58,8 @@ async def google_workspace_manager(
     if not cred_file:
         return f"Error: Unknown or unconfigured account: {account_email}"
     
-    # Check if credentials exist (only if on local or Railway with /data/)
     if not os.path.exists(cred_file):
-        # Fallback for local dev if Railway paths don't exist
-        local_path = os.path.join(os.getcwd(), os.path.basename(cred_file))
-        if os.path.exists(local_path):
-            cred_file = local_path
-        else:
-            return f"Error: Credentials file not found for {account_email} at {cred_file}."
+        return f"Error: Credentials file not found for {account_email} at {cred_file}. Ensure Railway env vars are set and the service has restarted."
 
     # 2. Prepare the command
     try:
