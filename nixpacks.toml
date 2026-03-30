@@ -1,0 +1,12 @@
+[phases.setup]
+nixPkgs = ["...", "git"]
+
+[phases.install]
+cmds = [
+  "git submodule update --init --recursive",
+  "npm install",
+  "pip install -e ."
+]
+
+[start]
+cmd = "python3 setup_oauth_credentials.py && exec hermes gateway"
