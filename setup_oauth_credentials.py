@@ -307,31 +307,160 @@ def symlink_gws_skills():
     return True
 
 def cleanup_stale_skills():
-    """Remove skills that were deleted from the bundled skills/ but may linger in ~/.hermes/skills/."""
+    """Remove skills that were deleted from the bundled skills/ but may linger in seeded paths."""
     print("\n" + "="*80)
     print("CLEANING UP STALE SKILLS")
     print("="*80)
 
-    home = os.path.expanduser("~")
-    hermes_skills = os.path.join(home, ".hermes", "skills")
+    import shutil
 
-    # Skills that have been removed from the bundled set and must not persist
-    REMOVED_SKILLS = [
-        os.path.join(hermes_skills, "productivity", "google-workspace"),
+    home = os.path.expanduser("~")
+
+    # All possible roots where skills may have been seeded
+    skill_roots = [
+        os.path.join(home, ".hermes", "skills"),
+        "/app/skills",                             # Railway container app dir
+        os.path.join(os.getcwd(), "skills"),       # Local dev / working dir
     ]
 
-    import shutil
-    for path in REMOVED_SKILLS:
-        if os.path.exists(path):
-            try:
-                shutil.rmtree(path)
-                print(f"  ✓ Removed stale skill: {path}")
-            except Exception as e:
-                print(f"  ⚠ Could not remove {path}: {e}")
-        else:
-            print(f"  ✓ Already clean: {path}")
+    # Skill directory names (relative to any skill root) that must not persist.
+    # These were removed from the bundled skills/ and contain stale instructions
+    # that reference deleted scripts and wrong tool names.
+    REMOVED_SKILL_RELPATHS = [
+        os.path.join("productivity", "google-workspace"),
+        "google-workspace",   # flat fallback path
+    ]
+
+    found_any = False
+    for root in skill_roots:
+        for relpath in REMOVED_SKILL_RELPATHS:
+            path = os.path.join(root, relpath)
+            if os.path.exists(path):
+                found_any = True
+                try:
+                    shutil.rmtree(path)
+                    print(f"  ✓ Removed stale skill: {path}")
+                except Exception as e:
+                    print(f"  ⚠ Could not remove {path}: {e}")
+
+    if not found_any:
+        print("  ✓ No stale skills found")
 
     print("="*80 + "\n")
+
+
+def setup_registry_sheet():
+    """Create the entity registry tabs (projects, land_proposals, entities) in the contacts sheet."""
+    print("\n" + "="*80)
+    print("SETTING UP ENTITY REGISTRY SHEET TABS")
+    print("="*80)
+
+    SHEET_ID = "1XbSRAXxPLY4cXMTm2rmvKh11Nx3x0aKUxxuWualoV9g"
+    CRED_FILE = ACCOUNTS["ndr@draas.com"]["file_path"]
+
+    if not os.path.exists(CRED_FILE):
+        print(f"\n⚠ Skipping sheet setup — draas.com credentials not found at {CRED_FILE}")
+        print("="*80 + "\n")
+        return False
+
+    import subprocess
+
+    env = os.environ.copy()
+    env["GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE"] = CRED_FILE
+
+    # Step 1: get existing sheet names
+    try:
+        result = subprocess.run(
+            ["npx", "--yes", "gws", "sheets", "spreadsheets", "get",
+             "--spreadsheetId", SHEET_ID],
+            capture_output=True, text=True, env=env, timeout=30
+        )
+        existing_titles = set()
+        if result.returncode == 0:
+            import json as _json
+            data = _json.loads(result.stdout)
+            for sheet in data.get("sheets", []):
+                title = sheet.get("properties", {}).get("title", "")
+                if title:
+                    existing_titles.add(title)
+            print(f"\n  Existing tabs: {sorted(existing_titles)}")
+        else:
+            print(f"\n  ⚠ Could not read sheet metadata: {result.stderr[:200]}")
+            print("="*80 + "\n")
+            return False
+    except Exception as e:
+        print(f"\n  ⚠ Sheet metadata error: {e}")
+        print("="*80 + "\n")
+        return False
+
+    # Step 2: define tabs to create
+    TABS = {
+        "projects": [
+            "canonical_name", "aliases", "voice_misspellings",
+            "associated_contacts", "associated_entities",
+            "associated_land_proposals", "status", "notes"
+        ],
+        "land_proposals": [
+            "canonical_name", "aliases", "voice_misspellings",
+            "location", "entity", "associated_contacts",
+            "associated_projects", "status", "notes"
+        ],
+        "entities": [
+            "canonical_name", "aliases", "voice_misspellings",
+            "type", "associated_contacts", "associated_projects", "notes"
+        ],
+    }
+
+    import json as _json
+    all_ok = True
+    for tab_name, headers in TABS.items():
+        if tab_name in existing_titles:
+            print(f"  ✓ Tab already exists: {tab_name}")
+            continue
+
+        # Create the tab
+        body = _json.dumps({"requests": [{"addSheet": {"properties": {"title": tab_name}}}]})
+        try:
+            r = subprocess.run(
+                ["npx", "--yes", "gws", "sheets", "spreadsheets", "batchUpdate",
+                 "--spreadsheetId", SHEET_ID, "--body", body],
+                capture_output=True, text=True, env=env, timeout=30
+            )
+            if r.returncode != 0:
+                print(f"  ✗ Could not create tab '{tab_name}': {r.stderr[:200]}")
+                all_ok = False
+                continue
+            print(f"  ✓ Created tab: {tab_name}")
+        except Exception as e:
+            print(f"  ✗ Error creating tab '{tab_name}': {e}")
+            all_ok = False
+            continue
+
+        # Write headers to row 1
+        hdr_range = f"{tab_name}!A1:{chr(ord('A') + len(headers) - 1)}1"
+        hdr_body = _json.dumps({"values": [headers]})
+        try:
+            r = subprocess.run(
+                ["npx", "--yes", "gws", "sheets", "values", "update",
+                 "--spreadsheetId", SHEET_ID,
+                 "--range", hdr_range,
+                 "--valueInputOption", "RAW",
+                 "--body", hdr_body],
+                capture_output=True, text=True, env=env, timeout=30
+            )
+            if r.returncode != 0:
+                print(f"  ✗ Could not write headers to '{tab_name}': {r.stderr[:200]}")
+                all_ok = False
+            else:
+                print(f"  ✓ Headers written to: {tab_name}")
+        except Exception as e:
+            print(f"  ✗ Error writing headers for '{tab_name}': {e}")
+            all_ok = False
+
+    if all_ok:
+        print("\n✓ Entity registry sheet is ready!")
+    print("="*80 + "\n")
+    return all_ok
 
 
 if __name__ == "__main__":
@@ -343,6 +472,9 @@ if __name__ == "__main__":
 
     # Symlink official GWS skills
     skills_success = symlink_gws_skills()
+
+    # Create entity registry tabs in contacts sheet (idempotent — skips existing tabs)
+    setup_registry_sheet()
 
     # Then setup model configuration
     model_success = setup_model_config()
