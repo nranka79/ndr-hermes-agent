@@ -9,7 +9,29 @@ that Hermes can use to access multiple Google Workspace accounts.
 
 import os
 import json
+import shutil
 import sys
+
+
+def _find_gws_binary() -> list:
+    """
+    Return the argv prefix to invoke gws (e.g. ['/app/node_modules/.bin/gws']).
+    Falls back to npx if the binary isn't found at known locations.
+    The script runs from the app root, so node_modules/.bin/gws is relative to cwd.
+    """
+    candidates = [
+        os.path.join(os.getcwd(), "node_modules", ".bin", "gws"),
+        "/app/node_modules/.bin/gws",
+    ]
+    for c in candidates:
+        if os.path.isfile(c) and os.access(c, os.X_OK):
+            return [c]
+    on_path = shutil.which("gws")
+    if on_path:
+        return [on_path]
+    # Last resort: npx (slower, may download)
+    npx = shutil.which("npx") or "npx"
+    return [npx, "--yes", "@googleworkspace/cli"]
 
 # Accounts and their environment variable mappings
 ACCOUNTS = {
@@ -369,7 +391,7 @@ def setup_registry_sheet():
     # Step 1: get existing sheet names
     try:
         result = subprocess.run(
-            ["npx", "--yes", "gws", "sheets", "spreadsheets", "get",
+            _find_gws_binary() + ["sheets", "spreadsheets", "get",
              "--spreadsheetId", SHEET_ID],
             capture_output=True, text=True, env=env, timeout=30
         )
@@ -420,7 +442,7 @@ def setup_registry_sheet():
         body = _json.dumps({"requests": [{"addSheet": {"properties": {"title": tab_name}}}]})
         try:
             r = subprocess.run(
-                ["npx", "--yes", "gws", "sheets", "spreadsheets", "batchUpdate",
+                _find_gws_binary() + ["sheets", "spreadsheets", "batchUpdate",
                  "--spreadsheetId", SHEET_ID, "--body", body],
                 capture_output=True, text=True, env=env, timeout=30
             )
@@ -439,7 +461,7 @@ def setup_registry_sheet():
         hdr_body = _json.dumps({"values": [headers]})
         try:
             r = subprocess.run(
-                ["npx", "--yes", "gws", "sheets", "values", "update",
+                _find_gws_binary() + ["sheets", "values", "update",
                  "--spreadsheetId", SHEET_ID,
                  "--range", hdr_range,
                  "--valueInputOption", "RAW",
@@ -462,6 +484,10 @@ def setup_registry_sheet():
 
 
 if __name__ == "__main__":
+    # Log gws binary resolution so it's visible in Railway deploy logs
+    gws_cmd = _find_gws_binary()
+    print(f"\n✓ GWS binary resolved to: {' '.join(gws_cmd)}")
+
     # Setup OAuth credentials first
     oauth_success = setup_credentials()
 
