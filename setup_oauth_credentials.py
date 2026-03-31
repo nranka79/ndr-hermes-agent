@@ -192,7 +192,7 @@ def setup_credentials():
 
 
 def setup_model_config():
-    """Write config.yaml to configure MiniMax as default model provider."""
+    """Write config.yaml to configure OpenRouter gemini-2.5-flash-lite as default model."""
     print("\n" + "="*80)
     print("HERMES MODEL CONFIGURATION SETUP")
     print("="*80)
@@ -200,19 +200,18 @@ def setup_model_config():
     hermes_home = "/data/hermes"
     config_path = os.path.join(hermes_home, "config.yaml")
 
-    # Check if Minimax API key is configured
-    minimax_key = os.environ.get("MINIMAX_API_KEY")
-    if not minimax_key:
-        print("\n⚠ MINIMAX_API_KEY not set — skipping model config write")
-        print("  Set MINIMAX_API_KEY in Railway Variables to use MiniMax as default model")
+    # Check if OpenRouter API key is configured
+    openrouter_key = os.environ.get("OPENROUTER_API_KEY")
+    if not openrouter_key:
+        print("\n⚠ OPENROUTER_API_KEY not set — skipping model config write")
+        print("  Set OPENROUTER_API_KEY in Railway Variables to use OpenRouter as default provider")
         print("="*80 + "\n")
         return False
 
     config = {
         "model": {
-            "provider": "minimax",
-            "default": "MiniMax-M2.7",
-            "base_url": "https://api.minimax.io/v1"
+            "provider": "openrouter",
+            "default": "google/gemini-2.5-flash-lite",
         }
     }
 
@@ -237,10 +236,9 @@ def setup_model_config():
         with open(config_path, "w") as f:
             yaml.dump(existing, f, default_flow_style=False, sort_keys=False)
         print(f"\n✓ Wrote {config_path}")
-        print("  - provider: minimax")
-        print("  - model: MiniMax-M2.7")
-        print("  - base_url: https://api.minimax.io/v1")
-        print("\n✓ MiniMax-M2.7 is now the default model!")
+        print("  - provider: openrouter")
+        print("  - model: google/gemini-2.5-flash-lite")
+        print("\n✓ google/gemini-2.5-flash-lite (via OpenRouter) is now the default model!")
         print("="*80 + "\n")
         return True
     except Exception as e:
