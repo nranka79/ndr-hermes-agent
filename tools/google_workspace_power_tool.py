@@ -1,12 +1,9 @@
 #!/usr/bin/env python3
-import asyncio
 import json
 import subprocess
 import os
 import logging
-import sys
 import shlex
-from typing import Dict, Any, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -23,16 +20,17 @@ def _check_gws_available() -> bool:
     return os.path.exists(ACCOUNTS["ndr@draas.com"])
 
 
-async def _google_workspace_manager_async(
-    command: str,
-    account_email: Optional[str] = "ndr@draas.com",
-    args: Optional[str] = None,
-) -> str:
+def _handle_google_workspace_manager(args: dict, **kwargs) -> str:
     """
     Universal bridge for the official Google Workspace CLI (gws).
+    Runs npx gws synchronously via subprocess — no event loop needed.
     """
+    command = args.get("command", "")
+    account_email = args.get("account_email") or "ndr@draas.com"
+    extra_args = args.get("args")
+
     # 1. Resolve credentials file
-    cred_file = ACCOUNTS.get(account_email or "ndr@draas.com")
+    cred_file = ACCOUNTS.get(account_email)
     if not cred_file:
         return f"Error: Unknown or unconfigured account: {account_email}"
 
@@ -43,30 +41,23 @@ async def _google_workspace_manager_async(
         )
 
     try:
-        # Build the final CLI command
+        # Build the CLI command
         npx_cmd = ["npx", "--yes", "gws"] + shlex.split(command)
+        if extra_args:
+            npx_cmd += shlex.split(extra_args)
 
-        if args:
-            npx_cmd += shlex.split(args)
-
-        # Environment management
+        # Set credentials via env var
         env = os.environ.copy()
         env["GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE"] = cred_file
 
-        # Execute in thread pool to avoid blocking the event loop
-        loop = asyncio.get_event_loop()
-        process = await loop.run_in_executor(
-            None,
-            lambda: subprocess.run(
-                npx_cmd,
-                capture_output=True,
-                text=True,
-                env=env,
-                timeout=60,
-            ),
+        process = subprocess.run(
+            npx_cmd,
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=60,
         )
 
-        # Handle output
         if process.returncode == 0:
             try:
                 data = json.loads(process.stdout)
@@ -81,30 +72,6 @@ async def _google_workspace_manager_async(
 
     except subprocess.TimeoutExpired:
         return f"Error: GWS CLI '{command}' timed out after 60 seconds."
-    except Exception as e:
-        return f"Error: {str(e)}"
-
-
-def _handle_google_workspace_manager(args: dict, **kwargs) -> str:
-    """Sync handler wrapper — bridges async implementation to registry dispatch."""
-    command = args.get("command", "")
-    account_email = args.get("account_email", "ndr@draas.com")
-    extra_args = args.get("args")
-
-    try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            import concurrent.futures
-            with concurrent.futures.ThreadPoolExecutor() as pool:
-                future = pool.submit(
-                    asyncio.run,
-                    _google_workspace_manager_async(command, account_email, extra_args),
-                )
-                return future.result(timeout=90)
-        else:
-            return loop.run_until_complete(
-                _google_workspace_manager_async(command, account_email, extra_args)
-            )
     except Exception as e:
         return f"Error: {str(e)}"
 
