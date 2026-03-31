@@ -15,22 +15,28 @@ import sys
 
 def _find_gws_binary() -> list:
     """
-    Return the argv prefix to invoke gws (e.g. ['/app/node_modules/.bin/gws']).
-    Falls back to npx if the binary isn't found at known locations.
-    The script runs from the app root, so node_modules/.bin/gws is relative to cwd.
+    Return the argv prefix to invoke gws (e.g. ['/usr/local/bin/gws']).
+    Search order matches the nixpacks install: npm -g lands in /usr/local/bin.
     """
+    # Augmented PATH: Python subprocess may not inherit node binary dirs
+    node_dirs = ["/usr/local/bin", "/usr/bin",
+                 os.path.join(os.getcwd(), "node_modules", ".bin"),
+                 "/app/node_modules/.bin"]
+    aug_path = ":".join(node_dirs + [os.environ.get("PATH", "")])
+
     candidates = [
-        os.path.join(os.getcwd(), "node_modules", ".bin", "gws"),
-        "/app/node_modules/.bin/gws",
+        "/usr/local/bin/gws",                                       # npm -g default
+        os.path.join(os.getcwd(), "node_modules", ".bin", "gws"),   # local npm
+        "/app/node_modules/.bin/gws",                               # Railway fallback
     ]
     for c in candidates:
         if os.path.isfile(c) and os.access(c, os.X_OK):
             return [c]
-    on_path = shutil.which("gws")
-    if on_path:
-        return [on_path]
-    # Last resort: npx (slower, may download)
-    npx = shutil.which("npx") or "npx"
+    found = shutil.which("gws", path=aug_path)
+    if found:
+        return [found]
+    # Last resort: npx with augmented PATH (needs node on PATH)
+    npx = shutil.which("npx", path=aug_path) or "npx"
     return [npx, "--yes", "@googleworkspace/cli"]
 
 # Accounts and their environment variable mappings

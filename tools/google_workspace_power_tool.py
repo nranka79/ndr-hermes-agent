@@ -2,15 +2,13 @@
 """
 Google Workspace Manager Tool — bridges Hermes to the official gws CLI.
 
-Invokes the gws binary directly (not via npx) using a path resolved at
-import time.  This avoids relying on PATH availability of npx/node inside
-the Railway container subprocess environment.
+The gws binary is installed globally via `npm install -g @googleworkspace/cli`
+in nixpacks.toml, landing at /usr/local/bin/gws.  We also check local
+node_modules as a fallback.
 
-Binary resolution order:
-  1. <app_root>/node_modules/.bin/gws   (installed by npm install in nixpacks)
-  2. /app/node_modules/.bin/gws          (Railway absolute fallback)
-  3. shutil.which("gws")                 (anything on PATH)
-  4. npx --yes @googleworkspace/cli      (last resort, downloads if needed)
+Key lesson: Python subprocess does NOT automatically inherit the Nix/node
+PATH from the Railway build environment. We explicitly augment PATH in every
+subprocess call to ensure node-installed binaries are reachable.
 """
 
 import json
@@ -23,39 +21,64 @@ import logging
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
+# Augmented PATH — injected into every subprocess call
+# ---------------------------------------------------------------------------
+
+_APP_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+_NODE_BIN_DIRS = [
+    "/usr/local/bin",                                        # npm -g install target
+    "/usr/bin",
+    os.path.join(_APP_ROOT, "node_modules", ".bin"),         # local npm install
+    "/app/node_modules/.bin",                                # Railway absolute fallback
+]
+
+
+def _augmented_path() -> str:
+    """Return PATH string that includes all known node binary locations."""
+    existing = os.environ.get("PATH", "")
+    extra = [d for d in _NODE_BIN_DIRS if d not in existing]
+    return ":".join(extra + [existing]) if existing else ":".join(extra)
+
+
+# ---------------------------------------------------------------------------
 # Binary path resolution — done ONCE at import time
 # ---------------------------------------------------------------------------
 
 def _resolve_gws_binary() -> str | None:
-    """Return the absolute path to the gws binary, or None if not found."""
-    # 1. node_modules relative to this file's app root
-    app_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    local = os.path.join(app_root, "node_modules", ".bin", "gws")
-    if os.path.isfile(local) and os.access(local, os.X_OK):
-        logger.debug("gws binary found at %s", local)
-        return local
+    """Return the absolute path to the gws binary, or None."""
+    # 1. Direct file checks (fastest, no PATH dependency)
+    candidates = [
+        "/usr/local/bin/gws",                                    # npm -g
+        os.path.join(_APP_ROOT, "node_modules", ".bin", "gws"),  # local npm
+        "/app/node_modules/.bin/gws",                            # Railway fallback
+        "/usr/bin/gws",
+    ]
+    for c in candidates:
+        if os.path.isfile(c) and os.access(c, os.X_OK):
+            logger.debug("gws binary found at %s", c)
+            return c
 
-    # 2. Railway always deploys to /app
-    railway = "/app/node_modules/.bin/gws"
-    if os.path.isfile(railway) and os.access(railway, os.X_OK):
-        logger.debug("gws binary found at %s", railway)
-        return railway
-
-    # 3. Anything on PATH (e.g. global npm install)
-    on_path = shutil.which("gws")
-    if on_path:
-        logger.debug("gws binary found on PATH at %s", on_path)
-        return on_path
+    # 2. shutil.which with augmented PATH
+    found = shutil.which("gws", path=_augmented_path())
+    if found:
+        logger.debug("gws binary found via which: %s", found)
+        return found
 
     logger.warning(
-        "gws binary not found in node_modules or PATH. "
-        "Tool will fall back to 'npx --yes @googleworkspace/cli'. "
-        "Run 'npm install' in the app root to fix this properly."
+        "gws binary not found. Expected at /usr/local/bin/gws after "
+        "'npm install -g @googleworkspace/cli'. Check nixpacks.toml install phase."
     )
     return None
 
 
 _GWS_BINARY: str | None = _resolve_gws_binary()
+
+# Log at startup so Railway build logs show what was resolved
+if _GWS_BINARY:
+    logger.info("google_workspace_manager: gws binary = %s", _GWS_BINARY)
+else:
+    logger.warning("google_workspace_manager: gws binary NOT FOUND — tool will be unavailable")
 
 
 # ---------------------------------------------------------------------------
@@ -70,8 +93,8 @@ ACCOUNTS = {
 
 
 def _check_gws_available() -> bool:
-    """Tool is available when the primary credential file exists."""
-    return os.path.exists(ACCOUNTS["ndr@draas.com"])
+    """Tool is available when the binary exists AND the primary credential file exists."""
+    return bool(_GWS_BINARY) and os.path.exists(ACCOUNTS["ndr@draas.com"])
 
 
 # ---------------------------------------------------------------------------
@@ -79,34 +102,35 @@ def _check_gws_available() -> bool:
 # ---------------------------------------------------------------------------
 
 def _handle_google_workspace_manager(args: dict, **kwargs) -> str:
-    """Run a gws CLI command and return the result as a string."""
-    command     = args.get("command", "")
+    """Run a gws CLI command and return the result."""
+    command       = args.get("command", "")
     account_email = args.get("account_email") or "ndr@draas.com"
-    extra_args  = args.get("args")
+    extra_args    = args.get("args")
 
     # Resolve credential file
     cred_file = ACCOUNTS.get(account_email)
     if not cred_file:
         return f"Error: Unknown account: {account_email}"
-
     if not os.path.exists(cred_file):
         return (
             f"Error: Credentials file not found for {account_email} at {cred_file}. "
-            "Check that Railway env vars (DRAAS_OAUTH_*) are set and the service has restarted."
+            "Check Railway env vars (DRAAS_OAUTH_*) and restart the service."
         )
 
-    # Build command
+    # Build command — prefer direct binary, fall back to npx
     if _GWS_BINARY:
         cmd = [_GWS_BINARY] + shlex.split(command)
     else:
-        # npx fallback — slower, downloads if needed
-        npx = shutil.which("npx") or "npx"
+        # Last resort: try npx with augmented PATH
+        npx = shutil.which("npx", path=_augmented_path()) or "npx"
         cmd = [npx, "--yes", "@googleworkspace/cli"] + shlex.split(command)
 
     if extra_args:
         cmd += shlex.split(extra_args)
 
+    # Subprocess environment: augment PATH so node binaries are reachable
     env = os.environ.copy()
+    env["PATH"] = _augmented_path()
     env["GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE"] = cred_file
 
     logger.debug("gws exec: %s", " ".join(cmd))
@@ -121,9 +145,9 @@ def _handle_google_workspace_manager(args: dict, **kwargs) -> str:
         )
     except FileNotFoundError:
         return (
-            "Error: gws binary not found. "
-            f"Tried: {cmd[0]}. "
-            "Ensure npm install ran during build (check nixpacks.toml)."
+            f"Error: gws binary not found at {cmd[0]}. "
+            "Ensure 'npm install -g @googleworkspace/cli' ran in the nixpacks build. "
+            f"Searched: {_NODE_BIN_DIRS}"
         )
     except subprocess.TimeoutExpired:
         return f"Error: gws command timed out after 60s: {command}"
@@ -133,11 +157,11 @@ def _handle_google_workspace_manager(args: dict, **kwargs) -> str:
             return json.dumps(json.loads(result.stdout), indent=2)
         except Exception:
             return result.stdout or "Success (no output)"
-    else:
-        return (
-            f"Error running gws ({command}) [exit {result.returncode}]:\n"
-            f"{result.stderr or result.stdout}"
-        )
+
+    return (
+        f"Error running gws ({command}) [exit {result.returncode}]:\n"
+        f"{result.stderr or result.stdout}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -176,7 +200,7 @@ _GWS_SCHEMA = {
                     "Account to use. Routing: "
                     "ndr@draas.com — default/primary, use for 'my email', 'email', 'inbox', "
                     "'my drive', 'my calendar', 'my documents', or no qualifier; "
-                    "also matches voice variants: draas/drast/drus/dross/DRaaS. "
+                    "also matches voice variants draas/drast/drus/dross/DRaaS. "
                     "ndr@ahfl.in — use for 'AHFL email/drive/calendar' or 'ahfl.in'. "
                     "nishantranka@gmail.com — use for 'gmail', 'personal email', 'my gmail'. "
                     "When ambiguous: ask before proceeding."
