@@ -12,33 +12,6 @@ import json
 import shutil
 import sys
 
-
-def _find_gws_binary() -> list:
-    """
-    Return the argv prefix to invoke gws (e.g. ['/usr/local/bin/gws']).
-    Search order matches the nixpacks install: npm -g lands in /usr/local/bin.
-    """
-    # Augmented PATH: Python subprocess may not inherit node binary dirs
-    node_dirs = ["/usr/local/bin", "/usr/bin",
-                 os.path.join(os.getcwd(), "node_modules", ".bin"),
-                 "/app/node_modules/.bin"]
-    aug_path = ":".join(node_dirs + [os.environ.get("PATH", "")])
-
-    candidates = [
-        "/usr/local/bin/gws",                                       # npm -g default
-        os.path.join(os.getcwd(), "node_modules", ".bin", "gws"),   # local npm
-        "/app/node_modules/.bin/gws",                               # Railway fallback
-    ]
-    for c in candidates:
-        if os.path.isfile(c) and os.access(c, os.X_OK):
-            return [c]
-    found = shutil.which("gws", path=aug_path)
-    if found:
-        return [found]
-    # Last resort: npx with augmented PATH (needs node on PATH)
-    npx = shutil.which("npx", path=aug_path) or "npx"
-    return [npx, "--yes", "@googleworkspace/cli"]
-
 # Accounts and their environment variable mappings
 ACCOUNTS = {
     "ndr@draas.com": {
@@ -275,61 +248,8 @@ def setup_model_config():
         return False
 
 def symlink_gws_skills():
-    """Symlink official GWS skills from vendor into Hermes skills folder."""
-    print("\n" + "="*80)
-    print("SYMLINKING GOOGLE WORKSPACE CLI SKILLS")
-    print("="*80)
-
-    # Current working directory (root of Core_Platform_Code)
-    root = os.getcwd()
-    vendor_skills = os.path.join(root, "vendor", "googleworkspace-cli", "skills")
-    hermes_skills = os.path.join(root, "skills")
-
-    if not os.path.exists(vendor_skills):
-        print(f"\n✗ Error: vendor skills not found at {vendor_skills}")
-        print("  Run: git submodule update --init --recursive")
-        return False
-
-    # Get all gws-* folders from vendor
-    gws_folders = [f for f in os.listdir(vendor_skills) if f.startswith("gws-")]
-
-    if not gws_folders:
-        print(f"\n⚠ Warning: No gws-* folders found in {vendor_skills}")
-        return False
-
-    print(f"\n✓ Found {len(gws_folders)} GWS skill(s) in vendor")
-
-    for folder in gws_folders:
-        src = os.path.join(vendor_skills, folder)
-        dst = os.path.join(hermes_skills, folder)
-
-        # Create symlink (remove existing if it's already there)
-        if os.path.lexists(dst):
-            try:
-                if os.path.islink(dst) or os.path.isfile(dst):
-                    os.remove(dst)
-                elif os.path.isdir(dst):
-                    import shutil
-                    shutil.rmtree(dst)
-            except Exception as e:
-                print(f"  ✗ Could not remove existing skill {dst}: {e}")
-                continue
-
-        try:
-            # On windows, symlinking needs special privileges unless using junctions
-            # On Linux (Railway), standard symlink works fine.
-            if sys.platform == "win32":
-                # For Windows testing/dev
-                import subprocess
-                subprocess.call(['mklink', '/J', dst, src], shell=True)
-            else:
-                os.symlink(src, dst)
-            print(f"  ✓ Linked {folder}")
-        except Exception as e:
-            print(f"  ✗ Error linking {folder}: {e}")
-
-    print("\n✓ Official GWS skills are now integrated!")
-    print("="*80 + "\n")
+    """No-op: gws vendor submodule removed; Google Workspace uses Python API directly."""
+    print("\n✓ GWS vendor symlink: skipped (using google-api-python-client instead of gws CLI)")
     return True
 
 def cleanup_stale_skills():
@@ -376,7 +296,7 @@ def cleanup_stale_skills():
 
 
 def setup_registry_sheet():
-    """Create the entity registry tabs (projects, land_proposals, entities) in the contacts sheet."""
+    """Create entity registry tabs using google-api-python-client (no gws CLI needed)."""
     print("\n" + "="*80)
     print("SETTING UP ENTITY REGISTRY SHEET TABS")
     print("="*80)
@@ -389,98 +309,79 @@ def setup_registry_sheet():
         print("="*80 + "\n")
         return False
 
-    import subprocess
-
-    env = os.environ.copy()
-    env["GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE"] = CRED_FILE
-
-    # Step 1: get existing sheet names
     try:
-        result = subprocess.run(
-            _find_gws_binary() + ["sheets", "spreadsheets", "get",
-             "--spreadsheetId", SHEET_ID],
-            capture_output=True, text=True, env=env, timeout=30
-        )
-        existing_titles = set()
-        if result.returncode == 0:
-            import json as _json
-            data = _json.loads(result.stdout)
-            for sheet in data.get("sheets", []):
-                title = sheet.get("properties", {}).get("title", "")
-                if title:
-                    existing_titles.add(title)
-            print(f"\n  Existing tabs: {sorted(existing_titles)}")
-        else:
-            print(f"\n  ⚠ Could not read sheet metadata: {result.stderr[:200]}")
-            print("="*80 + "\n")
-            return False
-    except Exception as e:
-        print(f"\n  ⚠ Sheet metadata error: {e}")
+        from google.oauth2.credentials import Credentials
+        from google.auth.transport.requests import Request as GoogleRequest
+        from googleapiclient.discovery import build
+    except ImportError:
+        print("\n⚠ google-api-python-client not installed yet — sheet setup will run after redeploy")
         print("="*80 + "\n")
         return False
 
-    # Step 2: define tabs to create
+    try:
+        with open(CRED_FILE) as f:
+            data = json.load(f)
+        creds = Credentials(
+            token=None,
+            refresh_token=data["refresh_token"],
+            client_id=data["client_id"],
+            client_secret=data["client_secret"],
+            token_uri="https://oauth2.googleapis.com/token",
+        )
+        creds.refresh(GoogleRequest())
+        svc = build("sheets", "v4", credentials=creds, cache_discovery=False)
+    except Exception as e:
+        print(f"\n⚠ Could not build Sheets client: {e}")
+        print("="*80 + "\n")
+        return False
+
+    # Get existing tab names
+    try:
+        meta = svc.spreadsheets().get(spreadsheetId=SHEET_ID).execute()
+        existing = {s["properties"]["title"] for s in meta.get("sheets", [])}
+        print(f"\n  Existing tabs: {sorted(existing)}")
+    except Exception as e:
+        print(f"\n⚠ Could not read sheet metadata: {e}")
+        print("="*80 + "\n")
+        return False
+
     TABS = {
-        "projects": [
-            "canonical_name", "aliases", "voice_misspellings",
-            "associated_contacts", "associated_entities",
-            "associated_land_proposals", "status", "notes"
-        ],
-        "land_proposals": [
-            "canonical_name", "aliases", "voice_misspellings",
-            "location", "entity", "associated_contacts",
-            "associated_projects", "status", "notes"
-        ],
-        "entities": [
-            "canonical_name", "aliases", "voice_misspellings",
-            "type", "associated_contacts", "associated_projects", "notes"
-        ],
+        "projects":       ["canonical_name","aliases","voice_misspellings",
+                           "associated_contacts","associated_entities",
+                           "associated_land_proposals","status","notes"],
+        "land_proposals": ["canonical_name","aliases","voice_misspellings",
+                           "location","entity","associated_contacts",
+                           "associated_projects","status","notes"],
+        "entities":       ["canonical_name","aliases","voice_misspellings",
+                           "type","associated_contacts","associated_projects","notes"],
     }
 
-    import json as _json
     all_ok = True
     for tab_name, headers in TABS.items():
-        if tab_name in existing_titles:
+        if tab_name in existing:
             print(f"  ✓ Tab already exists: {tab_name}")
             continue
-
-        # Create the tab
-        body = _json.dumps({"requests": [{"addSheet": {"properties": {"title": tab_name}}}]})
         try:
-            r = subprocess.run(
-                _find_gws_binary() + ["sheets", "spreadsheets", "batchUpdate",
-                 "--spreadsheetId", SHEET_ID, "--body", body],
-                capture_output=True, text=True, env=env, timeout=30
-            )
-            if r.returncode != 0:
-                print(f"  ✗ Could not create tab '{tab_name}': {r.stderr[:200]}")
-                all_ok = False
-                continue
+            svc.spreadsheets().batchUpdate(
+                spreadsheetId=SHEET_ID,
+                body={"requests": [{"addSheet": {"properties": {"title": tab_name}}}]}
+            ).execute()
             print(f"  ✓ Created tab: {tab_name}")
         except Exception as e:
-            print(f"  ✗ Error creating tab '{tab_name}': {e}")
+            print(f"  ✗ Could not create tab '{tab_name}': {e}")
             all_ok = False
             continue
 
-        # Write headers to row 1
         hdr_range = f"{tab_name}!A1:{chr(ord('A') + len(headers) - 1)}1"
-        hdr_body = _json.dumps({"values": [headers]})
         try:
-            r = subprocess.run(
-                _find_gws_binary() + ["sheets", "values", "update",
-                 "--spreadsheetId", SHEET_ID,
-                 "--range", hdr_range,
-                 "--valueInputOption", "RAW",
-                 "--body", hdr_body],
-                capture_output=True, text=True, env=env, timeout=30
-            )
-            if r.returncode != 0:
-                print(f"  ✗ Could not write headers to '{tab_name}': {r.stderr[:200]}")
-                all_ok = False
-            else:
-                print(f"  ✓ Headers written to: {tab_name}")
+            svc.spreadsheets().values().update(
+                spreadsheetId=SHEET_ID, range=hdr_range,
+                valueInputOption="RAW",
+                body={"values": [headers]}
+            ).execute()
+            print(f"  ✓ Headers written to: {tab_name}")
         except Exception as e:
-            print(f"  ✗ Error writing headers for '{tab_name}': {e}")
+            print(f"  ✗ Could not write headers for '{tab_name}': {e}")
             all_ok = False
 
     if all_ok:
@@ -490,18 +391,11 @@ def setup_registry_sheet():
 
 
 if __name__ == "__main__":
-    # Log gws binary resolution so it's visible in Railway deploy logs
-    gws_cmd = _find_gws_binary()
-    print(f"\n✓ GWS binary resolved to: {' '.join(gws_cmd)}")
-
     # Setup OAuth credentials first
     oauth_success = setup_credentials()
 
-    # Clean up skills that were removed from the bundled set
+    # Clean up any stale skills that reference deleted scripts
     cleanup_stale_skills()
-
-    # Symlink official GWS skills
-    skills_success = symlink_gws_skills()
 
     # Create entity registry tabs in contacts sheet (idempotent — skips existing tabs)
     setup_registry_sheet()

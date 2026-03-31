@@ -38,6 +38,9 @@ dependencies = [
   "platformdirs",
   # Skills Hub (GitHub App JWT auth — optional, only needed for bot identity)
   "PyJWT[crypto]",
+  # Google Workspace — direct Python API (Gmail, Drive, Calendar, Sheets, Docs)
+  "google-auth>=2.0.0",
+  "google-api-python-client>=2.0.0",
 ]
 
 [project.optional-dependencies]
