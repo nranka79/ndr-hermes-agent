@@ -324,6 +324,57 @@ def _handle_sheets(parts: list, account_email: str) -> str:
     return f"Error: unsupported sheets operation '{resource} {action}'"
 
 
+def _build_event_body(body: dict, flags: dict, existing: dict | None = None) -> dict | str:
+    """
+    Build or enrich a Calendar event body from flags + optional existing event.
+    Returns the body dict, or an error string if required fields are missing.
+    """
+    import datetime as _dt
+
+    # Start with existing event fields so update preserves them
+    merged = dict(existing) if existing else {}
+    merged.update(body)
+
+    # Individual convenience flags override body
+    for field in ("summary", "description", "location"):
+        if field in flags:
+            merged[field] = flags[field]
+
+    # Timezone shortcut: --timeZone Asia/Kolkata etc.
+    tz = flags.get("timeZone") or flags.get("timezone")
+
+    # Build start
+    if "start" not in merged and "start" in flags:
+        merged["start"] = {"dateTime": flags["start"], "timeZone": tz or "UTC"}
+    elif "start" in merged and tz:
+        if isinstance(merged["start"], dict):
+            merged["start"]["timeZone"] = tz
+
+    # Build / fix end
+    if "end" in flags:
+        merged["end"] = {"dateTime": flags["end"], "timeZone": tz or "UTC"}
+    elif tz and "end" in merged and isinstance(merged["end"], dict):
+        merged["end"]["timeZone"] = tz
+    elif "end" not in merged:
+        dur_min = int(flags.get("duration", 60))
+        start_block = merged.get("start", {})
+        start_str = start_block.get("dateTime") or start_block.get("date", "") if isinstance(start_block, dict) else ""
+        if start_str:
+            try:
+                start_dt = _dt.datetime.fromisoformat(start_str.replace("Z", "+00:00"))
+                end_dt = start_dt + _dt.timedelta(minutes=dur_min)
+                merged["end"] = {
+                    "dateTime": end_dt.isoformat(),
+                    "timeZone": (merged.get("start", {}) or {}).get("timeZone", "UTC"),
+                }
+            except Exception:
+                return "Error: could not parse start datetime. Use ISO format e.g. 2024-01-15T10:00:00+05:30"
+        elif not existing:
+            return "Error: --start required (ISO datetime, e.g. 2024-01-15T10:00:00+05:30). Use --timeZone Asia/Kolkata for IST."
+
+    return merged
+
+
 def _handle_calendar(parts: list, account_email: str) -> str:
     """calendar <resource> <action> [flags]"""
     svc      = _build("calendar", "v3", account_email)
@@ -347,38 +398,52 @@ def _handle_calendar(parts: list, account_email: str) -> str:
 
         if action in ("insert", "create"):
             body = _json_flag(flags, "body", {})
-            # Allow individual flags to build/supplement the body
-            for field in ("summary", "description", "location"):
-                if field in flags and field not in body:
-                    body[field] = flags[field]
-            # Build start from --start flag if not in body
-            if "start" not in body and "start" in flags:
-                body["start"] = {"dateTime": flags["start"], "timeZone": flags.get("timeZone", "UTC")}
-            # Build end from --end flag, or --duration (minutes) from start, or default 1 hour
-            if "end" not in body:
-                import datetime as _dt
-                dur_min = int(flags.get("duration", 60))
-                if "start" in body:
-                    start_str = body["start"].get("dateTime") or body["start"].get("date", "")
-                    try:
-                        start_dt = _dt.datetime.fromisoformat(start_str.replace("Z", "+00:00"))
-                        end_dt = start_dt + _dt.timedelta(minutes=dur_min)
-                        body["end"] = {"dateTime": end_dt.isoformat(), "timeZone": body["start"].get("timeZone", "UTC")}
-                    except Exception:
-                        return "Error: could not parse --start datetime. Use ISO format e.g. 2024-01-15T10:00:00"
-                else:
-                    return "Error: --start required (e.g. --start 2024-01-15T10:00:00). Optionally --duration in minutes (default 60)."
-            if not body.get("summary"):
-                return "Error: --summary required for event creation."
+            body = _build_event_body(body, flags)
+            if isinstance(body, str):  # error string
+                return body
             result = svc.events().insert(calendarId=cal_id, body=body).execute()
             return json.dumps(result, indent=2)
+
+        if action in ("update", "replace"):
+            event_id = flags.get("eventId") or flags.get("id")
+            if not event_id:
+                return "Error: --eventId required for update"
+            # Fetch existing event first so we preserve unmodified fields
+            existing = svc.events().get(calendarId=cal_id, eventId=event_id).execute()
+            body = _json_flag(flags, "body", {})
+            body = _build_event_body(body, flags, existing=existing)
+            if isinstance(body, str):
+                return body
+            result = svc.events().update(calendarId=cal_id, eventId=event_id, body=body).execute()
+            return json.dumps(result, indent=2)
+
+        if action == "patch":
+            event_id = flags.get("eventId") or flags.get("id")
+            if not event_id:
+                return "Error: --eventId required for patch"
+            body = _json_flag(flags, "body", {})
+            body = _build_event_body(body, flags)
+            if isinstance(body, str):
+                return body
+            result = svc.events().patch(calendarId=cal_id, eventId=event_id, body=body).execute()
+            return json.dumps(result, indent=2)
+
+        if action in ("delete", "remove"):
+            event_id = flags.get("eventId") or flags.get("id")
+            if not event_id:
+                return "Error: --eventId required for delete"
+            svc.events().delete(calendarId=cal_id, eventId=event_id).execute()
+            return json.dumps({"status": "deleted", "eventId": event_id})
 
     if resource == "calendars":
         if action in ("list", ""):
             result = svc.calendarList().list().execute()
             return json.dumps(result, indent=2)
 
-    return f"Error: unsupported calendar operation '{resource} {action}'"
+    return (
+        f"Error: unsupported calendar operation '{resource} {action}'. "
+        "Supported: events list/get/create/update/patch/delete, calendars list"
+    )
 
 
 def _handle_contacts(parts: list, account_email: str) -> str:
@@ -513,6 +578,10 @@ _GWS_SCHEMA = {
                     "  sheets +append --spreadsheet SHEET_ID --range projects "
                     "--values 'Name,,,,,,Active,'\n"
                     "  calendar events list --calendarId primary --params '{\"maxResults\":10}'\n"
+                    "  calendar events create --summary 'Meeting' --start 2026-04-01T09:00:00+05:30 --duration 60 --timeZone Asia/Kolkata\n"
+                    "  calendar events update --eventId EVENT_ID --summary 'New Title' --timeZone Asia/Kolkata\n"
+                    "  calendar events patch --eventId EVENT_ID --start 2026-04-01T10:00:00+05:30 --timeZone Asia/Kolkata\n"
+                    "  calendar events delete --eventId EVENT_ID\n"
                     "  contacts list\n"
                     "  tasks tasks list"
                 ),
