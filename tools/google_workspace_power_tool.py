@@ -347,6 +347,29 @@ def _handle_calendar(parts: list, account_email: str) -> str:
 
         if action in ("insert", "create"):
             body = _json_flag(flags, "body", {})
+            # Allow individual flags to build/supplement the body
+            for field in ("summary", "description", "location"):
+                if field in flags and field not in body:
+                    body[field] = flags[field]
+            # Build start from --start flag if not in body
+            if "start" not in body and "start" in flags:
+                body["start"] = {"dateTime": flags["start"], "timeZone": flags.get("timeZone", "UTC")}
+            # Build end from --end flag, or --duration (minutes) from start, or default 1 hour
+            if "end" not in body:
+                import datetime as _dt
+                dur_min = int(flags.get("duration", 60))
+                if "start" in body:
+                    start_str = body["start"].get("dateTime") or body["start"].get("date", "")
+                    try:
+                        start_dt = _dt.datetime.fromisoformat(start_str.replace("Z", "+00:00"))
+                        end_dt = start_dt + _dt.timedelta(minutes=dur_min)
+                        body["end"] = {"dateTime": end_dt.isoformat(), "timeZone": body["start"].get("timeZone", "UTC")}
+                    except Exception:
+                        return "Error: could not parse --start datetime. Use ISO format e.g. 2024-01-15T10:00:00"
+                else:
+                    return "Error: --start required (e.g. --start 2024-01-15T10:00:00). Optionally --duration in minutes (default 60)."
+            if not body.get("summary"):
+                return "Error: --summary required for event creation."
             result = svc.events().insert(calendarId=cal_id, body=body).execute()
             return json.dumps(result, indent=2)
 
