@@ -2006,6 +2006,31 @@ class GatewayRunner:
             if not found_in_history:
                 message_text = f'[Replying to: "{reply_snippet}"]\n\n{message_text}'
 
+        # ── Noun Resolver middleware ──────────────────────────────────────────
+        # Runs on every message (especially voice). Corrects misheard proper
+        # nouns (people, projects, entities, land proposals) before the agent
+        # sees the text. High-confidence corrections are silent; mid-confidence
+        # ones prepend a note so the agent can mention the substitution.
+        try:
+            from tools.noun_resolver import get_resolver
+            _resolver = get_resolver()
+            if _resolver._index_built:
+                _ctx = [m.get("content", "") for m in history[-5:] if m.get("role") == "user"]
+                _result = _resolver.resolve(message_text, session_context=_ctx)
+                if _result.substitutions:
+                    message_text = _result.corrected_text
+                    _note = "Note: I auto-corrected some voice nouns: " + _result.summary()
+                    message_text = _note + "\n\n" + message_text
+                if _result.needs_confirmation:
+                    _ambiguous = "; ".join(
+                        f"'{n['original']}' (did you mean {n['candidates'][0]['canonical']}?)"
+                        for n in _result.needs_confirmation
+                    )
+                    message_text = f"[Ambiguous nouns detected: {_ambiguous}]\n\n" + message_text
+        except Exception as _e:
+            logger.debug(f"Noun resolver skipped: {_e}")
+        # ─────────────────────────────────────────────────────────────────────
+
         try:
             # Emit agent:start hook
             hook_ctx = {
@@ -2015,7 +2040,7 @@ class GatewayRunner:
                 "message": message_text[:500],
             }
             await self.hooks.emit("agent:start", hook_ctx)
-            
+
             # Run the agent
             agent_result = await self._run_agent(
                 message=message_text,
