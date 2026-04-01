@@ -96,7 +96,6 @@ def _load_credentials(account_email: str):
         client_id=data["client_id"],
         client_secret=data["client_secret"],
         token_uri=_TOKEN_URI,
-        scopes=_SCOPES,
     )
     # Refresh immediately to get a valid access token
     creds.refresh(GoogleRequest())
