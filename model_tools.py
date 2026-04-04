@@ -96,6 +96,7 @@ def _discover_tools():
         "tools.honcho_tools",
         "tools.homeassistant_tool",
         "tools.google_workspace_power_tool",
+        "tools.model_switcher_tool",
     ]
     import importlib
     for mod_name in _modules:

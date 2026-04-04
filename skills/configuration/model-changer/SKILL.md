@@ -32,19 +32,16 @@ Switch the Hermes agent to a different LLM model **mid-session**. The change tak
 
 ## Agent Workflow
 
-When this skill is invoked (user says "switch to X" or "/model-changer X"):
+When the user asks to change/switch models, use the `switch_model` tool directly:
 
-1. **Extract the keyword** from the user's message (MiniMax / Gemini / Nematron / Qwen). Case-insensitive.
+```
+switch_model(model="qwen")
+switch_model(model="gemini")
+switch_model(model="minimax")
+switch_model(model="nematron")
+```
 
-2. **Run the switch script** using the `terminal` tool:
-   ```bash
-   python3 SKILL_DIR/scripts/main.py -- <keyword>
-   ```
-   Replace `<keyword>` with the lowercase model name (e.g. `qwen`, `gemini`, `minimax`, `nematron`).
-
-3. **Confirm to the user**: tell them which model was activated and that it takes effect from the next message.
-
-4. **No further action needed** — the agent loop detects the switch automatically.
+Then confirm to the user which model was activated and that it takes effect from the next message.
 
 ## Notes
 
