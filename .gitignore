@@ -56,6 +56,9 @@ environments/benchmarks/evals/
 
 # Google Workspace Credentials & Tokens
 *-token.json
+*_token.json
+token.json
+new_token.json
 oauth-*.json
 gmail_credentials.json
 workspace_power_token.json
@@ -64,3 +67,9 @@ calendar_token.json
 drive_token.json
 gmail_token.json
 gmail_token_modify.json
+
+# Sensitive local scripts & exported data
+set_oauth_env.sh
+vars.json
+contacts_data.json
+spreadsheet.json
