@@ -1,59 +1,53 @@
 ---
 name: model-changer
 description: |
-  Switches the Hermes agent to a different model/provider mid-session.
-  From the next message onwards, all LLM calls use the new model configuration.
+  Switches the Hermes agent to a different LLM model mid-session.
+  Use this skill whenever the user asks to change, switch, or use a different model/AI
+  (e.g. "switch to Qwen", "use Gemini", "change model to MiniMax", "try Nematron").
+  From the next message onwards, all LLM calls use the new model.
 
-  Invoke by providing a model keyword as an argument.
-
-  Example usages:
-  /model-changer MiniMax
-  /model-changer Gemini
-  /model-changer Nematron
-  /model-changer Qwen
-
+  Supported keywords: MiniMax, Gemini, Nematron, Qwen
+metadata:
+  hermes:
+    tags: [model, switch, llm, provider, qwen, gemini, minimax, nematron, configuration]
 category: configuration
-version: 2.1.0
+version: 2.2.0
 author: ndr@draas.com
 ---
 
 # Model Changer
 
-Switch the Hermes agent to a different model and provider **mid-session**. The model change takes effect immediately for the next message.
+Switch the Hermes agent to a different LLM model **mid-session**. The change takes effect from the next message onwards.
 
-## Model Mappings
+**Trigger phrases:** "switch to Qwen", "use Gemini", "change model to MiniMax", "try Nematron", "/model-changer <keyword>"
 
-| Keyword | Provider | Model |
-|---|---|---|
+## Supported Models
+
+| Keyword | Provider | Model ID |
+|---------|----------|----------|
 | `MiniMax` | MiniMax | Minimax-M2.7 |
 | `Nematron` | OpenRouter | nvidia/nemotron-3-super-120b-a12b:free |
 | `Gemini` | OpenRouter | google/gemini-2.5-flash-lite |
 | `Qwen` | OpenRouter | qwen/qwen3.6-plus:free |
 
-## Usage
+## Agent Workflow
 
-Invoke with one of the model keywords:
+When this skill is invoked (user says "switch to X" or "/model-changer X"):
 
-```
-/model-changer MiniMax
-```
+1. **Extract the keyword** from the user's message (MiniMax / Gemini / Nematron / Qwen). Case-insensitive.
 
-or via the hermes skills interface:
+2. **Run the switch script** using the `terminal` tool:
+   ```bash
+   python3 SKILL_DIR/scripts/main.py -- <keyword>
+   ```
+   Replace `<keyword>` with the lowercase model name (e.g. `qwen`, `gemini`, `minimax`, `nematron`).
 
-```bash
-hermes skills run model-changer -- gemini
-```
+3. **Confirm to the user**: tell them which model was activated and that it takes effect from the next message.
 
-## Behavior
-
-When invoked:
-1. The skill validates the model keyword against supported options
-2. It signals the Hermes agent to switch models
-3. Starting with your next message, all LLM calls use the new model
-4. The model remains active for the rest of the session
+4. **No further action needed** — the agent loop detects the switch automatically.
 
 ## Notes
 
-- Model switching is **immediate** — from the next message onwards
-- You can switch models multiple times in a single session
-- Model preference persists until you switch again or end the session
+- If the keyword is not recognised, list the supported options and ask the user to pick one.
+- You can switch models multiple times in a single session.
+- The model remains active until switched again or the session ends.
