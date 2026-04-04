@@ -4845,6 +4845,70 @@ class AIAgent:
             )
         return None
 
+    def _apply_model_switch_request(self) -> bool:
+        """Check for and apply a model switch request from ~/.hermes/model_switch_request.json.
+
+        Returns True if a model switch was applied, False otherwise.
+
+        This mechanism allows skills (like model-session-starter) to signal the agent
+        to switch models mid-session. The request file is created by the skill and
+        deleted after being processed.
+        """
+        try:
+            request_file = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes")) / "model_switch_request.json"
+
+            if not request_file.exists():
+                return False
+
+            with open(request_file, "r") as f:
+                request_data = json.load(f)
+
+            new_model = request_data.get("model")
+            new_provider = request_data.get("provider")
+
+            if not new_model or not new_provider:
+                logger.warning("Invalid model switch request: missing model or provider")
+                request_file.unlink()  # delete the file
+                return False
+
+            # Apply the model switch
+            old_model = self.model
+            old_provider = self.provider
+            self.model = new_model
+            self.provider = new_provider.lower() if new_provider else "openrouter"
+
+            # Update api_mode based on new provider
+            if self.provider == "anthropic":
+                self.api_mode = "anthropic_messages"
+            elif self.provider == "minimax":
+                self.api_mode = "anthropic_messages"  # MiniMax uses Anthropic-compatible API
+            elif self.provider == "openai-codex":
+                self.api_mode = "codex_responses"
+            else:
+                self.api_mode = "chat_completions"
+
+            # Update base_url if needed for provider-specific endpoints
+            if self.provider == "minimax":
+                # MiniMax typically uses Anthropic-compatible endpoints
+                if not self._base_url_lower.endswith("/anthropic"):
+                    self.base_url = "https://api.minimaxi.chat/v1"
+                    self._base_url = self.base_url
+                    self._base_url_lower = self.base_url.lower()
+
+            if not self.quiet_mode:
+                print(f"🔄 Model switched: {old_provider or 'unknown'} ({old_model}) → {self.provider} ({self.model})")
+                print(f"📋 Starting from the next message, all LLM calls will use the new model.")
+
+            logger.info(f"Model switched from {old_provider}/{old_model} to {self.provider}/{self.model}")
+
+            # Clean up the request file
+            request_file.unlink()
+            return True
+
+        except Exception as e:
+            logger.debug(f"Error applying model switch request: {e}")
+            return False
+
     def _handle_max_iterations(self, messages: list, api_call_count: int) -> str:
         """Request a summary when max iterations are reached. Returns the final response text."""
         print(f"⚠️  Reached maximum iterations ({self.max_iterations}). Requesting summary...")
@@ -6384,9 +6448,13 @@ class AIAgent:
                                 self._vprint(f"  ┊ 💬 {clean}")
                     
                     messages.append(assistant_msg)
-                    
+
                     _msg_count_before_tools = len(messages)
                     self._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
+
+                    # Check for and apply model switch requests from skills
+                    # (e.g., model-session-starter skill)
+                    self._apply_model_switch_request()
 
                     # Refund the iteration if the ONLY tool(s) called were
                     # execute_code (programmatic tool calling).  These are

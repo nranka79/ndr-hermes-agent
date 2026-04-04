@@ -1,4 +1,7 @@
 import sys
+import json
+import os
+from pathlib import Path
 
 MODEL_MAPPINGS = {
     "minimax":  {"provider": "MiniMax",      "model": "Minimax-M2.7"},
@@ -22,10 +25,29 @@ def main():
         sys.exit(1)
 
     cfg = MODEL_MAPPINGS[keyword]
-    cmd = f"hermes chat --model '{cfg['model']}' --provider '{cfg['provider']}'"
 
-    print(f"To start a new session with {cfg['provider']} ({cfg['model']}), run:")
-    print(cmd)
+    # Write model switch request to ~/.hermes/model_switch_request.json
+    # This signals the agent loop to switch models before the next API call
+    hermes_home = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+    hermes_home.mkdir(parents=True, exist_ok=True)
+
+    request_file = hermes_home / "model_switch_request.json"
+    request_data = {
+        "model": cfg["model"],
+        "provider": cfg["provider"],
+        "keyword": keyword.capitalize(),
+        "timestamp": __import__("datetime").datetime.utcnow().isoformat(),
+    }
+
+    try:
+        with open(request_file, "w") as f:
+            json.dump(request_data, f)
+        print(f"✅ Model switched to {cfg['provider']} ({cfg['model']})")
+        print(f"📋 Starting from your next message, all LLM calls will use the new model.")
+        return 0
+    except Exception as e:
+        print(f"❌ Error writing model switch request: {e}")
+        sys.exit(1)
 
 
 if __name__ == "__main__":

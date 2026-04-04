@@ -1,37 +1,30 @@
 #!/usr/bin/env python3
 """
-Google Workspace Manager Tool — direct Python API calls via google-api-python-client.
+Google Workspace Manager Tool — thin facade over tools/gws/ package.
 
-Replaces the gws CLI subprocess approach which had persistent PATH/binary
-installation issues on Railway.  Pure Python: no subprocess, no PATH
-dependency, no Rust binary, works on every platform.
+All service logic lives in tools/gws/*.py (modular, one file per service).
+This file: availability check, dispatcher, schema, registry.
 
-Supported command prefix → API mapping:
-  gmail   messages list/get/send, threads list, labels list, profile
-  drive   files list/get/create/delete, about
-  sheets  values get/update/append, spreadsheets get/batchUpdate
-  calendar  events list/get/insert, calendars list
-  contacts  people list/get  (People API)
-  tasks   tasklists list, tasks list/insert/update
-  admin   users list/get  (Directory API, admin scope)
+Supported services:
+  gmail     messages / drafts / attachments / threads / labels
+  drive     files / permissions / folders / about
+  sheets    values / spreadsheets / sheet (tabs) / permissions
+  docs      documents / permissions
+  calendar  events / calendars / acl
+  contacts  people / otherContacts
+  tasks     tasks / tasklists
+  admin     users / groups / members  (ndr@draas.com Super Admin only)
 
-Command syntax (same as gws CLI so agent prompts don't change):
-  "<service> <resource> <action> [--flag value ...]"
+Accounts:
+  ndr@draas.com (PRIMARY/default)
+  ndr@ahfl.in
+  nishantranka@gmail.com
 
-Flags:
-  --params    JSON string merged into list/get query params
-  --body      JSON string used as request body for create/update
-  --spreadsheetId   (sheets)
-  --range           (sheets values)
-  --valueInputOption (sheets values update, default USER_ENTERED)
-  --calendarId      (calendar, default "primary")
-  --fileId          (drive)
-  --messageId       (gmail)
-  --userId          (gmail/admin, default "me")
-  --maxResults      integer shortcut (equivalent to --params '{"maxResults":N}')
+OAuth re-authorization needed for:
+  - docs     → requires scope documents (ndr@draas.com only)
+  - admin    → requires scopes admin.directory.user + admin.directory.group (ndr@draas.com only)
 """
 
-import json
 import logging
 import os
 import shlex
@@ -39,484 +32,59 @@ import shlex
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Account credential mapping
+# Import all service handlers
 # ---------------------------------------------------------------------------
 
-ACCOUNTS = {
-    "ndr@draas.com":          "/data/hermes/oauth-draas.json",
-    "nishantranka@gmail.com": "/data/hermes/oauth-gmail.json",
-    "ndr@ahfl.in":            "/data/hermes/oauth-ahfl.json",
-}
-
-# Google OAuth2 token endpoint
-_TOKEN_URI = "https://oauth2.googleapis.com/token"
-
-# Required scopes — broad enough to cover all services
-_SCOPES = [
-    "https://www.googleapis.com/auth/gmail.modify",
-    "https://www.googleapis.com/auth/drive",
-    "https://www.googleapis.com/auth/spreadsheets",
-    "https://www.googleapis.com/auth/calendar",
-    "https://www.googleapis.com/auth/contacts",
-    "https://www.googleapis.com/auth/tasks",
-    "https://www.googleapis.com/auth/admin.directory.user.readonly",
-]
-
+from tools.gws import (
+    handle_gmail,
+    handle_drive,
+    handle_sheets,
+    handle_calendar,
+    handle_contacts,
+    handle_tasks,
+    handle_docs,
+    handle_admin,
+)
+from tools.gws._shared import ACCOUNTS
 
 # ---------------------------------------------------------------------------
-# Credential loading
-# ---------------------------------------------------------------------------
-
-def _load_credentials(account_email: str):
-    """Load and return a google.oauth2.credentials.Credentials from the JSON file."""
-    try:
-        from google.oauth2.credentials import Credentials
-        from google.auth.transport.requests import Request as GoogleRequest
-    except ImportError:
-        raise RuntimeError(
-            "google-auth and google-api-python-client are required. "
-            "Add them to pyproject.toml and redeploy."
-        )
-
-    cred_file = ACCOUNTS.get(account_email)
-    if not cred_file:
-        raise ValueError(f"Unknown account: {account_email}")
-    if not os.path.exists(cred_file):
-        raise FileNotFoundError(
-            f"Credentials file not found at {cred_file}. "
-            "Ensure Railway env vars (DRAAS_OAUTH_*, GMAIL_OAUTH_*, AHFL_OAUTH_*) are set."
-        )
-
-    with open(cred_file) as f:
-        data = json.load(f)
-
-    creds = Credentials(
-        token=None,
-        refresh_token=data["refresh_token"],
-        client_id=data["client_id"],
-        client_secret=data["client_secret"],
-        token_uri=_TOKEN_URI,
-    )
-    # Refresh immediately to get a valid access token
-    creds.refresh(GoogleRequest())
-    return creds
-
-
-def _build(service: str, version: str, account_email: str):
-    """Build and return a Google API service client."""
-    from googleapiclient.discovery import build
-    creds = _load_credentials(account_email)
-    return build(service, version, credentials=creds, cache_discovery=False)
-
-
-# ---------------------------------------------------------------------------
-# Flag parser
-# ---------------------------------------------------------------------------
-
-def _parse_flags(argv: list) -> dict:
-    """Parse --key value pairs from an argv list. Returns dict."""
-    flags = {}
-    i = 0
-    while i < len(argv):
-        tok = argv[i]
-        if tok.startswith("--"):
-            key = tok[2:]
-            if i + 1 < len(argv) and not argv[i + 1].startswith("--"):
-                flags[key] = argv[i + 1]
-                i += 2
-            else:
-                flags[key] = True
-                i += 1
-        else:
-            i += 1
-    return flags
-
-
-def _json_flag(flags: dict, key: str, default=None):
-    """Return parsed JSON from a flag, or default."""
-    raw = flags.get(key)
-    if raw is None:
-        return default
-    if isinstance(raw, (dict, list)):
-        return raw
-    try:
-        return json.loads(raw)
-    except Exception:
-        return default
-
-
-# ---------------------------------------------------------------------------
-# Service handlers
-# ---------------------------------------------------------------------------
-
-def _handle_gmail(parts: list, account_email: str) -> str:
-    """gmail <resource> <action> [flags]"""
-    svc = _build("gmail", "v1", account_email)
-    resource = parts[0] if parts else ""
-    action   = parts[1] if len(parts) > 1 else ""
-    flags    = _parse_flags(parts[2:])
-    user_id  = flags.get("userId", "me")
-    params   = _json_flag(flags, "params", {})
-
-    if flags.get("maxResults"):
-        params.setdefault("maxResults", int(flags["maxResults"]))
-
-    if resource == "messages":
-        if action in ("list", ""):
-            result = svc.users().messages().list(userId=user_id, **params).execute()
-            # Enrich with snippet for readability
-            msgs = result.get("messages", [])
-            enriched = []
-            for m in msgs[:params.get("maxResults", 10)]:
-                detail = svc.users().messages().get(
-                    userId=user_id, id=m["id"],
-                    format="metadata",
-                    metadataHeaders=["From", "To", "Subject", "Date"]
-                ).execute()
-                headers = {h["name"]: h["value"]
-                           for h in detail.get("payload", {}).get("headers", [])}
-                enriched.append({
-                    "id": m["id"],
-                    "threadId": m.get("threadId"),
-                    "subject": headers.get("Subject", "(no subject)"),
-                    "from":    headers.get("From", ""),
-                    "to":      headers.get("To", ""),
-                    "date":    headers.get("Date", ""),
-                    "snippet": detail.get("snippet", ""),
-                })
-            return json.dumps({"messages": enriched, "resultSizeEstimate": result.get("resultSizeEstimate", 0)}, indent=2)
-
-        if action == "get":
-            msg_id = flags.get("id") or flags.get("messageId") or (parts[2] if len(parts) > 2 else None)
-            if not msg_id:
-                return "Error: --id required for messages get"
-            result = svc.users().messages().get(userId=user_id, id=msg_id, **params).execute()
-            return json.dumps(result, indent=2)
-
-        if action == "send":
-            body = _json_flag(flags, "body", {})
-            result = svc.users().messages().send(userId=user_id, body=body).execute()
-            return json.dumps(result, indent=2)
-
-    if resource == "threads":
-        if action in ("list", ""):
-            result = svc.users().threads().list(userId=user_id, **params).execute()
-            return json.dumps(result, indent=2)
-
-    if resource == "labels":
-        if action in ("list", ""):
-            result = svc.users().labels().list(userId=user_id).execute()
-            return json.dumps(result, indent=2)
-
-    if resource in ("profile", "users"):
-        result = svc.users().getProfile(userId=user_id).execute()
-        return json.dumps(result, indent=2)
-
-    return f"Error: unsupported gmail operation '{resource} {action}'"
-
-
-def _handle_drive(parts: list, account_email: str) -> str:
-    """drive <resource> <action> [flags]"""
-    svc      = _build("drive", "v3", account_email)
-    resource = parts[0] if parts else ""
-    action   = parts[1] if len(parts) > 1 else ""
-    flags    = _parse_flags(parts[2:])
-    params   = _json_flag(flags, "params", {})
-
-    if resource == "files":
-        if action in ("list", ""):
-            result = svc.files().list(
-                fields="files(id,name,mimeType,modifiedTime,size,owners,webViewLink)",
-                **params
-            ).execute()
-            return json.dumps(result, indent=2)
-
-        if action == "get":
-            file_id = flags.get("fileId") or flags.get("id")
-            if not file_id:
-                return "Error: --fileId required for drive files get"
-            result = svc.files().get(fileId=file_id, **params).execute()
-            return json.dumps(result, indent=2)
-
-        if action == "delete":
-            file_id = flags.get("fileId") or flags.get("id")
-            if not file_id:
-                return "Error: --fileId required for drive files delete"
-            svc.files().delete(fileId=file_id).execute()
-            return json.dumps({"deleted": file_id})
-
-    if resource == "about":
-        result = svc.about().get(fields="user,storageQuota").execute()
-        return json.dumps(result, indent=2)
-
-    return f"Error: unsupported drive operation '{resource} {action}'"
-
-
-def _handle_sheets(parts: list, account_email: str) -> str:
-    """sheets <resource> <action> [flags]"""
-    svc      = _build("sheets", "v4", account_email)
-    resource = parts[0] if parts else ""
-    action   = parts[1] if len(parts) > 1 else ""
-    flags    = _parse_flags(parts[2:])
-
-    sheet_id = flags.get("spreadsheetId") or flags.get("spreadsheet")
-
-    # sheets values get
-    if resource == "values":
-        if not sheet_id:
-            return "Error: --spreadsheetId required"
-        rng = flags.get("range", "Sheet1!A:Z")
-
-        if action == "get":
-            result = svc.spreadsheets().values().get(
-                spreadsheetId=sheet_id, range=rng
-            ).execute()
-            return json.dumps(result, indent=2)
-
-        if action in ("update", "set"):
-            body = _json_flag(flags, "body", {})
-            value_input = flags.get("valueInputOption", "USER_ENTERED")
-            result = svc.spreadsheets().values().update(
-                spreadsheetId=sheet_id, range=rng,
-                valueInputOption=value_input, body=body
-            ).execute()
-            return json.dumps(result, indent=2)
-
-        if action in ("append", "+append"):
-            body   = _json_flag(flags, "body", {})
-            values = flags.get("values")
-            if values and not body:
-                body = {"values": [values.split(",")]}
-            value_input = flags.get("valueInputOption", "USER_ENTERED")
-            result = svc.spreadsheets().values().append(
-                spreadsheetId=sheet_id, range=rng,
-                valueInputOption=value_input, body=body
-            ).execute()
-            return json.dumps(result, indent=2)
-
-    # sheets +append shortcut (gws CLI style)
-    if resource == "+append":
-        rng    = flags.get("range", "Sheet1")
-        values = flags.get("values", "")
-        body   = {"values": [values.split(",")]} if values else {}
-        result = svc.spreadsheets().values().append(
-            spreadsheetId=sheet_id, range=rng,
-            valueInputOption="USER_ENTERED", body=body
-        ).execute()
-        return json.dumps(result, indent=2)
-
-    # sheets spreadsheets get / batchUpdate
-    if resource == "spreadsheets":
-        if not sheet_id:
-            return "Error: --spreadsheetId required"
-
-        if action == "get":
-            result = svc.spreadsheets().get(spreadsheetId=sheet_id).execute()
-            return json.dumps(result, indent=2)
-
-        if action == "batchUpdate":
-            body = _json_flag(flags, "body", {})
-            result = svc.spreadsheets().batchUpdate(
-                spreadsheetId=sheet_id, body=body
-            ).execute()
-            return json.dumps(result, indent=2)
-
-    return f"Error: unsupported sheets operation '{resource} {action}'"
-
-
-def _build_event_body(body: dict, flags: dict, existing: dict | None = None) -> dict | str:
-    """
-    Build or enrich a Calendar event body from flags + optional existing event.
-    Returns the body dict, or an error string if required fields are missing.
-    """
-    import datetime as _dt
-
-    # Start with existing event fields so update preserves them
-    merged = dict(existing) if existing else {}
-    merged.update(body)
-
-    # Individual convenience flags override body
-    for field in ("summary", "description", "location"):
-        if field in flags:
-            merged[field] = flags[field]
-
-    # Timezone shortcut: --timeZone Asia/Kolkata etc.
-    tz = flags.get("timeZone") or flags.get("timezone")
-
-    # Build start
-    if "start" not in merged and "start" in flags:
-        merged["start"] = {"dateTime": flags["start"], "timeZone": tz or "UTC"}
-    elif "start" in merged and tz:
-        if isinstance(merged["start"], dict):
-            merged["start"]["timeZone"] = tz
-
-    # Build / fix end
-    if "end" in flags:
-        merged["end"] = {"dateTime": flags["end"], "timeZone": tz or "UTC"}
-    elif tz and "end" in merged and isinstance(merged["end"], dict):
-        merged["end"]["timeZone"] = tz
-    elif "end" not in merged:
-        dur_min = int(flags.get("duration", 60))
-        start_block = merged.get("start", {})
-        start_str = start_block.get("dateTime") or start_block.get("date", "") if isinstance(start_block, dict) else ""
-        if start_str:
-            try:
-                start_dt = _dt.datetime.fromisoformat(start_str.replace("Z", "+00:00"))
-                end_dt = start_dt + _dt.timedelta(minutes=dur_min)
-                merged["end"] = {
-                    "dateTime": end_dt.isoformat(),
-                    "timeZone": (merged.get("start", {}) or {}).get("timeZone", "UTC"),
-                }
-            except Exception:
-                return "Error: could not parse start datetime. Use ISO format e.g. 2024-01-15T10:00:00+05:30"
-        elif not existing:
-            return "Error: --start required (ISO datetime, e.g. 2024-01-15T10:00:00+05:30). Use --timeZone Asia/Kolkata for IST."
-
-    return merged
-
-
-def _handle_calendar(parts: list, account_email: str) -> str:
-    """calendar <resource> <action> [flags]"""
-    svc      = _build("calendar", "v3", account_email)
-    resource = parts[0] if parts else ""
-    action   = parts[1] if len(parts) > 1 else ""
-    flags    = _parse_flags(parts[2:])
-    cal_id   = flags.get("calendarId", "primary")
-    params   = _json_flag(flags, "params", {})
-
-    if resource == "events":
-        if action in ("list", ""):
-            result = svc.events().list(calendarId=cal_id, **params).execute()
-            return json.dumps(result, indent=2)
-
-        if action == "get":
-            event_id = flags.get("eventId") or flags.get("id")
-            if not event_id:
-                return "Error: --eventId required"
-            result = svc.events().get(calendarId=cal_id, eventId=event_id).execute()
-            return json.dumps(result, indent=2)
-
-        if action in ("insert", "create"):
-            body = _json_flag(flags, "body", {})
-            body = _build_event_body(body, flags)
-            if isinstance(body, str):  # error string
-                return body
-            result = svc.events().insert(calendarId=cal_id, body=body).execute()
-            return json.dumps(result, indent=2)
-
-        if action in ("update", "replace"):
-            event_id = flags.get("eventId") or flags.get("id")
-            if not event_id:
-                return "Error: --eventId required for update"
-            # Fetch existing event first so we preserve unmodified fields
-            existing = svc.events().get(calendarId=cal_id, eventId=event_id).execute()
-            body = _json_flag(flags, "body", {})
-            body = _build_event_body(body, flags, existing=existing)
-            if isinstance(body, str):
-                return body
-            result = svc.events().update(calendarId=cal_id, eventId=event_id, body=body).execute()
-            return json.dumps(result, indent=2)
-
-        if action == "patch":
-            event_id = flags.get("eventId") or flags.get("id")
-            if not event_id:
-                return "Error: --eventId required for patch"
-            body = _json_flag(flags, "body", {})
-            body = _build_event_body(body, flags)
-            if isinstance(body, str):
-                return body
-            result = svc.events().patch(calendarId=cal_id, eventId=event_id, body=body).execute()
-            return json.dumps(result, indent=2)
-
-        if action in ("delete", "remove"):
-            event_id = flags.get("eventId") or flags.get("id")
-            if not event_id:
-                return "Error: --eventId required for delete"
-            svc.events().delete(calendarId=cal_id, eventId=event_id).execute()
-            return json.dumps({"status": "deleted", "eventId": event_id})
-
-    if resource == "calendars":
-        if action in ("list", ""):
-            result = svc.calendarList().list().execute()
-            return json.dumps(result, indent=2)
-
-    return (
-        f"Error: unsupported calendar operation '{resource} {action}'. "
-        "Supported: events list/get/create/update/patch/delete, calendars list"
-    )
-
-
-def _handle_contacts(parts: list, account_email: str) -> str:
-    """contacts (People API) <resource> <action> [flags]"""
-    svc      = _build("people", "v1", account_email)
-    resource = parts[0] if parts else "people"
-    action   = parts[1] if len(parts) > 1 else "list"
-    flags    = _parse_flags(parts[2:])
-
-    if resource in ("people", "connections", "list", ""):
-        person_fields = flags.get("personFields", "names,emailAddresses,phoneNumbers,organizations")
-        result = svc.people().connections().list(
-            resourceName="people/me",
-            personFields=person_fields,
-            pageSize=int(flags.get("maxResults", 100))
-        ).execute()
-        return json.dumps(result, indent=2)
-
-    return f"Error: unsupported contacts operation '{resource} {action}'"
-
-
-def _handle_tasks(parts: list, account_email: str) -> str:
-    """tasks <resource> <action> [flags]"""
-    svc      = _build("tasks", "v1", account_email)
-    resource = parts[0] if parts else ""
-    action   = parts[1] if len(parts) > 1 else ""
-    flags    = _parse_flags(parts[2:])
-
-    if resource == "tasklists":
-        result = svc.tasklists().list().execute()
-        return json.dumps(result, indent=2)
-
-    if resource == "tasks":
-        list_id = flags.get("tasklist", "@default")
-        if action in ("list", ""):
-            result = svc.tasks().list(tasklist=list_id).execute()
-            return json.dumps(result, indent=2)
-        if action in ("insert", "create"):
-            body = _json_flag(flags, "body", {})
-            result = svc.tasks().insert(tasklist=list_id, body=body).execute()
-            return json.dumps(result, indent=2)
-
-    return f"Error: unsupported tasks operation '{resource} {action}'"
-
-
-# ---------------------------------------------------------------------------
-# Main dispatcher
+# Service dispatch table
 # ---------------------------------------------------------------------------
 
 _SERVICE_HANDLERS = {
-    "gmail":    _handle_gmail,
-    "drive":    _handle_drive,
-    "sheets":   _handle_sheets,
-    "calendar": _handle_calendar,
-    "contacts": _handle_contacts,
-    "tasks":    _handle_tasks,
+    "gmail":    handle_gmail,
+    "drive":    handle_drive,
+    "sheets":   handle_sheets,
+    "calendar": handle_calendar,
+    "contacts": handle_contacts,
+    "tasks":    handle_tasks,
+    "docs":     handle_docs,
+    "admin":    handle_admin,
 }
 
+
+# ---------------------------------------------------------------------------
+# Availability check
+# ---------------------------------------------------------------------------
 
 def _check_gws_available() -> bool:
     """Tool is available when the primary credential file exists and google-auth is installed."""
     if not os.path.exists(ACCOUNTS["ndr@draas.com"]):
         return False
     try:
-        import google.oauth2.credentials  # noqa: F401
-        import googleapiclient           # noqa: F401
+        import google.oauth2.credentials   # noqa: F401
+        import googleapiclient             # noqa: F401
         return True
     except ImportError:
         return False
 
 
+# ---------------------------------------------------------------------------
+# Main dispatcher
+# ---------------------------------------------------------------------------
+
 def _handle_google_workspace_manager(args: dict, **kwargs) -> str:
-    """Dispatch a gws-style command to the appropriate Google API."""
+    """Dispatch a gws-style command string to the appropriate Google API handler."""
     command       = args.get("command", "").strip()
     account_email = args.get("account_email") or "ndr@draas.com"
     extra_args    = args.get("args", "") or ""
@@ -548,18 +116,17 @@ def _handle_google_workspace_manager(args: dict, **kwargs) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Schema
+# Tool schema
 # ---------------------------------------------------------------------------
 
 _GWS_SCHEMA = {
     "name": "google_workspace_manager",
     "description": (
-        "Access Google Workspace services: Gmail, Drive, Calendar, Sheets, Contacts, Tasks. "
-        "Use the 'command' field with the service name followed by resource and action, "
-        "e.g. 'gmail messages list', 'drive files list', "
-        "'sheets values get --spreadsheetId ID --range Sheet1!A:Z', "
-        "'calendar events list --calendarId primary'. "
-        "Mandatory for all Workspace operations — do not write custom Python scripts."
+        "Access Google Workspace services: Gmail, Drive, Docs, Calendar, Sheets, "
+        "Contacts, Tasks, and Admin Directory. "
+        "Use the 'command' field with service + resource + action + flags. "
+        "MANDATORY for all Workspace operations — never write custom Python scripts. "
+        "Default account is ndr@draas.com unless specified."
     ),
     "parameters": {
         "type": "object",
@@ -567,35 +134,92 @@ _GWS_SCHEMA = {
             "command": {
                 "type": "string",
                 "description": (
-                    "Service + resource + action + flags. Examples:\n"
+                    "Service + resource + action + flags. Examples by service:\n"
+                    "# GMAIL — messages\n"
                     "  gmail messages list --params '{\"maxResults\":20,\"q\":\"is:unread\"}'\n"
-                    "  gmail messages list --params '{\"maxResults\":10,\"q\":\"after:2026/03/31\"}'\n"
-                    "  gmail messages get --id MESSAGE_ID\n"
+                    "  gmail messages get --id MSG_ID\n"
+                    "  gmail messages send-with-attachment --to alice@example.com --subject \"Hi\" --body \"Hello\" --attachmentPath /tmp/file.pdf\n"
+                    "  gmail messages delete --id MSG_ID\n"
+                    "  gmail messages modify --id MSG_ID --addLabels '[\"READ\"]'\n"
+                    "# GMAIL — drafts\n"
+                    "  gmail drafts list\n"
+                    "  gmail drafts create --to alice@example.com --subject \"Draft\" --body \"Hello\"\n"
+                    "  gmail drafts send --id DRAFT_ID\n"
+                    "  gmail drafts delete --id DRAFT_ID\n"
+                    "# GMAIL — attachments\n"
+                    "  gmail attachments extract --messageId MSG_ID --toDrive\n"
+                    "# DRIVE — files\n"
                     "  drive files list --params '{\"q\":\"name contains \\\"report\\\"\"}'\n"
+                    "  drive files create --name \"report.txt\" --mimeType text/plain\n"
+                    "  drive files create --name \"New Doc\" --googleMime application/vnd.google-apps.document\n"
+                    "  drive files update --fileId ID --name \"renamed.txt\"\n"
+                    "  drive files copy --fileId ID --name \"Copy\"\n"
+                    "  drive files move --fileId ID --folderId FOLDER_ID\n"
+                    "  drive files delete --fileId ID\n"
+                    "# DRIVE — permissions (sharing)\n"
+                    "  drive permissions list --fileId ID\n"
+                    "  drive permissions create --fileId ID --email alice@example.com --role writer\n"
+                    "  drive permissions update --fileId ID --permissionId PERM_ID --role reader\n"
+                    "  drive permissions delete --fileId ID --permissionId PERM_ID\n"
+                    "# DOCS — documents\n"
+                    "  docs documents create --title \"Meeting Notes\"\n"
+                    "  docs documents get --documentId ID\n"
+                    "  docs documents batchUpdate --documentId ID --body '{\"requests\":[{\"insertText\":{\"location\":{\"index\":1},\"text\":\"Hello\"}}]}'\n"
+                    "  docs documents rename --documentId ID --name \"New Title\"\n"
+                    "  docs documents export --documentId ID --mimeType text/plain\n"
+                    "  docs permissions create --documentId ID --email alice@example.com --role writer\n"
+                    "  docs permissions delete --documentId ID --permissionId PERM_ID\n"
+                    "# SHEETS — values\n"
                     "  sheets values get --spreadsheetId SHEET_ID --range contacts!A:Z\n"
-                    "  sheets values update --spreadsheetId SHEET_ID --range Sheet1!A1 "
-                    "--body '{\"values\":[[\"hello\"]]}'\n"
-                    "  sheets +append --spreadsheet SHEET_ID --range projects "
-                    "--values 'Name,,,,,,Active,'\n"
+                    "  sheets values update --spreadsheetId SHEET_ID --range Sheet1!A1 --body '{\"values\":[[\"hello\"]]}'\n"
+                    "  sheets values append --spreadsheetId SHEET_ID --range projects --body '{\"values\":[[\"Name\"]]}'\n"
+                    "  sheets values clear --spreadsheetId SHEET_ID --range Sheet1!A1:Z100\n"
+                    "  sheets +append --spreadsheet SHEET_ID --range projects --values 'Name,,Active'\n"
+                    "# SHEETS — management\n"
+                    "  sheets spreadsheets create --title \"Q2 Budget\"\n"
+                    "  sheets sheet list --spreadsheetId SHEET_ID\n"
+                    "  sheets sheet add --spreadsheetId SHEET_ID --title \"April\"\n"
+                    "  sheets sheet delete --spreadsheetId SHEET_ID --sheetId 123456789\n"
+                    "  sheets sheet rename --spreadsheetId SHEET_ID --sheetId 123456789 --title \"March\"\n"
+                    "  sheets permissions create --spreadsheetId SHEET_ID --email alice@example.com --role writer\n"
+                    "# CALENDAR\n"
                     "  calendar events list --calendarId primary --params '{\"maxResults\":10}'\n"
                     "  calendar events create --summary 'Meeting' --start 2026-04-01T09:00:00+05:30 --duration 60 --timeZone Asia/Kolkata\n"
                     "  calendar events update --eventId EVENT_ID --summary 'New Title' --timeZone Asia/Kolkata\n"
-                    "  calendar events patch --eventId EVENT_ID --start 2026-04-01T10:00:00+05:30 --timeZone Asia/Kolkata\n"
+                    "  calendar events patch --eventId EVENT_ID --start 2026-04-01T10:00:00+05:30\n"
                     "  calendar events delete --eventId EVENT_ID\n"
+                    "  calendar calendars insert --summary 'Work Calendar' --timeZone Asia/Kolkata\n"
+                    "  calendar acl create --calendarId ID --email bob@example.com --role reader\n"
+                    "  calendar acl delete --calendarId ID --ruleId RULE_ID\n"
+                    "# CONTACTS\n"
                     "  contacts list\n"
-                    "  tasks tasks list"
+                    "  contacts people create --name 'Alice Smith' --email alice@example.com\n"
+                    "  contacts people search --query 'Alice'\n"
+                    "  contacts people delete --resourceName people/ID\n"
+                    "# TASKS\n"
+                    "  tasks tasklists list\n"
+                    "  tasks tasks list\n"
+                    "  tasks tasks insert --title 'Review contract'\n"
+                    "  tasks tasks complete --id TASK_ID\n"
+                    "  tasks tasks delete --id TASK_ID\n"
+                    "# ADMIN (ndr@draas.com Super Admin only)\n"
+                    "  admin users list --domain draas.com\n"
+                    "  admin users create --body '{\"primaryEmail\":\"new@draas.com\",\"name\":{\"givenName\":\"First\",\"familyName\":\"Last\"},\"password\":\"Pass123!\"}'\n"
+                    "  admin groups list\n"
+                    "  admin members add --groupKey group@draas.com --email user@draas.com --role MEMBER\n"
                 ),
             },
             "account_email": {
                 "type": "string",
                 "enum": ["ndr@draas.com", "nishantranka@gmail.com", "ndr@ahfl.in"],
                 "description": (
-                    "Account to use. "
-                    "ndr@draas.com — default, use for 'my email/drive/calendar/documents' or no qualifier; "
-                    "voice variants: draas/drast/drus/dross/DRaaS all map here. "
-                    "ndr@ahfl.in — use for 'AHFL email/drive/calendar'. "
-                    "nishantranka@gmail.com — use for 'gmail' or 'personal email'. "
-                    "Ask if ambiguous."
+                    "Account to use. Default: ndr@draas.com. "
+                    "ndr@draas.com — PRIMARY. Use for 'my email', 'my drive', 'my calendar', "
+                    "'my documents', 'my contacts', or when no qualifier is given. "
+                    "Voice variants draas/drast/drus/dross/DRaaS all map here. "
+                    "ndr@ahfl.in — use for 'AHFL email/drive/calendar/docs'. "
+                    "nishantranka@gmail.com — use for 'gmail', 'personal email', 'personal drive'. "
+                    "Do NOT ask which account — default to ndr@draas.com unless clearly specified otherwise."
                 ),
             },
             "args": {

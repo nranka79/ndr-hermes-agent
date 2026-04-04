@@ -38,6 +38,11 @@ SCOPES = [
     "https://www.googleapis.com/auth/calendar",
     "https://www.googleapis.com/auth/contacts",
     "https://www.googleapis.com/auth/tasks",
+    # Google Docs API (Phase 3 — required for docs documents create/get/batchUpdate)
+    "https://www.googleapis.com/auth/documents",
+    # Admin Directory write access (Phase 6 — ndr@draas.com Super Admin only)
+    "https://www.googleapis.com/auth/admin.directory.user",
+    "https://www.googleapis.com/auth/admin.directory.group",
     "openid",
     "email",
     "profile",
