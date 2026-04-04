@@ -66,6 +66,8 @@ _HERMES_CORE_TOOLS = [
     "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
     # Google Workspace Power tool (Multi-Account Multi-Product)
     "google_workspace_manager",
+    # Mid-session model/provider switching
+    "switch_model",
 ]
 
 
