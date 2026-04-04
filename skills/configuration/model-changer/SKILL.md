@@ -1,24 +1,25 @@
 ---
-name: model-session-starter
+name: model-changer
 description: |
-  Switches the Hermes agent to a different model/provider for the current session.
+  Switches the Hermes agent to a different model/provider mid-session.
   From the next message onwards, all LLM calls use the new model configuration.
 
   Invoke by providing a model keyword as an argument.
 
   Example usages:
-  /model-session-starter MiniMax
-  /model-session-starter Gemini
-  /model-session-starter Nematron
+  /model-changer MiniMax
+  /model-changer Gemini
+  /model-changer Nematron
+  /model-changer Qwen
 
 category: configuration
-version: 2.0.0
+version: 2.1.0
 author: ndr@draas.com
 ---
 
-# Model Session Starter
+# Model Changer
 
-Switch the Hermes agent to a different model and provider **in the current session**. The model change takes effect immediately for the next message.
+Switch the Hermes agent to a different model and provider **mid-session**. The model change takes effect immediately for the next message.
 
 ## Model Mappings
 
@@ -27,19 +28,20 @@ Switch the Hermes agent to a different model and provider **in the current sessi
 | `MiniMax` | MiniMax | Minimax-M2.7 |
 | `Nematron` | OpenRouter | nvidia/nemotron-3-super-120b-a12b:free |
 | `Gemini` | OpenRouter | google/gemini-2.5-flash-lite |
+| `Qwen` | OpenRouter | qwen/qwen3.6-plus:free |
 
 ## Usage
 
 Invoke with one of the model keywords:
 
 ```
-/model-session-starter MiniMax
+/model-changer MiniMax
 ```
 
 or via the hermes skills interface:
 
 ```bash
-hermes skills run model-session-starter -- gemini
+hermes skills run model-changer -- gemini
 ```
 
 ## Behavior
@@ -53,6 +55,5 @@ When invoked:
 ## Notes
 
 - Model switching is **immediate** — from the next message onwards
-- The previous model remains in the background for fallback if needed
 - You can switch models multiple times in a single session
 - Model preference persists until you switch again or end the session
