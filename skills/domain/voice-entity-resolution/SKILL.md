@@ -1,7 +1,7 @@
 ---
 name: voice-entity-resolution
-description: Handles voice message proper noun resolution. Middleware auto-corrects misheard names before the agent sees the transcript. Agent reacts to correction notes, learns from user feedback using the noun_learner tool, and adds new registry entries using google_workspace_manager.
-version: 2.0.0
+description: Handles voice message proper noun resolution. Middleware auto-corrects misheard names before the agent sees the transcript. Agent presents proposed learnings for user confirmation, writes approved learnings via noun_learner, then processes the actual message. Never processes message content before the learning step is resolved.
+version: 3.0.0
 author: ndr
 metadata:
   hermes:
@@ -39,44 +39,104 @@ You receive the **already-corrected transcript** with any notes prepended.
 
 ---
 
-## 3. Reading the Correction Notes
+## 3. Your 3-Step Response to Every Corrected Voice Message
 
-The middleware prepends structured notes to the transcript when substitutions were made:
-
-```
-✅ Auto-corrected: 'Manor'→'Manohar', 'RVK'→'Ranjeeth Kumar'
-
-⚠️ Best-guess: 'Sunrise'→'Sunrise Hills Phase 1'
-
-[original transcript with substitutions applied]
-```
-
-**`✅ Auto-corrected`** — high confidence (≥ 0.92). Silently correct; no need to mention unless relevant.
-
-**`⚠️ Best-guess`** — mid confidence (0.75–0.91). Mention the substitution naturally:
-> "I've understood 'Sunrise' as **Sunrise Hills Phase 1** — let me know if you meant a different project."
-
-If no notes are prepended, all nouns were either clear or unresolved. Proceed normally.
+When the message contains a `── PROPOSED LEARNINGS ──` block, follow this exact sequence.
+**Do NOT process the message content until Step 3.**
 
 ---
 
-## 4. Learning from User Corrections
+### Step 1 — Present corrections and proposed learnings
 
-When the user says a name was wrong (e.g., "that should be Phase 2 not Phase 1", "I meant Ranjeeth not Ranjit"):
+Present both the corrections and the proposed learnings to the user in plain language:
 
-1. Identify the row from the resolver's substitution notes (the `row` field)
-2. Call `noun_learner` to record the misspelling so it resolves correctly next time:
+> I made the following corrections to your voice message:
+> - ✅ **'Manor'** → Manohar Singh *(corrected)*
+> - ⚠️ **'Sunrise'** → Sunrise Hills Phase 1 *(best guess — let me know if wrong)*
+>
+> I'd also like to save these learnings to the registry so they resolve correctly next time:
+> 1. Save "Manor" as a known voice misspelling for **Manohar Singh**
+> 2. Save "Sunrise" as a known voice misspelling for **Sunrise Hills Phase 1**
+>
+> Reply **'learn'** to save all, **'skip'** to skip, or tell me which ones to change.
+
+**Formatting rules for Step 1:**
+- `✅` corrections: describe as "corrected"
+- `⚠️` corrections: flag as "best guess", invite the user to correct if wrong
+- `learn_correction` proposals: "Save 'X' as a known voice misspelling for **Canonical**"
+- `add_alias` proposals: "Save 'X' as a short alias for **Canonical**"
+- Do NOT begin processing the actual message content yet
+
+---
+
+### Step 2 — Handle the user's response
+
+**'learn' / 'yes' / 'approve' / 'save' / 'ok' (or any equivalent):**
+
+Call `noun_learner` for each item in the PROPOSED LEARNINGS block. Parse each line by splitting on ` | `:
+- Fields: `action`, `sheet=TYPE`, `row=ROW`, `original="TEXT"`, `canonical="CANONICAL"`
+- For `learn_correction`: `noun_learner(action="learn_correction", sheet_type=TYPE, row=ROW, misspelling=TEXT)`
+- For `add_alias`: `noun_learner(action="add_alias", sheet_type=TYPE, row=ROW, alias=TEXT)`
+
+Confirm: "Saved. All learnings written to the registry."
+
+**'skip' / 'no' / 'don't save' (or any equivalent):**
+
+Do not call `noun_learner` at all.
+Say: "Understood, nothing saved."
+
+**Modification input (e.g. "skip #2", "only save #1", "change #1 to 'Manorhouse'"):**
+- "skip #2" → remove item 2, write the rest
+- "only save #1" → write only item 1, skip all others
+- "change #1 to X" → use X as the misspelling/alias value for item 1 instead
+
+State the adjusted plan: "I'll save [adjusted list]. Shall I proceed?"
+On confirmation, write the adjusted set. Confirm: "Done."
+
+---
+
+### Step 3 — Process the actual message
+
+Process the corrected transcript — the text below `── END LEARNINGS ──` (or below the correction notes if no PROPOSED LEARNINGS block existed). This is the user's actual request. Answer it, take actions, use other skills and tools as needed.
+
+**If there is no PROPOSED LEARNINGS block** (no corrections were made): skip directly to this step and process the message without any confirmation step.
+
+---
+
+### Quick reference: parsing the PROPOSED LEARNINGS block
+
+```
+1. learn_correction | sheet=contacts | row=42 | original="Manor" | canonical="Manohar Singh"
+2. add_alias | sheet=projects | row=4 | original="SLP" | canonical="Saveganapalli Land Partners"
+```
+
+Line 1 → `noun_learner(action="learn_correction", sheet_type="contacts", row=42, misspelling="Manor")`
+
+Line 2 → `noun_learner(action="add_alias", sheet_type="projects", row=4, alias="SLP")`
+
+---
+
+## 4. Learning from User Corrections (Reactive)
+
+> **Note:** The 3-step flow in Section 3 handles proactive learning after every voice correction.
+> Use this section only when the user explicitly corrects a name AFTER the initial flow —
+> e.g., "actually that should be Phase 2 not Phase 1", or "you got that name wrong, it's Ranjeeth".
+
+When the user says a name was wrong:
+
+1. Identify the correct canonical name and the row it's on
+2. Call `noun_learner` to record the correction:
 
 ```
 noun_learner(
   action="learn_correction",
   sheet_type="contacts",   # or: projects, land_proposals, entities, topics
-  row=42,                  # row number from the resolver note
+  row=42,                  # row number from earlier resolver note
   misspelling="Manor"      # the word Whisper produced
 )
 ```
 
-3. Confirm to the user: "Got it — I've saved 'Manor' as a known misspelling for **Manohar**. It'll resolve correctly next time."
+3. Confirm: "Got it — I've saved 'Manor' as a known misspelling for **Manohar Singh**. It'll resolve correctly next time."
 
 ### Other noun_learner actions
 
@@ -155,6 +215,9 @@ After appending, call `noun_learner(action="learn_correction", ...)` if the user
 
 ## 7. Rules Checklist
 
+- **ALWAYS** present PROPOSED LEARNINGS for user confirmation before processing any voice message content
+- **NEVER** call `noun_learner` in the background without user confirmation
+- **NEVER** process the message content before the learning step is resolved (approved or skipped)
 - **NEVER** read the Google Sheet to look up names on voice messages — the resolver already did it
 - **NEVER** block on an unresolved noun — proceed with the transcript as-is and note it
 - **ALWAYS** mention `⚠️ Best-guess` substitutions to the user so they can correct them

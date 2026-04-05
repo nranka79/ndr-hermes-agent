@@ -8,6 +8,7 @@ Toolset: google_workspace
 
 Actions:
   learn_correction     — add a voice misspelling to the misspellings column
+  add_alias            — add a short abbreviation alias (e.g. SLP, RO, DRA)
   update_associations  — update associated contacts/projects/entities/land
   append_history       — append a summary line to conversation_history column
   increment_score      — bump contact_score for a resolved contact
@@ -44,18 +45,21 @@ SHEET_WRITE_COLS = {
         "associated_entities":  "E",
         "associated_land":      "F",
         "conversation_history": "I",
+        "alias":                "B",
     },
     "land_proposals": {
         "voice_misspellings":   "C",
         "associated_contacts":  "F",
         "associated_projects":  "G",
         "conversation_history": "J",
+        "alias":                "B",
     },
     "entities": {
         "voice_misspellings":   "C",
         "associated_contacts":  "E",
         "associated_projects":  "F",
         "conversation_history": "H",
+        "alias":                "B",
     },
     "topics": {
         "voice_misspellings":    "C",
@@ -64,6 +68,7 @@ SHEET_WRITE_COLS = {
         "associated_land":       "H",
         "associated_entities":   "I",
         "conversation_history":  "J",
+        "alias":                 "B",
     },
 }
 
@@ -166,6 +171,46 @@ def _learn_correction(args: dict) -> str:
         return f"Learned: '{misspelling}' added to {sheet_type} row {row} misspellings"
     except Exception as e:
         return f"Error writing misspelling: {e}"
+
+
+def _add_alias(args: dict) -> str:
+    """
+    Add a short alias to the alias column.
+
+    Use when the original voice text is an all-uppercase abbreviation (2–4 chars),
+    e.g. 'SLP', 'RO', 'DRA'. These are intentional short-forms, not misspellings.
+    contacts → column CE  |  projects/land_proposals/entities/topics → column B
+
+    Required: sheet_type, row, alias
+    """
+    sheet_type = args.get("sheet_type", "contacts")
+    alias_val  = args.get("alias", "").strip()
+
+    try:
+        row = int(args.get("row", 0))
+    except (ValueError, TypeError):
+        return json.dumps({"success": False, "error": "row must be an integer"})
+    if row < 2:
+        return json.dumps({"success": False, "error": "row must be >= 2 (row 1 is the header)"})
+    if not alias_val:
+        return "Error: alias is required"
+    if sheet_type not in SHEET_WRITE_COLS:
+        return f"Error: unknown sheet_type '{sheet_type}'"
+
+    cols = SHEET_WRITE_COLS[sheet_type]
+    if "alias" not in cols:
+        return f"Error: {sheet_type} has no alias column configured"
+
+    tab = SHEET_TAB_NAMES[sheet_type]
+    col = cols["alias"]
+
+    try:
+        svc = _build_service()
+        _append_to_cell(svc, tab, col, row, alias_val)
+        _trigger_index_rebuild()
+        return f"Alias saved: '{alias_val}' added to {sheet_type} row {row} aliases"
+    except Exception as e:
+        return f"Error writing alias: {e}"
 
 
 def _update_associations(args: dict) -> str:
@@ -291,6 +336,7 @@ def _trigger_index_rebuild():
 
 _ACTIONS = {
     "learn_correction":    _learn_correction,
+    "add_alias":           _add_alias,
     "update_associations": _update_associations,
     "append_history":      _append_history,
     "increment_score":     _increment_score,
@@ -328,15 +374,15 @@ _NOUN_LEARNER_SCHEMA = {
     "description": (
         "Update the NDR Draas Google Contacts spreadsheet with learned noun corrections "
         "and conversation context. Use after resolving a voice noun or when the user "
-        "corrects a misrecognized word. Actions: learn_correction, update_associations, "
-        "append_history, increment_score."
+        "corrects a misrecognized word. Actions: learn_correction, add_alias, "
+        "update_associations, append_history, increment_score."
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["learn_correction", "update_associations", "append_history", "increment_score"],
+                "enum": ["learn_correction", "add_alias", "update_associations", "append_history", "increment_score"],
                 "description": "What to update.",
             },
             "sheet_type": {
@@ -351,6 +397,13 @@ _NOUN_LEARNER_SCHEMA = {
             "misspelling": {
                 "type": "string",
                 "description": "The incorrect voice recognition text to save (for learn_correction).",
+            },
+            "alias": {
+                "type": "string",
+                "description": (
+                    "Short abbreviation to save as a permanent alias (for add_alias action). "
+                    "Use for all-uppercase 2–4 char tokens like 'SLP', 'RO', 'DRA'."
+                ),
             },
             "summary": {
                 "type": "string",

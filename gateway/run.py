@@ -2009,8 +2009,9 @@ class GatewayRunner:
         # ── Noun Resolver middleware (VOICE/AUDIO only) ───────────────────────
         # Only runs for voice and audio messages. Corrects misheard proper
         # nouns (people, projects, entities, land proposals, topics) before the
-        # agent sees the transcript. High-confidence corrections are silent;
-        # mid-confidence ones prepend a note so the agent can mention it.
+        # agent sees the transcript. After corrections, builds a PROPOSED
+        # LEARNINGS block so the agent can present proposed registry updates
+        # to the user for approval before processing the message content.
         # Contact usage scores are incremented asynchronously after resolution.
         _is_voice = (
             getattr(event, 'message_type', None) in (MessageType.VOICE, MessageType.AUDIO)
@@ -2039,9 +2040,36 @@ class GatewayRunner:
                                 "⚠️ Best-guess: " + ", ".join(f"'{s['original']}'→'{s['canonical']}'" for s in mid_conf)
                             )
 
+                        # ── Build PROPOSED LEARNINGS block ───────────────────
+                        # Each substitution becomes one learning proposal.
+                        # All-uppercase 2–4 char originals (e.g. SLP, RO, DRA)
+                        # are intentional abbreviations → propose add_alias.
+                        # Everything else → propose learn_correction (misspelling).
+                        _proposals = []
+                        for _i, _s in enumerate(_result.substitutions, start=1):
+                            _orig  = _s.get("original", "")
+                            _canon = _s.get("canonical", "")
+                            _stype = _s.get("type", "contacts")
+                            _row   = _s.get("row", "")
+                            _is_alias = bool(_orig and re.match(r'^[A-Z]{2,4}$', _orig))
+                            _action = "add_alias" if _is_alias else "learn_correction"
+                            _proposals.append(
+                                f'{_i}. {_action} | sheet={_stype} | row={_row} | '
+                                f'original="{_orig}" | canonical="{_canon}"'
+                            )
+                        # ────────────────────────────────────────────────────
+
                         if notes:
                             _note = "\n".join(notes)
-                            message_text = _note + "\n\n" + message_text
+                            if _proposals:
+                                _learn_block = (
+                                    "\n\u2500\u2500 PROPOSED LEARNINGS \u2500\u2500\n"
+                                    + "\n".join(_proposals)
+                                    + "\n\u2500\u2500 END LEARNINGS \u2500\u2500"
+                                )
+                                message_text = _note + _learn_block + "\n\n" + message_text
+                            else:
+                                message_text = _note + "\n\n" + message_text
 
                         # Increment usage score for resolved contacts (background thread)
                         import threading
