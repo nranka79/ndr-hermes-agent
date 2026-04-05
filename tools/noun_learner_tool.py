@@ -57,6 +57,14 @@ SHEET_WRITE_COLS = {
         "associated_projects":  "F",
         "conversation_history": "H",
     },
+    "topics": {
+        "voice_misspellings":    "C",
+        "associated_contacts":   "F",
+        "associated_projects":   "G",
+        "associated_land":       "H",
+        "associated_entities":   "I",
+        "conversation_history":  "J",
+    },
 }
 
 SHEET_TAB_NAMES = {
@@ -64,6 +72,7 @@ SHEET_TAB_NAMES = {
     "projects":       "projects",
     "land_proposals": "land_proposals",
     "entities":       "entities",
+    "topics":         "topics",
 }
 
 
@@ -129,10 +138,16 @@ def _learn_correction(args: dict) -> str:
     Required: sheet_type, row, misspelling
     """
     sheet_type  = args.get("sheet_type", "contacts")
-    row         = int(args.get("row", 0))
     misspelling = args.get("misspelling", "").strip()
 
-    if not row or not misspelling:
+    try:
+        row = int(args.get("row", 0))
+    except (ValueError, TypeError):
+        return json.dumps({"success": False, "error": "row must be an integer"})
+    if row < 2:
+        return json.dumps({"success": False, "error": "row must be >= 2 (row 1 is the header)"})
+
+    if not misspelling:
         return "Error: row and misspelling are required"
     if sheet_type not in SHEET_WRITE_COLS:
         return f"Error: unknown sheet_type '{sheet_type}'"
@@ -161,10 +176,13 @@ def _update_associations(args: dict) -> str:
     Optional: contacts, projects, entities, land_proposals (comma-sep strings)
     """
     sheet_type = args.get("sheet_type", "contacts")
-    row        = int(args.get("row", 0))
 
-    if not row:
-        return "Error: row is required"
+    try:
+        row = int(args.get("row", 0))
+    except (ValueError, TypeError):
+        return json.dumps({"success": False, "error": "row must be an integer"})
+    if row < 2:
+        return json.dumps({"success": False, "error": "row must be >= 2 (row 1 is the header)"})
 
     cols = SHEET_WRITE_COLS.get(sheet_type, {})
     tab  = SHEET_TAB_NAMES.get(sheet_type, "")
@@ -202,11 +220,17 @@ def _append_history(args: dict) -> str:
     Required: sheet_type, row, summary
     """
     sheet_type = args.get("sheet_type", "contacts")
-    row        = int(args.get("row", 0))
     summary    = args.get("summary", "").strip()
 
-    if not row or not summary:
-        return "Error: row and summary are required"
+    try:
+        row = int(args.get("row", 0))
+    except (ValueError, TypeError):
+        return json.dumps({"success": False, "error": "row must be an integer"})
+    if row < 2:
+        return json.dumps({"success": False, "error": "row must be >= 2 (row 1 is the header)"})
+
+    if not summary:
+        return "Error: summary is required"
 
     cols = SHEET_WRITE_COLS.get(sheet_type, {})
     tab  = SHEET_TAB_NAMES.get(sheet_type, "")
@@ -221,6 +245,7 @@ def _append_history(args: dict) -> str:
         current = _read_cell(svc, tab, cols["conversation_history"], row)
         updated = (current + "\n" + entry).strip() if current else entry
         _write_cell(svc, tab, cols["conversation_history"], row, updated)
+        _trigger_index_rebuild()
         return f"History appended to {sheet_type} row {row}"
     except Exception as e:
         return f"Error appending history: {e}"
@@ -233,11 +258,17 @@ def _increment_score(args: dict) -> str:
     Required: row
     Optional: amount (default 1)
     """
-    row    = int(args.get("row", 0))
-    amount = int(args.get("amount", 1))
+    try:
+        row = int(args.get("row", 0))
+    except (ValueError, TypeError):
+        return json.dumps({"success": False, "error": "row must be an integer"})
+    if row < 2:
+        return json.dumps({"success": False, "error": "row must be >= 2 (row 1 is the header)"})
 
-    if not row:
-        return "Error: row is required"
+    try:
+        amount = int(args.get("amount", 1))
+    except (ValueError, TypeError):
+        amount = 1
 
     try:
         from tools.noun_resolver import get_resolver
@@ -310,7 +341,7 @@ _NOUN_LEARNER_SCHEMA = {
             },
             "sheet_type": {
                 "type": "string",
-                "enum": ["contacts", "projects", "land_proposals", "entities"],
+                "enum": ["contacts", "projects", "land_proposals", "entities", "topics"],
                 "description": "Which sheet the row is in.",
             },
             "row": {

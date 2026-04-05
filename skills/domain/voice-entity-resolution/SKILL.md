@@ -1,120 +1,163 @@
 ---
 name: voice-entity-resolution
-description: Resolves proper nouns in voice transcripts against the NDR contacts and entity registry before acting. Corrects Whisper misspellings of people, projects, land proposals, and entities, and learns from user corrections.
-version: 1.0.0
+description: Handles voice message proper noun resolution. Middleware auto-corrects misheard names before the agent sees the transcript. Agent reacts to correction notes, learns from user feedback using the noun_learner tool, and adds new registry entries using google_workspace_manager.
+version: 2.0.0
 author: ndr
 metadata:
   hermes:
-    tags: [Voice, NLP, Contacts, Entity, Learning, Registry]
+    tags: [voice, nlp, contacts, entity, learning, registry, noun_resolver, noun_learner]
 ---
 
 # Voice Entity Resolution
 
-When Hermes receives a voice message (via Telegram or any other channel), Whisper often mishears proper nouns — people's names, project names, land proposals, and business entity names. This skill ensures those are always resolved to canonical names before any action is taken, and that the registry is updated whenever the user provides a correction.
+## 1. When This Skill Applies
 
-## Registry Location
+**VOICE AND AUDIO MESSAGES ONLY.**
 
-All entity data lives in a single Google Sheet:
-- **Sheet ID:** `1XbSRAXxPLY4cXMTm2rmvKh11Nx3x0aKUxxuWualoV9g`
-- **Account:** always use `account_email='ndr@draas.com'`
-- **Tabs:**
-  - `contacts` — people (columns: `name`, `cd` = addressed-as, `alias`, `voice_misspellings`, `ca` = projects, `cb` = land proposals)
-  - `projects` — project registry (columns: `canonical_name`, `aliases`, `voice_misspellings`, `associated_contacts`, `associated_entities`, `associated_land_proposals`, `status`, `notes`)
-  - `land_proposals` — land deal registry (columns: `canonical_name`, `aliases`, `voice_misspellings`, `location`, `entity`, `associated_contacts`, `associated_projects`, `status`, `notes`)
-  - `entities` — business entities (columns: `canonical_name`, `aliases`, `voice_misspellings`, `type`, `associated_contacts`, `associated_projects`, `notes`)
+This skill is NEVER triggered for regular text messages. The noun resolver middleware runs automatically before the agent processes any voice/audio transcript. The agent's job is to:
 
-## Protocol: On Every Voice Message
+1. Read and communicate the correction notes prepended to the transcript
+2. Use `noun_learner` to learn from corrections the user provides
+3. Use `google_workspace_manager` to add brand-new registry entries
 
-**Step 1 — Load the registry** (4 gws reads in parallel if possible):
+**Do NOT read the Google Sheet to look up names on voice messages** — the resolver already did that. Reading the sheet manually wastes time and duplicates work.
+
+---
+
+## 2. What Happens Automatically (Before You See the Message)
+
+The noun resolver middleware intercepts every voice/audio message and:
+
+1. Tokenizes the Whisper transcript into 1–3 word candidate phrases
+2. Looks up each phrase in its in-memory index of all 5 registry sheets
+3. For matches ≥ 0.92 confidence: silently replaces in the transcript
+4. For matches 0.75–0.91 confidence: replaces and prepends a note
+5. For matches < 0.75: leaves as-is (unresolved)
+6. Increments the contact's usage score in the background
+
+You receive the **already-corrected transcript** with any notes prepended.
+
+---
+
+## 3. Reading the Correction Notes
+
+The middleware prepends structured notes to the transcript when substitutions were made:
+
+```
+✅ Auto-corrected: 'Manor'→'Manohar', 'RVK'→'Ranjeeth Kumar'
+
+⚠️ Best-guess: 'Sunrise'→'Sunrise Hills Phase 1'
+
+[original transcript with substitutions applied]
+```
+
+**`✅ Auto-corrected`** — high confidence (≥ 0.92). Silently correct; no need to mention unless relevant.
+
+**`⚠️ Best-guess`** — mid confidence (0.75–0.91). Mention the substitution naturally:
+> "I've understood 'Sunrise' as **Sunrise Hills Phase 1** — let me know if you meant a different project."
+
+If no notes are prepended, all nouns were either clear or unresolved. Proceed normally.
+
+---
+
+## 4. Learning from User Corrections
+
+When the user says a name was wrong (e.g., "that should be Phase 2 not Phase 1", "I meant Ranjeeth not Ranjit"):
+
+1. Identify the row from the resolver's substitution notes (the `row` field)
+2. Call `noun_learner` to record the misspelling so it resolves correctly next time:
+
+```
+noun_learner(
+  action="learn_correction",
+  sheet_type="contacts",   # or: projects, land_proposals, entities, topics
+  row=42,                  # row number from the resolver note
+  misspelling="Manor"      # the word Whisper produced
+)
+```
+
+3. Confirm to the user: "Got it — I've saved 'Manor' as a known misspelling for **Manohar**. It'll resolve correctly next time."
+
+### Other noun_learner actions
+
+**Record a conversation interaction:**
+```
+noun_learner(
+  action="append_history",
+  sheet_type="contacts",
+  row=42,
+  summary="Discussed Sunrise Hills Phase 2 land acquisition — follow up next week"
+)
+```
+
+**Update associations between entities:**
+```
+noun_learner(
+  action="update_associations",
+  sheet_type="contacts",
+  row=42,
+  projects="Sunrise Hills Phase 2",
+  land_proposals="Block 7 Whitefield"
+)
+```
+
+**Manually bump a contact's usage score:**
+```
+noun_learner(action="increment_score", row=42, amount=1)
+```
+
+> Note: contact scores are incremented automatically on every voice resolution — use this only for manual adjustments.
+
+---
+
+## 5. Adding New Registry Entries
+
+When the user says "add a new project / entity / land deal / topic", append a row using `google_workspace_manager`:
+
+**New project:**
 ```
 google_workspace_manager(
-  command="sheets values get --spreadsheetId 1XbSRAXxPLY4cXMTm2rmvKh11Nx3x0aKUxxuWualoV9g --range contacts!A:Z",
+  command="sheets values append",
+  spreadsheet_id="1XbSRAXxPLY4cXMTm2rmvKh11Nx3x0aKUxxuWualoV9g",
+  range="projects!A:I",
+  values=[["Project Name", "", "", "", "", "", "", "Active", ""]],
   account_email="ndr@draas.com"
 )
 ```
-Repeat for ranges: `projects!A:Z`, `land_proposals!A:Z`, `entities!A:Z`
 
-**Step 2 — Extract proper nouns** from the raw Whisper transcript:
-- Capitalized words and multi-word sequences
-- Any word that could plausibly be a name (even if lowercased in transcript)
+**New entity / land proposal / topic:** same pattern, target the correct tab and column count.
 
-**Step 3 — Fuzzy match** each extracted noun against:
-1. `voice_misspellings` column (highest priority — exact phonetic variants)
-2. `aliases` / `alias` column
-3. `canonical_name` / `name` column
-4. `cd` (addressed-as) column for contacts
+After appending, call `noun_learner(action="learn_correction", ...)` if the user immediately provides an alias or misspelling for the new entry.
 
-Use loose matching (ignore case, ignore trailing punctuation, allow 1-2 character transpositions).
+---
 
-**Step 4 — Replace and report:**
-- Substitute matched forms with their canonical name in your working understanding
-- Show corrections inline to the user: `"I understood 'Manor' as **Manohar**"`
-- If a word has no match in the registry, proceed as-is (don't block on unknowns)
+## 6. Registry Reference
 
-**Step 5 — Proceed** with the corrected interpretation.
+**Spreadsheet ID:** `1XbSRAXxPLY4cXMTm2rmvKh11Nx3x0aKUxxuWualoV9g`  
+**Account:** always `ndr@draas.com`
 
-## Learning Loop: On User Correction
+| Sheet | Tab name | Key columns |
+|-------|----------|-------------|
+| contacts | `NDR DRAAS Google contacts.csv` | A=first_name, C=last_name, I=nickname, CE=alias, CN=voice_misspellings, CO=contact_score |
+| projects | `projects` | A=canonical_name, B=aliases, C=voice_misspellings, D=associated_contacts, I=conversation_history |
+| land_proposals | `land_proposals` | A=canonical_name, B=aliases, C=voice_misspellings, F=associated_contacts, J=conversation_history |
+| entities | `entities` | A=canonical_name, B=aliases, C=voice_misspellings, E=associated_contacts, H=conversation_history |
+| topics | `topics` | A=canonical_name, B=aliases, C=voice_misspellings, D=description, E=keywords, F=associated_contacts, G=associated_projects, H=associated_land, I=associated_entities, J=conversation_history |
 
-Trigger phrases: "that should be X not Y", "you got the name wrong", "it's X not Y", "the correct name is X"
+**Entity relationships** — every entity type links to others:
+- A **contact** can be associated with projects, land proposals, entities, and topics
+- A **project** links to contacts, entities, and land proposals
+- A **land proposal** links to contacts, projects, and entities
+- An **entity** (business) links to contacts and projects
+- A **topic** links to contacts, projects, land proposals, and entities
 
-Steps:
-1. Identify which registry tab and row contains Y (or the closest match)
-2. Read the current `voice_misspellings` cell for that row
-3. Append Y to the cell (comma-separated) via:
-```
-google_workspace_manager(
-  command="sheets values update --spreadsheetId 1XbSRAXxPLY4cXMTm2rmvKh11Nx3x0aKUxxuWualoV9g --range <tab>!<col><row> --valueInputOption RAW --body '{\"values\": [[\"existing,Y\"]]}'",
-  account_email="ndr@draas.com"
-)
-```
-4. Confirm: `"Got it — I've added 'Y' as a known voice misspelling for **X**. I'll use the correct name next time."`
+---
 
-## Registry Updates: Adding New Entities
+## 7. Rules Checklist
 
-**New project:** "Add project [Name]" or "new project [Name]"
-```
-google_workspace_manager(
-  command="sheets +append --spreadsheet 1XbSRAXxPLY4cXMTm2rmvKh11Nx3x0aKUxxuWualoV9g",
-  account_email="ndr@draas.com",
-  args="--range projects --values 'Name,,,,,,Active,'"
-)
-```
-Confirm: `"Added **[Name]** to the projects registry."`
-
-**New land proposal:** "Add land proposal [Name]" / "new deal [Name]"
-- Append to `land_proposals` tab same way.
-
-**New entity:** "Add entity [Name]" / "new company [Name]"
-- Append to `entities` tab.
-
-## Contact Association Updates
-
-Trigger: "X is involved in project Y" / "add X to the Y project"
-
-Steps:
-1. Find X in `contacts` tab → update their `ca` (projects) cell to append Y
-2. Find Y in `projects` tab → update `associated_contacts` cell to append X's canonical name
-3. Confirm both updates.
-
-## Rules
-
-- **Always read the registry BEFORE acting on a voice message** — never skip this step to save time, even for seemingly simple requests
-- **Never block on an unmatched word** — if no match is found, proceed and note the unresolved noun
-- **Keep corrections tight** — when updating a cell, read the current value first and append to it, never overwrite
-- **All sheet operations use `account_email='ndr@draas.com'`** — the contacts sheet lives on the draas account
-- **Do not load the full registry on text messages** — only trigger on voice message events or explicit "resolve entities" requests
-
-## Example Session
-
-**User (voice):** "Remind me to call Manor about the Sunrise project tomorrow"
-
-**Agent internal steps:**
-1. Load registry
-2. Extract nouns: "Manor", "Sunrise"
-3. Match "Manor" → contacts `voice_misspellings` → matches "Manohar"
-4. Match "Sunrise" → projects → matches "Sunrise Hills Phase 1"
-5. Reply: `"I understood 'Manor' as **Manohar** and 'Sunrise' as **Sunrise Hills Phase 1**. Creating a reminder to call Manohar about Sunrise Hills Phase 1 tomorrow."`
-
-**User:** "That's right. But by the way I also meant Sunrise Phase 2 not Phase 1."
-
-**Agent:** Updates registry — adds "Sunrise" to Phase 2's `aliases` column. Confirms update. Adjusts reminder.
+- **NEVER** read the Google Sheet to look up names on voice messages — the resolver already did it
+- **NEVER** block on an unresolved noun — proceed with the transcript as-is and note it
+- **ALWAYS** mention `⚠️ Best-guess` substitutions to the user so they can correct them
+- **ALWAYS** use `noun_learner` for write-backs (corrections, history, associations)
+- **ONLY** use `google_workspace_manager` for appending brand-new rows or bulk reads
+- **NEVER** trigger this skill for text messages

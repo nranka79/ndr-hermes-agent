@@ -3,11 +3,11 @@
 Contextual Noun Resolver — 3-tier cache for voice message noun correction.
 
 Architecture:
-  Tier 1 — Thin name index (ALL contacts + all projects/entities/land in memory)
+  Tier 1 — Thin name index (ALL contacts + all projects/entities/land/topics in memory)
             Only stores: normalized_variant → {row, canonical, type, sheet}
             ~500KB total, rebuilt on startup + after learner writes.
 
-  Tier 2 — Hot record cache (top 15 contacts by contact_score, full records)
+  Tier 2 — Hot record cache (top 50 contacts by contact_score, full records)
             Refreshed every 5 minutes in background thread.
 
   Tier 3 — Live sheet fetch (name resolved via Tier 1 but not in Tier 2)
@@ -18,6 +18,8 @@ Resolution pipeline:
   2. Look up each candidate in Tier 1 index (exact → fuzzy → phonetic)
   3. Score matches; auto-replace if confidence ≥ 0.92, flag if 0.75–0.91, skip if <0.75
   4. Use session context (last 5 messages) to disambiguate ties
+
+5 sheets: contacts, projects, land_proposals, entities, topics
 
 Spreadsheet: https://docs.google.com/spreadsheets/d/1XbSRAXxPLY4cXMTm2rmvKh11Nx3x0aKUxxuWualoV9g
 """
@@ -83,6 +85,13 @@ SHEET_CONFIGS = {
         "misspell_col": COL_MISSPELL,
         "score_col": None,
     },
+    "topics": {
+        "range":    "topics!A:J",
+        "name_col": COL_CANONICAL,
+        "alias_col": COL_ALIASES,
+        "misspell_col": COL_MISSPELL,
+        "score_col": None,
+    },
 }
 
 # Confidence thresholds
@@ -90,7 +99,7 @@ THRESH_AUTO    = 0.92   # auto-replace silently
 THRESH_MENTION = 0.75   # replace but tell user
 
 # Hot cache size
-HOT_CACHE_SIZE = 15
+HOT_CACHE_SIZE = 50
 
 # Refresh interval for hot cache (seconds)
 HOT_REFRESH_INTERVAL = 300
@@ -145,10 +154,13 @@ def _build_service():
 
 
 def _fuzzy_score(query: str, candidate: str) -> float:
-    """Return similarity 0–1 using rapidfuzz if available, else simple ratio."""
+    """Return similarity 0–1. Uses both token_sort_ratio and Jaro-Winkler (max of both)."""
     try:
         from rapidfuzz import fuzz
-        return fuzz.token_sort_ratio(query, candidate) / 100.0
+        from rapidfuzz.distance import JaroWinkler
+        token_score = fuzz.token_sort_ratio(query, candidate) / 100.0
+        jw_score = JaroWinkler.normalized_similarity(query, candidate)
+        return max(token_score, jw_score)
     except ImportError:
         # Fallback: character overlap ratio
         q, c = set(query), set(candidate)
@@ -209,7 +221,7 @@ class NounResolver:
     # ── Index building ─────────────────────────────────────────────────────────
 
     def _rebuild_index(self):
-        """Rebuild the full thin name index from all 4 sheets."""
+        """Rebuild the full thin name index from all 5 sheets."""
         try:
             svc = _build_service()
             new_index: dict[str, dict] = {}
@@ -420,6 +432,7 @@ class NounResolver:
                 substitutions.append({
                     "original": phrase, "canonical": canonical,
                     "type": match["type"], "confidence": round(conf, 3),
+                    "row": match.get("row"),
                 })
             elif conf >= mention_threshold and not optimistic_mode:
                 # Only flag for confirmation if NOT in optimistic mode
@@ -446,7 +459,7 @@ class NounResolver:
     def _lookup(self, phrase: str, context: list[str] | None = None) -> dict | None:
         """Look up a phrase in the index. Returns best match dict or None."""
         key = _normalize(phrase)
-        if not key or len(key) < 3:
+        if not key or len(key) < 2:
             return None
 
         with self._index_lock:
@@ -467,6 +480,17 @@ class NounResolver:
                     best_entry = entry
 
             if best_entry and best_score >= THRESH_MENTION:
+                # Session context boost: if canonical appears in recent messages, +0.03
+                if context and best_score >= THRESH_MENTION:
+                    _ctx_words = set()
+                    for _msg in context:
+                        _words = _normalize(_msg).split()
+                        _ctx_words.update(_words)
+                        _ctx_words.update(" ".join(_words[i:i+2]) for i in range(len(_words) - 1))
+                        _ctx_words.update(" ".join(_words[i:i+3]) for i in range(len(_words) - 2))
+                    if _normalize(best_entry.get("canonical", "")) in _ctx_words:
+                        best_score = min(1.0, best_score + 0.03)
+
                 result = dict(best_entry)
                 result["confidence"] = best_score
                 return result

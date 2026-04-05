@@ -68,6 +68,8 @@ _HERMES_CORE_TOOLS = [
     "google_workspace_manager",
     # Mid-session model/provider switching
     "switch_model",
+    # Voice entity learning (write corrections back to Google Sheets registry)
+    "noun_learner",
 ]
 
 

@@ -2006,40 +2006,54 @@ class GatewayRunner:
             if not found_in_history:
                 message_text = f'[Replying to: "{reply_snippet}"]\n\n{message_text}'
 
-        # ── Noun Resolver middleware ──────────────────────────────────────────
-        # Runs on every message (especially voice). Corrects misheard proper
-        # nouns (people, projects, entities, land proposals) before the agent
-        # sees the text. High-confidence corrections are silent; mid-confidence
-        # ones prepend a note so the agent can mention the substitution.
-        try:
-            from tools.noun_resolver import get_resolver
-            _resolver = get_resolver()
-            if _resolver._index_built:
-                _ctx = [m.get("content", "") for m in history[-5:] if m.get("role") == "user"]
-                # ✅ ENHANCED: Use optimistic_mode=True to apply all corrections (high + mid confidence)
-                # This prevents blocking on ambiguity and allows agent to proceed with email searches, etc.
-                _result = _resolver.resolve(message_text, session_context=_ctx, optimistic_mode=True)
-                if _result.substitutions:
-                    message_text = _result.corrected_text
-                    # Categorize corrections by confidence for transparency
-                    high_conf = [s for s in _result.substitutions if s['confidence'] >= 0.92]
-                    mid_conf = [s for s in _result.substitutions if 0.75 <= s['confidence'] < 0.92]
+        # ── Noun Resolver middleware (VOICE/AUDIO only) ───────────────────────
+        # Only runs for voice and audio messages. Corrects misheard proper
+        # nouns (people, projects, entities, land proposals, topics) before the
+        # agent sees the transcript. High-confidence corrections are silent;
+        # mid-confidence ones prepend a note so the agent can mention it.
+        # Contact usage scores are incremented asynchronously after resolution.
+        _is_voice = (
+            getattr(event, 'message_type', None) in (MessageType.VOICE, MessageType.AUDIO)
+            or "[The user sent a voice message~" in message_text
+        )
+        if _is_voice:
+            try:
+                from tools.noun_resolver import get_resolver
+                _resolver = get_resolver()
+                if _resolver._index_built:
+                    _ctx = [m.get("content", "") for m in history[-5:] if m.get("role") == "user"]
+                    _result = _resolver.resolve(message_text, session_context=_ctx, optimistic_mode=True)
+                    if _result.substitutions:
+                        message_text = _result.corrected_text
+                        # Categorize corrections by confidence for transparency
+                        high_conf = [s for s in _result.substitutions if s['confidence'] >= 0.92]
+                        mid_conf = [s for s in _result.substitutions if 0.75 <= s['confidence'] < 0.92]
 
-                    notes = []
-                    if high_conf:
-                        notes.append(
-                            "✅ Auto-corrected: " + ", ".join(f"'{s['original']}'→'{s['canonical']}'" for s in high_conf)
-                        )
-                    if mid_conf:
-                        notes.append(
-                            "⚠️ Best-guess: " + ", ".join(f"'{s['original']}'→'{s['canonical']}'" for s in mid_conf)
-                        )
+                        notes = []
+                        if high_conf:
+                            notes.append(
+                                "✅ Auto-corrected: " + ", ".join(f"'{s['original']}'→'{s['canonical']}'" for s in high_conf)
+                            )
+                        if mid_conf:
+                            notes.append(
+                                "⚠️ Best-guess: " + ", ".join(f"'{s['original']}'→'{s['canonical']}'" for s in mid_conf)
+                            )
 
-                    if notes:
-                        _note = "\n".join(notes)
-                        message_text = _note + "\n\n" + message_text
-        except Exception as _e:
-            logger.debug(f"Noun resolver skipped: {_e}")
+                        if notes:
+                            _note = "\n".join(notes)
+                            message_text = _note + "\n\n" + message_text
+
+                        # Increment usage score for resolved contacts (background thread)
+                        import threading
+                        for _sub in _result.substitutions:
+                            if _sub.get("type") == "contacts" and _sub.get("row"):
+                                threading.Thread(
+                                    target=_resolver.increment_contact_score,
+                                    args=(_sub["row"], 1),
+                                    daemon=True,
+                                ).start()
+            except Exception as _e:
+                logger.debug(f"Noun resolver skipped: {_e}")
         # ─────────────────────────────────────────────────────────────────────
 
         try:
