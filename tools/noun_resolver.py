@@ -354,14 +354,25 @@ class NounResolver:
 
     # ── Resolution ─────────────────────────────────────────────────────────────
 
-    def resolve(self, text: str, session_context: list[str] | None = None) -> "ResolveResult":
+    def resolve(
+        self,
+        text: str,
+        session_context: list[str] | None = None,
+        optimistic_mode: bool = False,
+    ) -> "ResolveResult":
         """
         Resolve nouns in text.
 
+        Args:
+            text: The text to resolve
+            session_context: Recent message history for disambiguation
+            optimistic_mode: If True, apply ALL matches (high + mid confidence) to proceed
+                           without blocking on ambiguity. Default: False (block on ambiguity)
+
         Returns ResolveResult with:
-          .corrected_text   — text with high-confidence substitutions applied
+          .corrected_text   — text with substitutions applied
           .substitutions    — list of {original, canonical, type, confidence}
-          .needs_confirmation — list of {original, candidates} for ambiguous matches
+          .needs_confirmation — list of ambiguous matches (empty if optimistic_mode=True)
         """
         if not self._index_built or not text:
             return ResolveResult(text, [], [])
@@ -394,7 +405,12 @@ class NounResolver:
             if norm_phrase == norm_canonical:
                 continue
 
-            if conf >= THRESH_AUTO:
+            # ENHANCED: Confidence thresholds based on mode
+            auto_threshold = THRESH_AUTO if not optimistic_mode else THRESH_MENTION
+            mention_threshold = THRESH_MENTION if not optimistic_mode else 0.0
+
+            if conf >= auto_threshold:
+                # Apply correction to text (auto-replace)
                 corrected = corrected[:start] + canonical + corrected[end:]
                 # Adjust subsequent positions
                 delta = len(canonical) - len(phrase)
@@ -405,7 +421,8 @@ class NounResolver:
                     "original": phrase, "canonical": canonical,
                     "type": match["type"], "confidence": round(conf, 3),
                 })
-            elif conf >= THRESH_MENTION:
+            elif conf >= mention_threshold and not optimistic_mode:
+                # Only flag for confirmation if NOT in optimistic mode
                 needs_confirmation.append({
                     "original": phrase,
                     "candidates": [{"canonical": canonical, "type": match["type"], "confidence": round(conf, 3)}],

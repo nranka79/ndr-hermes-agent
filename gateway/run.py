@@ -2016,17 +2016,28 @@ class GatewayRunner:
             _resolver = get_resolver()
             if _resolver._index_built:
                 _ctx = [m.get("content", "") for m in history[-5:] if m.get("role") == "user"]
-                _result = _resolver.resolve(message_text, session_context=_ctx)
+                # ✅ ENHANCED: Use optimistic_mode=True to apply all corrections (high + mid confidence)
+                # This prevents blocking on ambiguity and allows agent to proceed with email searches, etc.
+                _result = _resolver.resolve(message_text, session_context=_ctx, optimistic_mode=True)
                 if _result.substitutions:
                     message_text = _result.corrected_text
-                    _note = "Note: I auto-corrected some voice nouns: " + _result.summary()
-                    message_text = _note + "\n\n" + message_text
-                if _result.needs_confirmation:
-                    _ambiguous = "; ".join(
-                        f"'{n['original']}' (did you mean {n['candidates'][0]['canonical']}?)"
-                        for n in _result.needs_confirmation
-                    )
-                    message_text = f"[Ambiguous nouns detected: {_ambiguous}]\n\n" + message_text
+                    # Categorize corrections by confidence for transparency
+                    high_conf = [s for s in _result.substitutions if s['confidence'] >= 0.92]
+                    mid_conf = [s for s in _result.substitutions if 0.75 <= s['confidence'] < 0.92]
+
+                    notes = []
+                    if high_conf:
+                        notes.append(
+                            "✅ Auto-corrected: " + ", ".join(f"'{s['original']}'→'{s['canonical']}'" for s in high_conf)
+                        )
+                    if mid_conf:
+                        notes.append(
+                            "⚠️ Best-guess: " + ", ".join(f"'{s['original']}'→'{s['canonical']}'" for s in mid_conf)
+                        )
+
+                    if notes:
+                        _note = "\n".join(notes)
+                        message_text = _note + "\n\n" + message_text
         except Exception as _e:
             logger.debug(f"Noun resolver skipped: {_e}")
         # ─────────────────────────────────────────────────────────────────────
