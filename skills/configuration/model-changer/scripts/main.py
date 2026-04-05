@@ -6,7 +6,9 @@ from pathlib import Path
 MODEL_MAPPINGS = {
     "minimax":  {"provider": "MiniMax",      "model": "Minimax-M2.7"},
     "nematron": {"provider": "OpenRouter",   "model": "nvidia/nemotron-3-super-120b-a12b:free"},
-    "gemini":   {"provider": "OpenRouter",   "model": "google/gemini-2.5-flash-lite"},
+    "gemini2":   {"provider": "OpenRouter",   "model": "google/gemini-2.5-flash-lite"},
+    "gemini3":   {"provider": "OpenRouter",   "model": "google/gemini-3-flash-preview"},
+    "qwen":   {"provider": "OpenRouter",   "model": "qwen/qwen3.6-plus:free"}
 }
 
 

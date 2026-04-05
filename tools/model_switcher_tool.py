@@ -19,7 +19,8 @@ logger = logging.getLogger(__name__)
 MODEL_MAPPINGS = {
     "minimax":  {"provider": "MiniMax",    "model": "Minimax-M2.7"},
     "nematron": {"provider": "OpenRouter", "model": "nvidia/nemotron-3-super-120b-a12b:free"},
-    "gemini":   {"provider": "OpenRouter", "model": "google/gemini-2.5-flash-lite"},
+    "gemini2":  {"provider": "OpenRouter", "model": "google/gemini-2.5-flash-lite"},
+    "gemini3":  {"provider": "OpenRouter", "model": "google/gemini-3-flash-preview"},
     "qwen":     {"provider": "OpenRouter", "model": "qwen/qwen3.6-plus:free"},
 }
 
@@ -74,20 +75,21 @@ _SCHEMA = {
     "description": (
         "Switch the active LLM model for the current session. "
         "Use this whenever the user asks to change, switch, or try a different AI model "
-        "(e.g. 'switch to Qwen', 'use Gemini', 'change model to MiniMax', 'try Nematron'). "
+        "(e.g. 'switch to Qwen', 'use Gemini2', 'use Gemini3', 'change model to MiniMax', 'try Nematron'). "
         "The new model takes effect from the next message onwards. "
-        "Supported keywords: minimax, gemini, nematron, qwen."
+        "Supported keywords: minimax, gemini2, gemini3, nematron, qwen."
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "model": {
                 "type": "string",
-                "enum": ["minimax", "gemini", "nematron", "qwen"],
+                "enum": ["minimax", "gemini2", "gemini3", "nematron", "qwen"],
                 "description": (
                     "The model keyword to switch to. "
                     "minimax → Minimax-M2.7 (MiniMax), "
-                    "gemini → gemini-2.5-flash-lite (OpenRouter), "
+                    "gemini2 → gemini-2.5-flash-lite (OpenRouter), "
+                    "gemini3 → gemini-3-flash-preview (OpenRouter), "
                     "nematron → nvidia/nemotron-3-super-120b (OpenRouter), "
                     "qwen → qwen3.6-plus (OpenRouter)."
                 ),
