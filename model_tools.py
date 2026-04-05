@@ -98,6 +98,7 @@ def _discover_tools():
         "tools.google_workspace_power_tool",
         "tools.model_switcher_tool",
         "tools.noun_learner_tool",
+        "tools.whatsapp_encode_tool",
     ]
     import importlib
     for mod_name in _modules:

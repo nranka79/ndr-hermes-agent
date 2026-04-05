@@ -70,6 +70,8 @@ _HERMES_CORE_TOOLS = [
     "switch_model",
     # Voice entity learning (write corrections back to Google Sheets registry)
     "noun_learner",
+    # WhatsApp wa.me deep-link URL generator (always available, no API deps)
+    "whatsapp_encode",
 ]
 
 

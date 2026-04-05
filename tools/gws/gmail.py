@@ -5,15 +5,17 @@ Command syntax:
   gmail messages list [--maxResults N] [--params '{"q":"..."}'] [--userId me]
   gmail messages get --id MSG_ID
   gmail messages send --body '{"raw":"..."}'
-  gmail messages send-with-attachment --to X --subject Y --body Z --attachmentPath /path
+  gmail messages send-with-attachment --to X --subject Y --body Z [--bodyHtml HTML] [--attachmentPath /path]
+  gmail messages send-reply --to X --subject Y --body Z --threadId ID [--cc X] [--bcc X] [--bodyHtml HTML]
   gmail messages delete --id MSG_ID
   gmail messages modify --id MSG_ID --addLabels '["UNREAD"]' --removeLabels '["INBOX"]'
   gmail threads list [--params '{"q":"..."}']
+  gmail threads get --id THREAD_ID
   gmail labels list
   gmail profile
   gmail drafts list [--maxResults N]
   gmail drafts get --id DRAFT_ID
-  gmail drafts create --to X --subject Y --body Z [--cc X] [--bcc X] [--attachmentPath /path]
+  gmail drafts create --to X --subject Y --body Z [--bodyHtml HTML] [--cc X] [--bcc X] [--attachmentPath /path]
   gmail drafts send --id DRAFT_ID
   gmail drafts delete --id DRAFT_ID
   gmail attachments get --messageId MSG_ID --attachmentId ATT_ID
@@ -42,19 +44,34 @@ def _build_raw_message(
     bcc: str = "",
     thread_id: str = "",
     attachment_path: str = "",
+    body_html: str = "",
 ) -> str:
     """
     Build a base64url-encoded RFC 2822 message string suitable for
     the Gmail API 'raw' field.  Uses stdlib email.mime only — no extra deps.
+
+    If body_html is provided, sends a multipart/alternative message with both
+    plain text and HTML parts (HTML is shown by default in modern clients).
+    If attachment_path is also provided, wraps everything in multipart/mixed.
     """
     from email.mime.text import MIMEText
     from email.mime.multipart import MIMEMultipart
     from email.mime.base import MIMEBase
     from email import encoders
 
+    # Build the body part: plain, html, or both (multipart/alternative)
+    if body_html and body_text:
+        body_part = MIMEMultipart("alternative")
+        body_part.attach(MIMEText(body_text, "plain", "utf-8"))
+        body_part.attach(MIMEText(body_html, "html", "utf-8"))
+    elif body_html:
+        body_part = MIMEText(body_html, "html", "utf-8")
+    else:
+        body_part = MIMEText(body_text, "plain", "utf-8")
+
     if attachment_path:
-        msg = MIMEMultipart()
-        msg.attach(MIMEText(body_text, "plain"))
+        msg = MIMEMultipart("mixed")
+        msg.attach(body_part)
         try:
             with open(attachment_path, "rb") as fh:
                 part = MIMEBase("application", "octet-stream")
@@ -68,7 +85,7 @@ def _build_raw_message(
         except FileNotFoundError:
             raise FileNotFoundError(f"Attachment not found: {attachment_path}")
     else:
-        msg = MIMEText(body_text, "plain")
+        msg = body_part
 
     msg["to"] = to
     msg["subject"] = subject
@@ -78,6 +95,7 @@ def _build_raw_message(
         msg["bcc"] = bcc
     if thread_id:
         msg["In-Reply-To"] = thread_id
+        msg["References"] = thread_id
 
     return base64.urlsafe_b64encode(msg.as_bytes()).decode()
 
@@ -153,6 +171,7 @@ def handle_gmail(parts: list, account_email: str) -> str:
             to_addr = flags.get("to") or flags.get("recipient")
             subject = flags.get("subject", "")
             body_text = flags.get("body", "")
+            body_html = flags.get("bodyHtml") or flags.get("body_html", "")
             attach = flags.get("attachmentPath") or flags.get("attachment", "")
             if not to_addr:
                 return "Error: --to required"
@@ -160,11 +179,47 @@ def handle_gmail(parts: list, account_email: str) -> str:
                 raw = _build_raw_message(to_addr, subject, body_text,
                                          cc=flags.get("cc", ""),
                                          bcc=flags.get("bcc", ""),
-                                         attachment_path=attach)
+                                         attachment_path=attach,
+                                         body_html=body_html)
             except FileNotFoundError as e:
                 return f"Error: {e}"
             result = svc.users().messages().send(userId=user_id, body={"raw": raw}).execute()
             return json.dumps({"status": "sent", "messageId": result.get("id")}, indent=2)
+
+        if action == "send-reply":
+            # Threaded reply — keeps the message in the existing Gmail thread.
+            # Requires --threadId; both the MIME In-Reply-To header AND the
+            # threadId field in the API request body are set for correct threading.
+            to_addr   = flags.get("to") or flags.get("recipient")
+            subject   = flags.get("subject", "")
+            body_text = flags.get("body", "")
+            body_html = flags.get("bodyHtml") or flags.get("body_html", "")
+            thread_id = flags.get("threadId") or flags.get("thread_id", "")
+            if not to_addr:
+                return "Error: --to required for messages send-reply"
+            if not thread_id:
+                return "Error: --threadId required for messages send-reply (ensures reply stays in-thread)"
+            try:
+                raw = _build_raw_message(
+                    to_addr, subject, body_text,
+                    cc=flags.get("cc", ""),
+                    bcc=flags.get("bcc", ""),
+                    thread_id=thread_id,
+                    body_html=body_html,
+                )
+            except FileNotFoundError as e:
+                return f"Error: {e}"
+            # threadId in the body is what Gmail API uses to place message in thread
+            result = svc.users().messages().send(
+                userId=user_id,
+                body={"raw": raw, "threadId": thread_id},
+            ).execute()
+            return json.dumps({
+                "status": "sent",
+                "messageId": result.get("id"),
+                "threadId": result.get("threadId"),
+                "note": "Reply sent in-thread.",
+            }, indent=2)
 
         if action in ("delete", "trash"):
             msg_id = flags.get("id") or flags.get("messageId")
@@ -228,6 +283,7 @@ def handle_gmail(parts: list, account_email: str) -> str:
             to_addr  = flags.get("to") or flags.get("recipient")
             subject  = flags.get("subject", "")
             body_text = flags.get("body", "")
+            body_html = flags.get("bodyHtml") or flags.get("body_html", "")
             if not to_addr:
                 return "Error: --to required for drafts create"
             try:
@@ -237,6 +293,7 @@ def handle_gmail(parts: list, account_email: str) -> str:
                     bcc=flags.get("bcc", ""),
                     thread_id=flags.get("threadId", ""),
                     attachment_path=flags.get("attachmentPath", ""),
+                    body_html=body_html,
                 )
             except FileNotFoundError as e:
                 return f"Error: {e}"
