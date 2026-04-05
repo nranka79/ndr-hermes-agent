@@ -37,15 +37,42 @@ Activate when the user says anything like:
 
 ### For a NEW email (no existing thread)
 
-Look up the contact's email address via the People API:
+**The Google Contacts Sheet is the ONLY source of truth for contact data.**
+NEVER use the People API (`contacts people search`) for lookups.
+
+#### Step 1: Read the header row to find email column letters
+
 ```
 google_workspace_manager(
-  command="contacts people search --query 'Raghu Iyer' --personFields emailAddresses,names,organizations",
+  command="sheets values get --spreadsheetId 1XbSRAXxPLY4cXMTm2rmvKh11Nx3x0aKUxxuWualoV9g --range \"NDR DRAAS Google contacts.csv!A1:CO1\"",
   account_email="ndr@draas.com"
 )
 ```
 
-Extract: full name, all email addresses (with labels: work, personal, etc.).
+Scan for columns whose header contains "E-mail" — note their letters. (Once per session.)
+
+#### Step 2: Find the contact's row
+
+```
+google_workspace_manager(
+  command="sheets values get --spreadsheetId 1XbSRAXxPLY4cXMTm2rmvKh11Nx3x0aKUxxuWualoV9g --range \"NDR DRAAS Google contacts.csv!A:CE\"",
+  account_email="ndr@draas.com"
+)
+```
+
+Match on: Col A (first name) + Col C (last name), Col I (nickname), Col CE (alias).
+If multiple rows match: list all with org/role and ask which one.
+
+#### Step 3: Read the full contact row
+
+```
+google_workspace_manager(
+  command="sheets values get --spreadsheetId 1XbSRAXxPLY4cXMTm2rmvKh11Nx3x0aKUxxuWualoV9g --range \"NDR DRAAS Google contacts.csv!A{ROW}:CO{ROW}\"",
+  account_email="ndr@draas.com"
+)
+```
+
+Zip header with row values to extract all email addresses (columns whose header contains "E-mail") and their type labels (Work, Personal, etc.), plus organization (Col K).
 
 Present:
 > Found: **Raghu Iyer** — Director, [Company]
@@ -222,5 +249,6 @@ Confirm to the user:
 - **Subject for replies:** add `Re: ` prefix only if not already there
 - **Default account:** `ndr@draas.com` — switch to Gmail or AHFL only on explicit instruction
 - **HTML email:** use `--bodyHtml` when the content has tasks, deadlines, or structured data; include `--body` plain text fallback always
-- **For new emails to a contact:** use People API to get the email address; don't guess
+- **NEVER** use People API (`contacts people search`) for contact lookups — the Google Contacts Sheet is the ONLY source of truth
+- **For new emails to a contact:** use the 3-step sheet lookup to get the email address; don't guess
 - **Never send without confirmation** — always present the draft and wait for "send" or equivalent

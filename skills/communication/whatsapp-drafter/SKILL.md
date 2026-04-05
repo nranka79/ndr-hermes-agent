@@ -1,8 +1,8 @@
 ---
 name: whatsapp-drafter
 description: |
-  Drafts WhatsApp messages for any contact. Resolves contact from Google Contacts
-  (People API), presents all phone numbers, drafts message with correct tone/format
+  Drafts WhatsApp messages for any contact. Resolves contact from the Google Contacts
+  Sheet ONLY (never People API), presents all phone numbers, drafts message with correct tone/format
   (work vs personal), and on approval generates wa.me deep-link URLs using the
   whatsapp_encode tool. NEVER encode URLs manually.
   Trigger: "WhatsApp [name]", "WA [name]", "send [name] a WhatsApp", "message [name] on WhatsApp"
@@ -29,19 +29,52 @@ Noun resolver has already corrected the contact name before this skill sees it.
 
 ## 2. Stage 1 — Contact Resolution
 
-Look up the contact using the Google People API (returns phone numbers directly, no column guessing):
+**The Google Contacts Sheet is the ONLY source of truth for all contact data.**
+NEVER use the People API (`contacts people search`) for contact lookups — it is only for creating/updating contacts, not for reading them.
+
+### Step 1: Read the header row to find phone and email column letters
 
 ```
 google_workspace_manager(
-  command="contacts people search --query 'Manohar Singh' --personFields phoneNumbers,names,organizations",
+  command="sheets values get --spreadsheetId 1XbSRAXxPLY4cXMTm2rmvKh11Nx3x0aKUxxuWualoV9g --range \"NDR DRAAS Google contacts.csv!A1:CO1\"",
   account_email="ndr@draas.com"
 )
 ```
 
-From the result, extract:
-- Full canonical name
-- All phone numbers (with labels: mobile, work, home, etc.)
-- Organization / role (to determine work vs personal context)
+Scan the header row for columns whose names contain "Phone" or "E-mail" — these are the phone and email columns. Note their column letters. (This only needs to be done once per session.)
+
+### Step 2: Find the contact's row
+
+Read the name + alias columns to locate the correct row:
+
+```
+google_workspace_manager(
+  command="sheets values get --spreadsheetId 1XbSRAXxPLY4cXMTm2rmvKh11Nx3x0aKUxxuWualoV9g --range \"NDR DRAAS Google contacts.csv!A:CE\"",
+  account_email="ndr@draas.com"
+)
+```
+
+Search the result for the contact by matching:
+- Col A (first name) + Col C (last name) — full name match
+- Col I (nickname / addressed-as)
+- Col CE (alias, e.g. "RO", "Manor")
+
+### Step 3: Read the full contact row
+
+Once you have the row number, read just that row:
+
+```
+google_workspace_manager(
+  command="sheets values get --spreadsheetId 1XbSRAXxPLY4cXMTm2rmvKh11Nx3x0aKUxxuWualoV9g --range \"NDR DRAAS Google contacts.csv!A{ROW}:CO{ROW}\"",
+  account_email="ndr@draas.com"
+)
+```
+
+Zip the header row (from Step 1) with this row's values to extract:
+- All phone numbers (columns whose header contains "Phone") and their type labels ("Mobile", "Work", "Home")
+- All email addresses (columns whose header contains "E-mail") and their type labels
+- Organization (Col K), nickname (Col I), alias (Col CE)
+- Conversation history (Col CG)
 
 **Present to the user:**
 > Found: **Manohar Singh** — Partner, Red Sol Farmers Collective
@@ -50,10 +83,10 @@ From the result, extract:
 >
 > Drafting for this contact. *(If wrong, say so before I draft.)*
 
-If multiple contacts match the name: list all matches and ask which one.
+If multiple rows match the name: list all matches with their org/role and ask which one.
 
 **Group messages:** If the user says "for the [X] group" or "I'm posting this on the group":
-- Still look up the contact to confirm context (conversation history, associations)
+- Still look up the contact to confirm context and conversation history
 - But at Stage 3, generate a link with NO phone number (group message format)
 - Confirm: "I'll draft without a phone number since this is for a group."
 
@@ -176,6 +209,7 @@ Return the final link(s):
 
 ## 5. Rules Checklist
 
+- **NEVER** use People API (`contacts people search`) for contact lookups — the Google Contacts Sheet is the ONLY source of truth for all contact data (phones, emails, history, relationships)
 - **NEVER** URL-encode manually — always use `whatsapp_encode` tool
 - **NEVER** add "Hope you're well" / "Hi how are you" / "Dear [name]" unless explicitly asked
 - **ALWAYS** use `*bold*` for deadlines and key times in work messages
