@@ -1,226 +1,206 @@
 ---
 name: voice-entity-resolution
-description: Handles voice message proper noun resolution. Middleware auto-corrects misheard names before the agent sees the transcript. Agent presents proposed learnings for user confirmation, writes approved learnings via noun_learner, then processes the actual message. Never processes message content before the learning step is resolved.
-version: 3.0.0
+description: |
+  Handles voice message entity resolution. Activated on every voice message.
+  Phased approach: finds project/land/entity context first (NOT contacts), then
+  resolves contacts via those entities' associated history, then falls back to
+  full contact search. Confirms all entities before executing any action.
+  Trigger: any message containing "[The user sent a voice message~"
+version: 4.0.0
 author: ndr
 metadata:
   hermes:
-    tags: [voice, nlp, contacts, entity, learning, registry, noun_resolver, noun_learner]
+    tags: [voice, nlp, contacts, entity, registry, noun_learner]
 ---
 
 # Voice Entity Resolution
 
 ## 1. When This Skill Applies
 
-**VOICE AND AUDIO MESSAGES ONLY.**
+**Every voice or audio message** — identified by the marker:
+```
+[The user sent a voice message~ Here's what they said: "..."]
+```
 
-This skill is NEVER triggered for regular text messages. The noun resolver middleware runs automatically before the agent processes any voice/audio transcript. The agent's job is to:
+Extract the transcript from inside the marker. That is what the user actually said.
 
-1. Read and communicate the correction notes prepended to the transcript
-2. Use `noun_learner` to learn from corrections the user provides
-3. Use `google_workspace_manager` to add brand-new registry entries
-
-**Do NOT read the Google Sheet to look up names on voice messages** — the resolver already did that. Reading the sheet manually wastes time and duplicates work.
+No pre-processing has been done. No names have been corrected. You receive the raw transcript.
 
 ---
 
-## 2. What Happens Automatically (Before You See the Message)
+## 2. Registry Reference
 
-The noun resolver middleware intercepts every voice/audio message and:
+**Spreadsheet ID:** `1XbSRAXxPLY4cXMTm2rmvKh11Nx3x0aKUxxuWualoV9g`
+**Account:** `ndr@draas.com`
 
-1. Tokenizes the Whisper transcript into 1–3 word candidate phrases
-2. Looks up each phrase in its in-memory index of all 5 registry sheets
-3. For matches ≥ 0.92 confidence: silently replaces in the transcript
-4. For matches 0.75–0.91 confidence: replaces and prepends a note
-5. For matches < 0.75: leaves as-is (unresolved)
-6. Increments the contact's usage score in the background
+Sheet ranges and key columns:
 
-You receive the **already-corrected transcript** with any notes prepended.
-
----
-
-## 3. Your 3-Step Response to Every Corrected Voice Message
-
-When the message contains a `── PROPOSED LEARNINGS ──` block, follow this exact sequence.
-**Do NOT process the message content until Step 3.**
+| Sheet | Name column | Alias col | Misspellings col | Associated contacts col |
+|-------|-------------|-----------|-----------------|------------------------|
+| `projects` | A | B | C | D |
+| `land_proposals` | A | B | C | F |
+| `entities` | A | B | C | E |
+| `contacts` | A (first), C (last) | CE | CN | — |
 
 ---
 
-### Step 1 — Present corrections and proposed learnings
+## 3. Phase 1 — Find Project / Land / Entity Context
 
-Present both the corrections and the proposed learnings to the user in plain language:
+**Goal:** Understand what the message is ABOUT before worrying about who.
 
-> I made the following corrections to your voice message:
-> - ✅ **'Manor'** → Manohar Singh *(corrected)*
-> - ⚠️ **'Sunrise'** → Sunrise Hills Phase 1 *(best guess — let me know if wrong)*
->
-> I'd also like to save these learnings to the registry so they resolve correctly next time:
-> 1. Save "Manor" as a known voice misspelling for **Manohar Singh**
-> 2. Save "Sunrise" as a known voice misspelling for **Sunrise Hills Phase 1**
->
-> Reply **'learn'** to save all, **'skip'** to skip, or tell me which ones to change.
+Read all three in a single parallel batch:
 
-**Formatting rules for Step 1:**
-- `✅` corrections: describe as "corrected"
-- `⚠️` corrections: flag as "best guess", invite the user to correct if wrong
-- `learn_correction` proposals: "Save 'X' as a known voice misspelling for **Canonical**"
-- `add_alias` proposals: "Save 'X' as a short alias for **Canonical**"
-- Do NOT begin processing the actual message content yet
-
----
-
-### Step 2 — Handle the user's response
-
-**'learn' / 'yes' / 'approve' / 'save' / 'ok' (or any equivalent):**
-
-Call `noun_learner` for each item in the PROPOSED LEARNINGS block. Parse each line by splitting on ` | `:
-- Fields: `action`, `sheet=TYPE`, `row=ROW`, `original="TEXT"`, `canonical="CANONICAL"`
-- For `learn_correction`: `noun_learner(action="learn_correction", sheet_type=TYPE, row=ROW, misspelling=TEXT)`
-- For `add_alias`: `noun_learner(action="add_alias", sheet_type=TYPE, row=ROW, alias=TEXT)`
-
-Confirm: "Saved. All learnings written to the registry."
-
-**'skip' / 'no' / 'don't save' (or any equivalent):**
-
-Do not call `noun_learner` at all.
-Say: "Understood, nothing saved."
-
-**Modification input (e.g. "skip #2", "only save #1", "change #1 to 'Manorhouse'"):**
-- "skip #2" → remove item 2, write the rest
-- "only save #1" → write only item 1, skip all others
-- "change #1 to X" → use X as the misspelling/alias value for item 1 instead
-
-State the adjusted plan: "I'll save [adjusted list]. Shall I proceed?"
-On confirmation, write the adjusted set. Confirm: "Done."
-
----
-
-### Step 3 — Process the actual message
-
-Process the corrected transcript — the text below `── END LEARNINGS ──` (or below the correction notes if no PROPOSED LEARNINGS block existed). This is the user's actual request. Answer it, take actions, use other skills and tools as needed.
-
-**If there is no PROPOSED LEARNINGS block** (no corrections were made): skip directly to this step and process the message without any confirmation step.
-
----
-
-### Quick reference: parsing the PROPOSED LEARNINGS block
-
-```
-1. learn_correction | sheet=contacts | row=42 | original="Manor" | canonical="Manohar Singh"
-2. add_alias | sheet=projects | row=4 | original="SLP" | canonical="Saveganapalli Land Partners"
-```
-
-Line 1 → `noun_learner(action="learn_correction", sheet_type="contacts", row=42, misspelling="Manor")`
-
-Line 2 → `noun_learner(action="add_alias", sheet_type="projects", row=4, alias="SLP")`
-
----
-
-## 4. Learning from User Corrections (Reactive)
-
-> **Note:** The 3-step flow in Section 3 handles proactive learning after every voice correction.
-> Use this section only when the user explicitly corrects a name AFTER the initial flow —
-> e.g., "actually that should be Phase 2 not Phase 1", or "you got that name wrong, it's Ranjeeth".
-
-When the user says a name was wrong:
-
-1. Identify the correct canonical name and the row it's on
-2. Call `noun_learner` to record the correction:
-
-```
-noun_learner(
-  action="learn_correction",
-  sheet_type="contacts",   # or: projects, land_proposals, entities, topics
-  row=42,                  # row number from earlier resolver note
-  misspelling="Manor"      # the word Whisper produced
-)
-```
-
-3. Confirm: "Got it — I've saved 'Manor' as a known misspelling for **Manohar Singh**. It'll resolve correctly next time."
-
-### Other noun_learner actions
-
-**Record a conversation interaction:**
-```
-noun_learner(
-  action="append_history",
-  sheet_type="contacts",
-  row=42,
-  summary="Discussed Sunrise Hills Phase 2 land acquisition — follow up next week"
-)
-```
-
-**Update associations between entities:**
-```
-noun_learner(
-  action="update_associations",
-  sheet_type="contacts",
-  row=42,
-  projects="Sunrise Hills Phase 2",
-  land_proposals="Block 7 Whitefield"
-)
-```
-
-**Manually bump a contact's usage score:**
-```
-noun_learner(action="increment_score", row=42, amount=1)
-```
-
-> Note: contact scores are incremented automatically on every voice resolution — use this only for manual adjustments.
-
----
-
-## 5. Adding New Registry Entries
-
-When the user says "add a new project / entity / land deal / topic", append a row using `google_workspace_manager`:
-
-**New project:**
 ```
 google_workspace_manager(
-  command="sheets values append",
-  spreadsheet_id="1XbSRAXxPLY4cXMTm2rmvKh11Nx3x0aKUxxuWualoV9g",
-  range="projects!A:I",
-  values=[["Project Name", "", "", "", "", "", "", "Active", ""]],
+  command="sheets values get --spreadsheetId 1XbSRAXxPLY4cXMTm2rmvKh11Nx3x0aKUxxuWualoV9g --range \"projects!A:C\"",
+  account_email="ndr@draas.com"
+)
+google_workspace_manager(
+  command="sheets values get --spreadsheetId 1XbSRAXxPLY4cXMTm2rmvKh11Nx3x0aKUxxuWualoV9g --range \"land_proposals!A:C\"",
+  account_email="ndr@draas.com"
+)
+google_workspace_manager(
+  command="sheets values get --spreadsheetId 1XbSRAXxPLY4cXMTm2rmvKh11Nx3x0aKUxxuWualoV9g --range \"entities!A:C\"",
   account_email="ndr@draas.com"
 )
 ```
 
-**New entity / land proposal / topic:** same pattern, target the correct tab and column count.
+Each sheet returns rows: `[name, alias, voice_misspellings]` (columns A, B, C).
 
-After appending, call `noun_learner(action="learn_correction", ...)` if the user immediately provides an alias or misspelling for the new entry.
+Use your natural language understanding to fuzzy-match any word or phrase from the transcript against:
+- The canonical name (col A)
+- Any pipe/comma-separated alias (col B)
+- Any pipe/comma-separated voice misspelling (col C)
 
----
+Accept partial matches (e.g. "amber" → "Ranka Amber", "oasis" → "Ranka Oasis").
 
-## 6. Registry Reference
+**If one or more matches found**, present and confirm before continuing:
+> I think this message is about: **Project: Ranka Amber**. Is that right?
 
-**Spreadsheet ID:** `1XbSRAXxPLY4cXMTm2rmvKh11Nx3x0aKUxxuWualoV9g`  
-**Account:** always `ndr@draas.com`
+or for multiple:
+> I think this is about **Project: Ranka Amber** and **Entity: DRA Realty**. Correct?
 
-| Sheet | Tab name | Key columns |
-|-------|----------|-------------|
-| contacts | `NDR DRAAS Google contacts.csv` | A=first_name, C=last_name, I=nickname, CE=alias, CN=voice_misspellings, CO=contact_score |
-| projects | `projects` | A=canonical_name, B=aliases, C=voice_misspellings, D=associated_contacts, I=conversation_history |
-| land_proposals | `land_proposals` | A=canonical_name, B=aliases, C=voice_misspellings, F=associated_contacts, J=conversation_history |
-| entities | `entities` | A=canonical_name, B=aliases, C=voice_misspellings, E=associated_contacts, H=conversation_history |
-| topics | `topics` | A=canonical_name, B=aliases, C=voice_misspellings, D=description, E=keywords, F=associated_contacts, G=associated_projects, H=associated_land, I=associated_entities, J=conversation_history |
+Note the **row number** of each confirmed match — you need it for Phase 2.
 
-**Entity relationships** — every entity type links to others:
-- A **contact** can be associated with projects, land proposals, entities, and topics
-- A **project** links to contacts, entities, and land proposals
-- A **land proposal** links to contacts, projects, and entities
-- An **entity** (business) links to contacts and projects
-- A **topic** links to contacts, projects, land proposals, and entities
+**If no matches found**, skip directly to Phase 3 (full contact search).
 
 ---
 
-## 7. Rules Checklist
+## 4. Phase 2 — Contact Resolution via Entity Context
 
-- **ALWAYS** present PROPOSED LEARNINGS for user confirmation before processing any voice message content
-- **NEVER** call `noun_learner` in the background without user confirmation
-- **NEVER** process the message content before the learning step is resolved (approved or skipped)
-- **NEVER** read the Google Sheet to look up names on voice messages — the resolver already did it
-- **NEVER** block on an unresolved noun — proceed with the transcript as-is and note it
-- **ALWAYS** mention `⚠️ Best-guess` substitutions to the user so they can correct them
-- **ALWAYS** use `noun_learner` for write-backs (corrections, history, associations)
-- **ONLY** use `google_workspace_manager` for appending brand-new rows or bulk reads
-- **NEVER** trigger this skill for text messages
+**Goal:** Use the confirmed entity's associated contacts to narrow who the message is about.
+
+For each confirmed project/land/entity row, read its associated_contacts column:
+
+```
+google_workspace_manager(
+  command="sheets values get --spreadsheetId 1XbSRAXxPLY4cXMTm2rmvKh11Nx3x0aKUxxuWualoV9g --range \"projects!D{ROW}\"",
+  account_email="ndr@draas.com"
+)
+```
+
+This returns a comma-separated list of contact names already known to be linked to this project.
+
+Extract any person references from the transcript. Fuzzy-match those references against the candidate contact names (and their common short forms, nicknames, initials).
+
+**If a confident match is found among associated contacts:**
+> I think you're referring to **Raghu Iyer** (associated with Ranka Amber). Correct?
+
+**If no match found among associated contacts**, proceed to Phase 3.
+
+**If no person is mentioned in the transcript at all** (e.g. "search emails about Ranka Amber"), skip Phases 2 and 3 entirely — no contact resolution needed.
+
+---
+
+## 5. Phase 3 — Fallback Full Contact Search
+
+**Goal:** When the person isn't in the entity's associated contacts, search everyone.
+
+Read the contacts sheet header to find name columns:
+
+```
+google_workspace_manager(
+  command="sheets values get --spreadsheetId 1XbSRAXxPLY4cXMTm2rmvKh11Nx3x0aKUxxuWualoV9g --range \"NDR DRAAS Google contacts.csv!A:CE\"",
+  account_email="ndr@draas.com"
+)
+```
+
+Search columns: A (first_name), C (last_name), I (nickname), CE (alias) for a fuzzy/phonetic match to the person reference in the transcript.
+
+Present top 2–3 candidates ranked by likelihood:
+> Couldn't find that name among Ranka Amber's contacts. Searching all contacts...
+>
+> Found:
+> 1. **Raghu Iyer** — Director, DRA Realty
+> 2. **Raghavendra Kumar** — Contractor
+>
+> Which one?
+
+Wait for the user to select.
+
+---
+
+## 6. Phase 4 — Final Confirmation Before Any Action
+
+After resolving all entities (project/land/entity + contact if applicable), confirm the full interpretation:
+
+> To confirm: you want me to **[send WhatsApp / send email / search Drive / search emails]** to **Raghu Iyer** about **Ranka Amber Project**. Shall I proceed?
+
+**NEVER skip this step.** NEVER call `whatsapp_encode`, `gmail messages send`, Drive actions, or any other write/send tool until the user confirms here.
+
+If the user says "skip confirmations" or "just do it" mid-flow, you may skip intermediate confirmations (Phases 1–3) but ALWAYS ask this final one.
+
+---
+
+## 7. Phase 5 — Execute
+
+After confirmation, route to the appropriate skill or action:
+
+| Task | Action |
+|------|--------|
+| Send WhatsApp | Load `whatsapp-drafter` skill — pass resolved contact name; skip contact re-lookup since already confirmed |
+| Send email | Load `email-drafter` skill — pass resolved contact name; skip contact re-lookup |
+| Search emails about a project/entity | `gmail messages list --query "Ranka Amber" --max-results 10` directly |
+| Search Drive for project documents | `drive files list --q "name contains 'Ranka Amber'"` directly |
+| Search WhatsApp messages | Note: no tool exists for WhatsApp history search |
+
+When passing to whatsapp-drafter or email-drafter, tell them the contact is already confirmed — they should skip their own contact resolution step and go straight to drafting.
+
+---
+
+## 8. Optional Learning After Execution
+
+After the task completes successfully, if you noticed any obvious voice misspelling in the transcript that was resolved during this flow, offer to save it:
+
+> I noticed "ragoo" → **Raghu Iyer** during this conversation. Save that as a known voice correction for next time? (yes / skip)
+
+If user says yes:
+- All-uppercase 2–4 char (e.g. "SLP", "RO"): `noun_learner(action="add_alias", sheet_type=TYPE, row=ROW, alias=ORIGINAL)`
+- Everything else: `noun_learner(action="learn_correction", sheet_type=TYPE, row=ROW, misspelling=ORIGINAL)`
+
+**This step is OPTIONAL and happens AFTER the task is done, not before.**
+
+---
+
+## 9. Rules Checklist
+
+- **NEVER** start Phase 2 without first confirming Phase 1 (unless no project/entity was found)
+- **NEVER** call any send/write tool before the Phase 4 final confirmation
+- **NEVER** use People API (`contacts people search`) — Google Contacts Sheet is the only source of truth
+- **NEVER** call `noun_learner` automatically — only when the user explicitly agrees in Phase 8
+- **ALWAYS** read projects, land_proposals, and entities BEFORE searching contacts
+- **ALWAYS** use entity-associated contacts as the first candidate pool for person resolution
+- If no project/entity/contact is identified after all phases, say so clearly and ask the user to clarify
+
+---
+
+## 10. Task Routing Quick Reference
+
+| What user says | Phase 1 target | Phase 2/3 needed? | Routes to |
+|---------------|---------------|-------------------|-----------|
+| "Send Raghu a WA about Ranka Amber site visit" | Project: Ranka Amber | Yes (Raghu) | whatsapp-drafter |
+| "Email Ajnabha about the Allalsandra land" | Land: Allalsandra | Yes (Ajnabha) | email-drafter |
+| "Search my emails about Oasis project" | Project: Ranka Oasis | No contact | gmail search direct |
+| "Find Drive documents for Riverstone" | Project: Riverstone Farms | No contact | Drive search direct |
+| "Send Roshni a quick message" | No match | Yes (Roshni, full search) | whatsapp-drafter |
+| "Any emails from DRA Realty?" | Entity: DRA Realty | No contact | gmail search direct |
