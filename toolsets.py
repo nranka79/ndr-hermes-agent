@@ -74,6 +74,8 @@ _HERMES_CORE_TOOLS = [
     "whatsapp_encode",
     # Ranked contact lookup from Google Contacts Sheet (3-signal: name+context+compound)
     "contact_resolver",
+    # N8N workflow router for Sheets/Gmail/Drive/Calendar with traceability
+    "n8n_tool",
 ]
 
 
