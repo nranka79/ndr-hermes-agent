@@ -37,49 +37,28 @@ Activate when the user says anything like:
 
 ### For a NEW email (no existing thread)
 
-**The Google Contacts Sheet is the ONLY source of truth for contact data.**
-NEVER use the People API (`contacts people search`) for lookups.
-
-#### Step 1: Read the header row to find email column letters
+**Always use the `contact_resolver` tool** — never read the contacts sheet manually.
+NEVER use the People API (`contacts people search`) — it is disabled for lookups.
 
 ```
-google_workspace_manager(
-  command="sheets values get --spreadsheetId 1XbSRAXxPLY4cXMTm2rmvKh11Nx3x0aKUxxuWualoV9g --range \"NDR DRAAS Google contacts.csv!A1:CO1\"",
-  account_email="ndr@draas.com"
+contact_resolver(
+  query="[name as typed/heard]",
+  context="[project or entity being discussed, if any]"
 )
 ```
 
-Scan for columns whose header contains "E-mail" — note their letters. (Once per session.)
+The tool returns ranked candidates each with `emails`, `phones`, `org`, `canonical` name.
 
-#### Step 2: Find the contact's row
-
-```
-google_workspace_manager(
-  command="sheets values get --spreadsheetId 1XbSRAXxPLY4cXMTm2rmvKh11Nx3x0aKUxxuWualoV9g --range \"NDR DRAAS Google contacts.csv!A:CE\"",
-  account_email="ndr@draas.com"
-)
-```
-
-Match on: Col A (first name) + Col C (last name), Col I (nickname), Col CE (alias).
-If multiple rows match: list all with org/role and ask which one.
-
-#### Step 3: Read the full contact row
-
-```
-google_workspace_manager(
-  command="sheets values get --spreadsheetId 1XbSRAXxPLY4cXMTm2rmvKh11Nx3x0aKUxxuWualoV9g --range \"NDR DRAAS Google contacts.csv!A{ROW}:CO{ROW}\"",
-  account_email="ndr@draas.com"
-)
-```
-
-Zip header with row values to extract all email addresses (columns whose header contains "E-mail") and their type labels (Work, Personal, etc.), plus organization (Col K).
-
-Present:
+**When `auto_selected` is true:** present to user for confirmation, default to work email:
 > Found: **Raghu Iyer** — Director, [Company]
 > - Work: raghu@example.com
 > - Personal: raghu.iyer@gmail.com
 >
 > Drafting to raghu@example.com (work). *(Say if you want a different address.)*
+
+**When multiple candidates:** list them and ask which one.
+
+**When no match:** report clearly, do not fall back to People API or any sheet read.
 
 ---
 
@@ -249,6 +228,7 @@ Confirm to the user:
 - **Subject for replies:** add `Re: ` prefix only if not already there
 - **Default account:** `ndr@draas.com` — switch to Gmail or AHFL only on explicit instruction
 - **HTML email:** use `--bodyHtml` when the content has tasks, deadlines, or structured data; include `--body` plain text fallback always
-- **NEVER** use People API (`contacts people search`) for contact lookups — the Google Contacts Sheet is the ONLY source of truth
-- **For new emails to a contact:** use the 3-step sheet lookup to get the email address; don't guess
+- **NEVER** use People API (`contacts people search`) for contact lookups — it is disabled
+- **NEVER** read the contacts sheet manually — always use `contact_resolver(query, context)`
+- **For new emails to a contact:** call `contact_resolver` to get emails; never guess
 - **Never send without confirmation** — always present the draft and wait for "send" or equivalent

@@ -99,6 +99,7 @@ def _discover_tools():
         "tools.model_switcher_tool",
         "tools.noun_learner_tool",
         "tools.whatsapp_encode_tool",
+        "tools.contact_resolver_tool",
     ]
     import importlib
     for mod_name in _modules:

@@ -29,75 +29,50 @@ Noun resolver has already corrected the contact name before this skill sees it.
 
 ## 2. Stage 1 — Contact Resolution
 
-**The Google Contacts Sheet is the ONLY source of truth for all contact data.**
-NEVER use the People API (`contacts people search`) for contact lookups — it is only for creating/updating contacts, not for reading them.
-
-### Step 1: Read the header row to find phone and email column letters
+**Always use the `contact_resolver` tool** — never read the contacts sheet manually.
+NEVER use the People API (`contacts people search`) — it is disabled for lookups.
 
 ```
-google_workspace_manager(
-  command="sheets values get --spreadsheetId 1XbSRAXxPLY4cXMTm2rmvKh11Nx3x0aKUxxuWualoV9g --range \"NDR DRAAS Google contacts.csv!A1:CO1\"",
-  account_email="ndr@draas.com"
+contact_resolver(
+  query="[name as heard/typed]",
+  context="[project or entity being discussed, if any]"
 )
 ```
 
-Scan the header row for columns whose names contain "Phone" or "E-mail" — these are the phone and email columns. Note their column letters. (This only needs to be done once per session.)
+The tool returns a ranked list of candidates. Each candidate includes:
+- `row` — sheet row number
+- `canonical` — full canonical name from the sheet
+- `first_name`, `last_name`, `org`
+- `phones` — list of `{type, value}` objects
+- `emails` — list of `{type, value}` objects
+- `score` — match confidence (0–100+)
+- `auto_selected` — true if a single clear winner was found
 
-### Step 2: Find the contact's row
-
-Read the name + alias columns to locate the correct row:
-
+**Examples:**
 ```
-google_workspace_manager(
-  command="sheets values get --spreadsheetId 1XbSRAXxPLY4cXMTm2rmvKh11Nx3x0aKUxxuWualoV9g --range \"NDR DRAAS Google contacts.csv!A:CE\"",
-  account_email="ndr@draas.com"
-)
-```
-
-Search the result for the contact by matching:
-- Col A (first name) + Col C (last name) — full name match
-- Col I (nickname / addressed-as)
-- Col CE (alias, e.g. "RO", "Manor")
-- Col K (organization / company name)
-
-**Compound name handling** — if the reference looks like "FirstName CompanyAbbr" (e.g., "Priya TruBld", "Ajay Arcadia"):
-1. First try: Col A ≈ first word AND Col K ≈ second word (company abbreviation match)
-2. If no match: fall back to Col A ≈ first word only, list ALL matching first-name contacts with their org (Col K) so the user can choose
-
-**No match found:** If Step 2 finds no row matching on name, nickname, alias, or org, report clearly:
-> "Could not find '[name]' in the contacts sheet. Closest matches: [list top 2–3 by name similarity]. Which one, or provide the correct name?"
-
-Do NOT fall back to People API or any other lookup method.
-
-### Step 3: Read the full contact row
-
-Once you have the row number, read just that row:
-
-```
-google_workspace_manager(
-  command="sheets values get --spreadsheetId 1XbSRAXxPLY4cXMTm2rmvKh11Nx3x0aKUxxuWualoV9g --range \"NDR DRAAS Google contacts.csv!A{ROW}:CO{ROW}\"",
-  account_email="ndr@draas.com"
-)
+contact_resolver(query="Bhuvanesh", context="Riverstone Farms")
+contact_resolver(query="Priya TruBld")
+contact_resolver(query="narsem raju", context="Riverstone Farms")
+contact_resolver(query="RO")
 ```
 
-Zip the header row (from Step 1) with this row's values to extract:
-- All phone numbers (columns whose header contains "Phone") and their type labels ("Mobile", "Work", "Home")
-- All email addresses (columns whose header contains "E-mail") and their type labels
-- Organization (Col K), nickname (Col I), alias (Col CE)
-- Conversation history (Col CG)
-
-**Present to the user:**
-> Found: **Manohar Singh** — Partner, Red Sol Farmers Collective
+**When `auto_selected` is true (score ≥ 90, clear winner):** present to user for confirmation:
+> Found: **Bhuvanesh S Krishnan** — DRA Construction
 > - Mobile: +91 98XXX XXXXX
-> - Work: +91 80XXX XXXXX
 >
 > Drafting for this contact. *(If wrong, say so before I draft.)*
 
-If multiple rows match the name: list all matches with their org/role and ask which one.
+**When multiple candidates are returned:** list them all and ask user to choose:
+> Found multiple matches for "Bhuvanesh":
+> 1. **Bhuvanesh S Krishnan** — DRA Construction (Mobile: +91 98XXX XXXXX)
+> 2. **Anjali Bhuvanesh** — Ranka Group
+>
+> Which one?
+
+**When no candidates found:** report clearly and ask user to clarify or provide the correct name. Do NOT fall back to People API or any sheet read.
 
 **Group messages:** If the user says "for the [X] group" or "I'm posting this on the group":
-- Still look up the contact to confirm context and conversation history
-- But at Stage 3, generate a link with NO phone number (group message format)
+- Still run `contact_resolver` for context, but at Stage 3 generate a link with NO phone number.
 - Confirm: "I'll draft without a phone number since this is for a group."
 
 ---

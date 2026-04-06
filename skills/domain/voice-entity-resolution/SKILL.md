@@ -144,29 +144,30 @@ Extract any person references from the transcript. Fuzzy-match those references 
 
 ## 5. Phase 3 — Fallback Full Contact Search
 
-**Goal:** When the person isn't in the entity's associated contacts, search everyone.
-
-Read the contacts sheet header to find name columns:
+**Goal:** When the person isn't in the entity's associated contacts, use `contact_resolver`.
 
 ```
-google_workspace_manager(
-  command="sheets values get --spreadsheetId 1XbSRAXxPLY4cXMTm2rmvKh11Nx3x0aKUxxuWualoV9g --range \"NDR DRAAS Google contacts.csv!A:CE\"",
-  account_email="ndr@draas.com"
+contact_resolver(
+  query="[person reference from transcript]",
+  context="[confirmed project/entity name, if any]"
 )
 ```
 
-Search columns: A (first_name), C (last_name), I (nickname), CE (alias) for a fuzzy/phonetic match to the person reference in the transcript.
+Always pass the confirmed project/entity as `context` — it boosts candidates whose associations match, which is how the right contact gets ranked first when multiple people share the same first name.
 
-Present top 2–3 candidates ranked by likelihood:
-> Couldn't find that name among Ranka Amber's contacts. Searching all contacts...
->
+**When `auto_selected` is true:** present and confirm directly:
+> I think you mean **Bhuvanesh S Krishnan** (DRA Construction). Correct?
+
+**When multiple candidates:** present top 2–3 and ask:
 > Found:
-> 1. **Raghu Iyer** — Director, DRA Realty
+> 1. **Raghu Iyer** — Director, DRA Realty (Mobile: +91 98XXX XXXXX)
 > 2. **Raghavendra Kumar** — Contractor
 >
 > Which one?
 
-Wait for the user to select.
+**When no match:** report clearly and ask user to provide the correct name or spelling.
+
+Wait for the user to select or confirm.
 
 ---
 
@@ -263,7 +264,8 @@ First, find the row number of the corrected entity by noting it from Phase 1/2/3
 
 - **NEVER** start Phase 2 without first confirming Phase 1 (unless no project/entity was found)
 - **NEVER** call any send/write tool before the Phase 4 final confirmation
-- **NEVER** use People API (`contacts people search`) — Google Contacts Sheet is the only source of truth
+- **NEVER** use People API (`contacts people search`) — it is disabled; use `contact_resolver` instead
+- **NEVER** read the contacts sheet manually — always use `contact_resolver(query, context)`
 - **NEVER** call `noun_learner` automatically — only when the user explicitly agrees in Phase 8
 - **NEVER** use the STT/user-typed name in a drafted message — always use the canonical name from the contact sheet
 - **ALWAYS** read projects, land_proposals, and entities BEFORE searching contacts

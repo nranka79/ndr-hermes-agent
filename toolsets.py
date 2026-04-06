@@ -72,6 +72,8 @@ _HERMES_CORE_TOOLS = [
     "noun_learner",
     # WhatsApp wa.me deep-link URL generator (always available, no API deps)
     "whatsapp_encode",
+    # Ranked contact lookup from Google Contacts Sheet (3-signal: name+context+compound)
+    "contact_resolver",
 ]
 
 
