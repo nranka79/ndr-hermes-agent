@@ -82,7 +82,28 @@ or for multiple:
 
 Note the **row number** of each confirmed match — you need it for Phase 2.
 
-**If no matches found**, skip directly to Phase 3 (full contact search).
+**If no match found BUT the transcript contains project/entity context clues:**
+
+Context clues = words like "project", "site", "land", "deal", "farms", "hills", "property", "plot",
+"entity", "company", "meeting about X", "regarding X", "for X".
+
+If the transcript contains such clues around an unrecognized word/phrase, DO NOT proceed with the
+unrecognized text verbatim. Instead, flag it explicitly:
+
+> I heard "**reverse stolen**" but that doesn't match any project, land, or entity in the registry.
+>
+> Did you mean one of these?
+> 1. Riverstone Farms
+> 2. Ranka Oasis
+> 3. Ranka Amber
+> *(or type the correct name)*
+
+Wait for the user to select or correct.
+
+Once corrected: note the misheard phrase ("reverse stolen") and the correct name ("Riverstone Farms") —
+you will offer to save this via `noun_learner` in Phase 8 after the task completes.
+
+**If no match and no context clues** (pure personal message, no project/entity implied): skip to Phase 3.
 
 ---
 
@@ -140,15 +161,44 @@ Wait for the user to select.
 
 ---
 
-## 6. Phase 4 — Final Confirmation Before Any Action
+## 6. Phase 4 — Mandatory Final Confirmation Before Any Action
 
-After resolving all entities (project/land/entity + contact if applicable), confirm the full interpretation:
+After resolving all entities, present a **complete summary** of everything you are about to do:
 
-> To confirm: you want me to **[send WhatsApp / send email / search Drive / search emails]** to **Raghu Iyer** about **Ranka Amber Project**. Shall I proceed?
+```
+📋 Before I proceed, please confirm:
 
-**NEVER skip this step.** NEVER call `whatsapp_encode`, `gmail messages send`, Drive actions, or any other write/send tool until the user confirms here.
+Action:   Create calendar event
+Project:  Riverstone Farms              ← confirmed project name, NOT the transcribed text
+Contact:  Narasimha Raju (Narasimha Raju Sir) — +91 XXXXXXXXXX / narasimha@example.com
+Date/Time: [extracted from transcript]
+Title:    Meeting re: Riverstone Farms — Narasimha Raju
+Notes:    [any other details from transcript]
 
-If the user says "skip confirmations" or "just do it" mid-flow, you may skip intermediate confirmations (Phases 1–3) but ALWAYS ask this final one.
+Reply ✅ to proceed, or tell me what to change.
+```
+
+**NEVER skip this step under any circumstances.** No exceptions.
+
+This applies to:
+- `calendar events create` / `gcal_create_event`
+- `whatsapp_encode` (generating the link counts as acting)
+- `gmail messages send` / `gmail messages send-reply` / `gmail messages send-with-attachment`
+- `drive files create` / `drive files upload`
+- `noun_learner` (any write action)
+- Any other tool that creates, sends, modifies, or deletes anything
+
+**What to show in the confirmation:**
+- The **resolved** project/land/entity name (not the mistranscribed version)
+- The **full name** of every contact involved (not a nickname or abbreviation)
+- The **exact content** of the message/event/file being created
+- The **account** being used (ndr@draas.com vs Gmail vs AHFL)
+
+**If the user corrects something at this step** (e.g. "that should be Riverstone Farms, not reverse stolen"):
+- Update your interpretation with the corrected value
+- Note the original misheard phrase and the corrected name for Phase 8 (noun_learner)
+- Re-show the updated confirmation summary
+- Proceed only after re-confirmation
 
 ---
 
@@ -168,17 +218,33 @@ When passing to whatsapp-drafter or email-drafter, tell them the contact is alre
 
 ---
 
-## 8. Optional Learning After Execution
+## 8. Learning After Execution (noun_learner)
 
-After the task completes successfully, if you noticed any obvious voice misspelling in the transcript that was resolved during this flow, offer to save it:
+After the task completes, save any corrections that were made during the flow.
 
-> I noticed "ragoo" → **Raghu Iyer** during this conversation. Save that as a known voice correction for next time? (yes / skip)
+**Two sources of corrections to save:**
 
-If user says yes:
-- All-uppercase 2–4 char (e.g. "SLP", "RO"): `noun_learner(action="add_alias", sheet_type=TYPE, row=ROW, alias=ORIGINAL)`
-- Everything else: `noun_learner(action="learn_correction", sheet_type=TYPE, row=ROW, misspelling=ORIGINAL)`
+### A. Corrections made during Phase 4 confirmation
+If the user corrected a misheard entity during the final confirmation step, save those now:
 
-**This step is OPTIONAL and happens AFTER the task is done, not before.**
+> The task is done! I also noticed I misheard **"reverse stolen"** — you corrected it to **Riverstone Farms**.
+> Save "reverse stolen" as a known voice misspelling for Riverstone Farms? (yes / skip)
+
+This is the most important category. These are real STT errors that will recur.
+
+### B. Fuzzy matches that succeeded but weren't obvious
+If a phrase resolved via fuzzy matching (e.g. "ragoo" → "Raghu Iyer") and the user confirmed it was correct, offer to save:
+
+> Also save "ragoo" → **Raghu Iyer** so it resolves automatically next time? (yes / skip)
+
+### How to call noun_learner
+
+First, find the row number of the corrected entity by noting it from Phase 1/2/3 (the sheet row returned when you read the registry).
+
+- Unrecognized phrase corrected by user → `noun_learner(action="learn_correction", sheet_type="projects", row=ROW, misspelling="reverse stolen")`
+- All-uppercase 2–4 char alias (SLP, RO, DRA) → `noun_learner(action="add_alias", sheet_type=TYPE, row=ROW, alias=ORIGINAL)`
+
+**Always call noun_learner AFTER the task is done, and only with user approval.**
 
 ---
 
