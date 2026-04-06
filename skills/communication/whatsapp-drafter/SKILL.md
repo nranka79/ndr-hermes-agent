@@ -58,6 +58,16 @@ Search the result for the contact by matching:
 - Col A (first name) + Col C (last name) — full name match
 - Col I (nickname / addressed-as)
 - Col CE (alias, e.g. "RO", "Manor")
+- Col K (organization / company name)
+
+**Compound name handling** — if the reference looks like "FirstName CompanyAbbr" (e.g., "Priya TruBld", "Ajay Arcadia"):
+1. First try: Col A ≈ first word AND Col K ≈ second word (company abbreviation match)
+2. If no match: fall back to Col A ≈ first word only, list ALL matching first-name contacts with their org (Col K) so the user can choose
+
+**No match found:** If Step 2 finds no row matching on name, nickname, alias, or org, report clearly:
+> "Could not find '[name]' in the contacts sheet. Closest matches: [list top 2–3 by name similarity]. Which one, or provide the correct name?"
+
+Do NOT fall back to People API or any other lookup method.
 
 ### Step 3: Read the full contact row
 
@@ -93,6 +103,18 @@ If multiple rows match the name: list all matches with their org/role and ask wh
 ---
 
 ## 3. Stage 2 — Draft the Message
+
+### CRITICAL: Always use the canonical contact name
+
+After Stage 1 resolves the contact, you have two names:
+- The **STT/user-provided name** (e.g., "Narsem Raju sir", "narsimha raju") — what was heard or typed
+- The **canonical name** from the contact sheet (e.g., "Narasimha Raju" from Col A + Col C)
+
+**Always use the canonical name from the sheet in ALL parts of the message — including any salutation, body reference, or closing.** Never use the STT or user-typed version in the drafted message.
+
+Before calling `whatsapp_encode`, scan the draft for any instance of the user-provided / STT spelling and replace it with the canonical name. For salutations / addressed-as, use Col I (nickname) if present, otherwise Col A (first name only).
+
+---
 
 ### Work message (use when topic relates to projects, land, entities, accounting, legal, marketing, operations — to employees, vendors, partners)
 
@@ -210,6 +232,7 @@ Return the final link(s):
 ## 5. Rules Checklist
 
 - **NEVER** use People API (`contacts people search`) for contact lookups — the Google Contacts Sheet is the ONLY source of truth for all contact data (phones, emails, history, relationships)
+- **NEVER** use the STT/user-provided name spelling in the message — always use the **canonical name from the contact sheet** (Col A + Col C); scan and replace before encoding
 - **NEVER** URL-encode manually — always use `whatsapp_encode` tool
 - **NEVER** add "Hope you're well" / "Hi how are you" / "Dear [name]" unless explicitly asked
 - **ALWAYS** use `*bold*` for deadlines and key times in work messages

@@ -107,16 +107,25 @@ def handle_contacts(parts: list, account_email: str) -> str:
             return json.dumps({"status": "deleted", "resourceName": resource_name})
 
         if action == "search":
-            query = flags.get("query") or flags.get("q")
-            if not query:
-                return "Error: --query required for people search"
-            read_mask = flags.get("readMask") or flags.get("personFields", "names,emailAddresses,phoneNumbers")
-            result = svc.people().searchContacts(
-                query=query,
-                readMask=read_mask,
-                pageSize=int(flags.get("maxResults", 10)),
-            ).execute()
-            return json.dumps(result, indent=2)
+            # People API search is DISABLED for contact lookups.
+            # The Google Contacts Sheet is the ONLY authoritative source for contact data.
+            # Use sheets values get with the contacts sheet instead:
+            #   sheets values get --spreadsheetId 1XbSRAXxPLY4cXMTm2rmvKh11Nx3x0aKUxxuWualoV9g
+            #                      --range "NDR DRAAS Google contacts.csv!A:CE"
+            # Search columns: A (first_name), C (last_name), I (nickname), K (org), CE (alias)
+            query = flags.get("query") or flags.get("q") or ""
+            return (
+                "ERROR: contacts people search is disabled. "
+                "The Google Contacts Sheet is the ONLY source of truth for contact lookups. "
+                f"To find '{query}', use:\n"
+                "  google_workspace_manager(\n"
+                "    command=\"sheets values get "
+                "--spreadsheetId 1XbSRAXxPLY4cXMTm2rmvKh11Nx3x0aKUxxuWualoV9g "
+                "--range \\\"NDR DRAAS Google contacts.csv!A:CE\\\"\",\n"
+                "    account_email=\"ndr@draas.com\"\n"
+                "  )\n"
+                "Then match on: A (first_name), C (last_name), I (nickname), K (org/company), CE (alias)."
+            )
 
     # ------------------------------------------------------------------ #
     # otherContacts (directory contacts visible but not saved)

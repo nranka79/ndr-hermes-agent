@@ -111,6 +111,12 @@ you will offer to save this via `noun_learner` in Phase 8 after the task complet
 
 **Goal:** Use the confirmed entity's associated contacts to narrow who the message is about.
 
+**IMPORTANT: Extract ALL person references from the transcript** — a single message often names multiple people. Example:
+> "Tell Narasimha Raju sir to coordinate with Devaya about the site inspection"
+→ TWO person references: "Narasimha Raju sir" **and** "Devaya" — resolve both.
+
+List all person references you found before resolving any of them. Resolve each one via Phase 2 → Phase 3 in sequence, and confirm all together in Phase 4.
+
 For each confirmed project/land/entity row, read its associated_contacts column:
 
 ```
@@ -130,6 +136,9 @@ Extract any person references from the transcript. Fuzzy-match those references 
 **If no match found among associated contacts**, proceed to Phase 3.
 
 **If no person is mentioned in the transcript at all** (e.g. "search emails about Ranka Amber"), skip Phases 2 and 3 entirely — no contact resolution needed.
+
+**After resolving all person references:** present ALL of them together in one confirmation (not one at a time):
+> Found person references: **Narasimha Raju** (row 42, Riverstone) and **Devaiah Kumar** (row 17, Riverstone). Is that right?
 
 ---
 
@@ -220,7 +229,9 @@ When passing to whatsapp-drafter or email-drafter, tell them the contact is alre
 
 ## 8. Learning After Execution (noun_learner)
 
-After the task completes, save any corrections that were made during the flow.
+**This phase is MANDATORY whenever any correction was made during the flow** — do not skip it, do not forget to run it after completing the task. If no corrections were made (everything matched first try), skip this phase.
+
+After the task completes, present the corrections to save. Two sources:
 
 **Two sources of corrections to save:**
 
@@ -254,8 +265,11 @@ First, find the row number of the corrected entity by noting it from Phase 1/2/3
 - **NEVER** call any send/write tool before the Phase 4 final confirmation
 - **NEVER** use People API (`contacts people search`) — Google Contacts Sheet is the only source of truth
 - **NEVER** call `noun_learner` automatically — only when the user explicitly agrees in Phase 8
+- **NEVER** use the STT/user-typed name in a drafted message — always use the canonical name from the contact sheet
 - **ALWAYS** read projects, land_proposals, and entities BEFORE searching contacts
 - **ALWAYS** use entity-associated contacts as the first candidate pool for person resolution
+- **ALWAYS** extract ALL person references from the transcript — there may be more than one
+- **ALWAYS** run Phase 8 if any correction was made during the flow — it is mandatory, not optional
 - If no project/entity/contact is identified after all phases, say so clearly and ask the user to clarify
 
 ---
