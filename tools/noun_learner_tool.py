@@ -343,7 +343,7 @@ _ACTIONS = {
 }
 
 
-def _handle_noun_learner(args: dict) -> str:
+def _handle_noun_learner(args: dict, **_) -> str:
     action = args.get("action", "")
     handler = _ACTIONS.get(action)
     if not handler:
