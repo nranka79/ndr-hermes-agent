@@ -45,3 +45,11 @@ deploy_config*.yaml
 *_github_deploy*.py
 claude_remote_*.py
 claude_action_*.py
+
+# Files containing secrets — kept locally only, never pushed
+Archived_Tasks_and_Plans/scripts/download_aadhar.py
+Archived_Tasks_and_Plans/scripts/deploy_hermes.py
+Archived_Tasks_and_Plans/scripts/deploy_integrations.py
+Archived_Tasks_and_Plans/scripts/apply_voice_settings_railway.py
+Archived_Tasks_and_Plans/scripts/emergency_restore.py
+Archived_Tasks_and_Plans/docs/PHASE_3_ADD_TO_RAILWAY.md
