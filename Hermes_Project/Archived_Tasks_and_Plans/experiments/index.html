@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Email Summary Dashboard | March 15, 2026</title>
+    <meta name="description" content="A premium summary of today's emails, categorized and filtered for action items.">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&family=Outfit:wght@400;600;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+    <style>
+        a { text-decoration: none; color: inherit; display: block; }
+        .email-item:hover { background: rgba(255, 255, 255, 0.05); cursor: pointer; border-radius: 8px; }
+        .action-card { cursor: pointer; }
+    </style>
+</head>
+<body>
+    <div class="background-blobs">
+        <div class="blob blob-1"></div>
+        <div class="blob blob-2"></div>
+        <div class="blob blob-3"></div>
+    </div>
+
+    <main class="container">
+        <header class="header">
+            <h1 class="title">Email Intelligence</h1>
+            <p class="subtitle">Summary for Sunday, 15 March 2026</p>
+            <div class="stats-bar">
+                <div class="stat-item">
+                    <span class="stat-value">15</span>
+                    <span class="stat-label">Total Received</span>
+                </div>
+                <div class="stat-divider"></div>
+                <div class="stat-item highlight">
+                    <span class="stat-value">3</span>
+                    <span class="stat-label">Action Items</span>
+                </div>
+            </div>
+        </header>
+
+        <section class="critical-actions">
+            <h2 class="section-title">Critical Attention Required</h2>
+            
+            <!-- Action 1: Housing Lead -->
+            <a href="https://mail.google.com/mail/u/0/#inbox/19cf13e4cb5152b5" target="_blank">
+                <div class="action-card pulse">
+                    <div class="action-icon">🔥</div>
+                    <div class="action-content">
+                        <h3>New Business Lead: Housing.com</h3>
+                        <p><strong>From:</strong> S***** R*****</p>
+                        <p>Inquiry regarding: <em>Chalukya Ranka Stelo</em></p>
+                        <p class="description">User has requested a callback. Contact details available in the email thread.</p>
+                    </div>
+                    <div class="action-tag">Immediate</div>
+                </div>
+            </a>
+
+            <!-- Action 2: Bank Feedback 1 -->
+            <a href="https://mail.google.com/mail/u/0/#inbox/19cf00ab7636a38c" target="_blank" style="margin-top: 1rem;">
+                <div class="action-card" style="border-color: rgba(77, 148, 255, 0.4); background: linear-gradient(135deg, rgba(77, 148, 255, 0.1) 0%, rgba(0, 0, 0, 0.4) 100%);">
+                    <div class="action-icon">📝</div>
+                    <div class="action-content">
+                        <h3>Branch Feedback Required (05:49)</h3>
+                        <p><strong>From:</strong> Kotak Mahindra Bank</p>
+                        <p>Subject: <em>Tell us about your Branch Banking experience</em></p>
+                        <p class="description">Request to complete a short 2-minute survey regarding your recent visit.</p>
+                    </div>
+                    <div class="action-tag" style="background: var(--accent-blue);">Feedback</div>
+                </div>
+            </a>
+
+            <!-- Action 3: Bank Feedback 2 -->
+            <a href="https://mail.google.com/mail/u/0/#inbox/19cef5a1a0fb2589" target="_blank" style="margin-top: 1rem;">
+                <div class="action-card" style="border-color: rgba(77, 148, 255, 0.4); background: linear-gradient(135deg, rgba(77, 148, 255, 0.1) 0%, rgba(0, 0, 0, 0.4) 100%);">
+                    <div class="action-icon">📝</div>
+                    <div class="action-content">
+                        <h3>Branch Feedback Required (02:36)</h3>
+                        <p><strong>From:</strong> Kotak Mahindra Bank</p>
+                        <p>Subject: <em>Tell us about your Branch Banking experience</em></p>
+                        <p class="description">Duplicate survey request for a different interaction or reminder.</p>
+                    </div>
+                    <div class="action-tag" style="background: var(--accent-blue);">Feedback</div>
+                </div>
+            </a>
+        </section>
+
+        <div class="grid">
+            <!-- Work Category -->
+            <div class="glass-card">
+                <div class="card-header">
+                    <span class="category-icon">💼</span>
+                    <h2>Work & Business</h2>
+                </div>
+                <ul class="email-list">
+                    <li class="email-item">
+                        <a href="https://mail.google.com/mail/u/0/#inbox/19cf0aead7a13497" target="_blank">
+                            <div class="email-meta">
+                                <span class="sender">YourStory</span>
+                                <span class="time">07:44</span>
+                            </div>
+                            <div class="subject">The CapTable: Insights on India's new economy</div>
+                        </a>
+                    </li>
+                    <li class="email-item">
+                        <a href="https://mail.google.com/mail/u/0/#inbox/19cf058a86f25f1f" target="_blank">
+                            <div class="email-meta">
+                                <span class="sender">Samonak Trips</span>
+                                <span class="time">00:14</span>
+                            </div>
+                            <div class="subject">Cheapest Flight Tickets Today</div>
+                        </a>
+                    </li>
+                    <li class="email-item">
+                        <a href="https://mail.google.com/mail/u/0/#inbox/19cf15f536cd5cfd" target="_blank">
+                            <div class="email-meta">
+                                <span class="sender">Google Security</span>
+                                <span class="time">12:01</span>
+                            </div>
+                            <div class="subject">Security alert for ndr@ahfl.in</div>
+                        </a>
+                    </li>
+                </ul>
+            </div>
+
+            <!-- Financial Alerts -->
+            <div class="glass-card">
+                <div class="card-header">
+                    <span class="category-icon">🏦</span>
+                    <h2>Financial Alerts</h2>
+                </div>
+                <ul class="email-list">
+                    <li class="email-item">
+                        <a href="https://mail.google.com/mail/u/0/#inbox/19cefed2b4769fab" target="_blank">
+                            <div class="email-meta">
+                                <span class="sender">Kotak - XXXX5724</span>
+                                <span class="balance positive">₹4,66,818</span>
+                            </div>
+                            <div class="subject">Weekly Account Balance Update</div>
+                        </a>
+                    </li>
+                    <li class="email-item">
+                        <a href="https://mail.google.com/mail/u/0/#inbox/19cef0ac4b467223" target="_blank">
+                            <div class="email-meta">
+                                <span class="sender">Kotak - XXXX0933</span>
+                                <span class="balance">₹1,54,032</span>
+                            </div>
+                            <div class="subject">Daily Balance - 15 March</div>
+                        </a>
+                    </li>
+                    <li class="email-item">
+                        <a href="https://mail.google.com/mail/u/0/#inbox/19cef18a108cbe3a" target="_blank">
+                            <div class="email-meta">
+                                <span class="sender">Kotak - XXXX0957</span>
+                                <span class="balance">₹1,00,132</span>
+                            </div>
+                            <div class="subject">Daily Balance - 15 March</div>
+                        </a>
+                    </li>
+                </ul>
+            </div>
+
+            <!-- Events & Announcements -->
+            <div class="glass-card">
+                <div class="card-header">
+                    <span class="category-icon">🎟️</span>
+                    <h2>Events & News</h2>
+                </div>
+                <ul class="email-list">
+                    <li class="email-item">
+                        <a href="https://mail.google.com/mail/u/0/#inbox/19cef1d66b53f06a" target="_blank">
+                            <div class="email-meta">
+                                <span class="sender">BIC Bangalore</span>
+                            </div>
+                            <div class="subject">Today: A Multisensory Workshop</div>
+                        </a>
+                    </li>
+                    <li class="email-item">
+                        <a href="https://mail.google.com/mail/u/0/#inbox/19cefbaecb79c4a8" target="_blank">
+                            <div class="email-meta">
+                                <span class="sender">IndiGo Air</span>
+                            </div>
+                            <div class="subject">New Destination: Shanghai flights</div>
+                        </a>
+                    </li>
+                    <li class="email-item">
+                        <a href="https://mail.google.com/mail/u/0/#inbox/19cf02fe396d9441" target="_blank">
+                            <div class="email-meta">
+                                <span class="sender">ET Masterclass</span>
+                            </div>
+                            <div class="subject">Dr. Ram Charan's Goa Masterclass</div>
+                        </a>
+                    </li>
+                </ul>
+            </div>
+
+            <!-- Miscellaneous -->
+            <div class="glass-card">
+                <div class="card-header">
+                    <span class="category-icon">📦</span>
+                    <h2>Other Notifications</h2>
+                </div>
+                <ul class="email-list">
+                    <li class="email-item">
+                        <a href="https://mail.google.com/mail/u/0/#inbox/19cefc8cadae1266" target="_blank">
+                            <div class="email-meta">
+                                <span class="sender">IndusInd Bank</span>
+                            </div>
+                            <div class="subject">Pre-approved funds on card 1460</div>
+                        </a>
+                    </li>
+                    <li class="email-item">
+                        <a href="https://mail.google.com/mail/u/0/#inbox/19ceff8efa46c848" target="_blank">
+                            <div class="email-meta">
+                                <span class="sender">BIC Events</span>
+                            </div>
+                            <div class="subject">Fireside Chat with Vishwanath Alluri</div>
+                        </a>
+                    </li>
+                </ul>
+            </div>
+        </div>
+
+        <footer class="footer">
+            <p>Generated by AntiGravity AI &bull; Latest Sync: 17:40 IST</p>
+        </footer>
+    </main>
+</body>
+</html>
