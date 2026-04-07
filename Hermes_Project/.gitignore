@@ -28,3 +28,20 @@ oauth_token*.json
 # OS
 .DS_Store
 Thumbs.db
+
+# IDE / Claude Code support files for remote GitHub & Railway actions
+*.pyu
+.claude/
+.claude.json
+railway.json
+.railway/
+railway_config.json
+railway_token*.json
+github_token*.json
+gh_token*.txt
+deploy_config*.json
+deploy_config*.yaml
+*_railway_deploy*.py
+*_github_deploy*.py
+claude_remote_*.py
+claude_action_*.py
