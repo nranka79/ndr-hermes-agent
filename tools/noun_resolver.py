@@ -97,6 +97,7 @@ SHEET_CONFIGS = {
 # Confidence thresholds
 THRESH_AUTO    = 0.92   # auto-replace silently
 THRESH_MENTION = 0.75   # replace but tell user
+THRESH_SEARCH  = 0.65   # lower bar for agent search() — phonetic hits score ~0.70–0.85
 
 # Hot cache size
 HOT_CACHE_SIZE = 50
@@ -169,6 +170,34 @@ def _fuzzy_score(query: str, candidate: str) -> float:
         return len(q & c) / max(len(q | c), 1)
 
 
+def _phonetic(text: str) -> str:
+    """
+    Return Soundex code for the first token of text.
+
+    Soundex produces 4-char fixed-width codes that align well across voice
+    transcription errors (RAGOO=RAGHU=R200, NARSEM=NARASIMHA=N625).
+    Falls back to first-4-consonants if jellyfish is missing.
+    """
+    if not text or len(text) < 2:
+        return ""
+    first_word = text.split()[0]
+    try:
+        import jellyfish
+        return jellyfish.soundex(first_word)
+    except ImportError:
+        t = re.sub(r"[aeiou]", "", first_word.lower())
+        return re.sub(r"(.)\1+", r"\1", t)[:4]
+
+
+# Associated-contacts column index per non-contacts sheet (0-based)
+_ASSOC_COL = {
+    "projects":       3,   # D
+    "entities":       4,   # E
+    "land_proposals": 5,   # F
+    "topics":         5,   # F
+}
+
+
 # ── NounResolver class ─────────────────────────────────────────────────────────
 
 class NounResolver:
@@ -186,6 +215,9 @@ class NounResolver:
         self._index: dict[str, dict] = {}
         self._index_lock = threading.RLock()
         self._index_built = False
+
+        # Phonetic index: metaphone_code → [(variant, entry), ...]
+        self._phonetic_index: dict[str, list] = {}
 
         # Tier 2: canonical_name → full row dict (top HOT_CACHE_SIZE by score)
         self._hot_cache: dict[str, dict] = {}
@@ -225,6 +257,7 @@ class NounResolver:
         try:
             svc = _build_service()
             new_index: dict[str, dict] = {}
+            new_phonetic: dict[str, list] = {}
 
             for sheet_name, cfg in SHEET_CONFIGS.items():
                 try:
@@ -241,30 +274,43 @@ class NounResolver:
                         if not canonical:
                             continue
 
+                        # Extract associated_contacts for non-contact sheets
+                        assoc_col = _ASSOC_COL.get(sheet_name, -1)
+                        assoc = row[assoc_col].strip() if assoc_col >= 0 and assoc_col < len(row) else ""
+
                         entries = self._extract_variants(sheet_name, cfg, row, canonical)
                         for variant, confidence in entries:
                             key = _normalize(variant)
                             if not key:
                                 continue
-                            # Keep highest-confidence entry per key
+                            entry = {
+                                "canonical": canonical,
+                                "type": sheet_name,
+                                "sheet": sheet_name,
+                                "row": row_idx,
+                                "confidence": confidence,
+                                "assoc": assoc,
+                            }
+                            # Main index: keep highest-confidence entry per key
                             existing = new_index.get(key)
                             if existing is None or existing["confidence"] < confidence:
-                                new_index[key] = {
-                                    "canonical": canonical,
-                                    "type": sheet_name,
-                                    "sheet": sheet_name,
-                                    "row": row_idx,
-                                    "confidence": confidence,
-                                }
+                                new_index[key] = entry
+                            # Phonetic index: accumulate all entries per code
+                            ph = _phonetic(key)
+                            if ph:
+                                if ph not in new_phonetic:
+                                    new_phonetic[ph] = []
+                                new_phonetic[ph].append((key, entry))
 
                 except Exception as e:
                     logger.warning(f"NounResolver: failed loading sheet '{sheet_name}': {e}")
 
             with self._index_lock:
                 self._index = new_index
+                self._phonetic_index = new_phonetic
                 self._index_built = True
 
-            logger.info(f"NounResolver: index rebuilt with {len(new_index)} entries")
+            logger.info(f"NounResolver: index rebuilt with {len(new_index)} entries, {len(new_phonetic)} phonetic codes")
 
         except Exception as e:
             logger.error(f"NounResolver: _rebuild_index failed: {e}")
@@ -479,6 +525,20 @@ class NounResolver:
                     best_score = score
                     best_entry = entry
 
+            # Phonetic fallback — catches voice errors where Soundex codes match
+            # (e.g. "ragoo"→"Raghu" R200=R200, "narsem"→"Narasimha" N625=N625)
+            if best_score < THRESH_MENTION:
+                ph = _phonetic(key)
+                if ph and ph in self._phonetic_index:
+                    for ph_variant, ph_entry in self._phonetic_index[ph]:
+                        # Compare against both full variant and its first token
+                        first_tok = ph_variant.split()[0]
+                        sim = max(_fuzzy_score(key, ph_variant), _fuzzy_score(key, first_tok))
+                        ph_score = sim * 0.90 * ph_entry["confidence"]
+                        if ph_score > best_score:
+                            best_score = ph_score
+                            best_entry = ph_entry
+
             if best_entry and best_score >= THRESH_MENTION:
                 # Session context boost: if canonical appears in recent messages, +0.03
                 if context and best_score >= THRESH_MENTION:
@@ -496,6 +556,129 @@ class NounResolver:
                 return result
 
         return None
+
+    def search(
+        self,
+        query: str,
+        limit: int = 10,
+        types: list[str] | None = None,
+        context: list[str] | None = None,
+    ) -> list[dict]:
+        """
+        Search for entities by name. Returns top-N ranked matches across all sheets.
+
+        Unlike resolve() (which corrects text in-place), search() is for agent-driven
+        explicit lookups. Splits multi-word queries into 1–3 word windows and searches
+        each using exact → fuzzy → phonetic matching.
+
+        Args:
+            query:   Name or phrase (e.g. "ragoo", "amber project", "narsem raju")
+            limit:   Max results to return (default 10)
+            types:   Filter by sheet: contacts, projects, entities, land_proposals, topics
+            context: Recent message history — matching canonicals get +0.05 score boost
+
+        Returns:
+            List of {type, canonical, row, score, match_type, [associated_contacts]}
+            sorted by score descending.
+        """
+        if not self._index_built:
+            return []
+
+        norm_query = _normalize(query)
+        if not norm_query:
+            return []
+
+        # Generate 1–3 word windows (longest first to prefer multi-word matches)
+        words = norm_query.split()
+        phrases: list[str] = []
+        seen_phrases: set[str] = set()
+        for n in (3, 2, 1):
+            for i in range(len(words) - n + 1):
+                ph = " ".join(words[i:i + n])
+                if ph not in seen_phrases and len(ph) >= 2:
+                    phrases.append(ph)
+                    seen_phrases.add(ph)
+
+        best: dict[str, dict] = {}  # canonical → best hit
+
+        with self._index_lock:
+            for phrase in phrases:
+                ph_code = _phonetic(phrase)
+
+                # ── Exact + fuzzy scan ──────────────────────────────────────
+                for idx_key, entry in self._index.items():
+                    if types and entry["type"] not in types:
+                        continue
+
+                    if idx_key == phrase:
+                        score, mtype = entry["confidence"], "exact"
+                    elif idx_key and idx_key[0] == phrase[0]:
+                        s = _fuzzy_score(phrase, idx_key) * entry["confidence"]
+                        if s < THRESH_SEARCH:
+                            continue
+                        score, mtype = s, "fuzzy"
+                    else:
+                        continue
+
+                    canonical = entry["canonical"]
+                    existing = best.get(canonical)
+                    if existing is None or existing["score"] < score:
+                        best[canonical] = {
+                            "type":       entry["type"],
+                            "canonical":  canonical,
+                            "row":        entry["row"],
+                            "score":      round(score, 3),
+                            "match_type": mtype,
+                            "_assoc":     entry.get("assoc", ""),
+                        }
+
+                # ── Phonetic scan (Soundex bucket) — voice errors, spelling variants ──
+                if ph_code and ph_code in self._phonetic_index:
+                    for ph_variant, ph_entry in self._phonetic_index[ph_code]:
+                        if types and ph_entry["type"] not in types:
+                            continue
+                        # Compare against both full variant and its first token
+                        first_tok = ph_variant.split()[0]
+                        sim = max(_fuzzy_score(phrase, ph_variant), _fuzzy_score(phrase, first_tok))
+                        ph_score = sim * 0.90
+                        if ph_score < THRESH_SEARCH:
+                            continue
+                        canonical = ph_entry["canonical"]
+                        existing = best.get(canonical)
+                        if existing is None or existing["score"] < ph_score:
+                            best[canonical] = {
+                                "type":       ph_entry["type"],
+                                "canonical":  canonical,
+                                "row":        ph_entry["row"],
+                                "score":      round(ph_score, 3),
+                                "match_type": "phonetic",
+                                "_assoc":     ph_entry.get("assoc", ""),
+                            }
+
+        # ── Context boost (+0.05 for canonicals mentioned in recent messages) ──
+        if context:
+            ctx_words: set[str] = set()
+            for msg in context:
+                ws = _normalize(msg).split()
+                ctx_words.update(ws)
+                ctx_words.update(" ".join(ws[i:i + 2]) for i in range(len(ws) - 1))
+            for hit in best.values():
+                if _normalize(hit["canonical"]) in ctx_words:
+                    hit["score"] = min(1.0, hit["score"] + 0.05)
+
+        # ── Sort, format, and attach associated_contacts ─────────────────────
+        ranked = sorted(best.values(), key=lambda x: -x["score"])[:limit]
+        output = []
+        for hit in ranked:
+            result = {k: v for k, v in hit.items() if not k.startswith("_")}
+            assoc_raw = hit.get("_assoc", "")
+            if assoc_raw and hit["type"] in ("projects", "entities", "land_proposals", "topics"):
+                result["associated_contacts"] = [
+                    c.strip() for c in re.split(r"[|,;]", assoc_raw) if c.strip()
+                ]
+            output.append(result)
+
+        return output
 
     def get_full_record(self, canonical: str, sheet: str, row: int) -> dict | None:
         """
