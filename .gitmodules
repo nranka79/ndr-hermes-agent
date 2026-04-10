@@ -7,3 +7,9 @@
 [submodule "vendor/googleworkspace-cli"]
 	path = vendor/googleworkspace-cli
 	url = https://github.com/googleworkspace/cli
+[submodule "Hermes_Project/mini-swe-agent"]
+	path = Hermes_Project/mini-swe-agent
+	url = https://github.com/SWE-agent/mini-swe-agent
+[submodule "Hermes_Project/vendor/googleworkspace-cli"]
+	path = Hermes_Project/vendor/googleworkspace-cli
+	url = https://github.com/googleworkspace/cli
