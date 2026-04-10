@@ -3679,19 +3679,12 @@ class AIAgent:
         if self.api_mode == "anthropic_messages":
             from agent.anthropic_adapter import build_anthropic_kwargs
             anthropic_messages = self._prepare_anthropic_messages_for_api(api_messages)
-            # MiniMax uses an Anthropic-compatible endpoint but does not support
-            # the Anthropic thinking parameter — passing it causes the model to
-            # return only thinking blocks with no text, triggering retry loops.
-            effective_reasoning_config = (
-                None if self.provider == "minimax"
-                else self.reasoning_config
-            )
             return build_anthropic_kwargs(
                 model=self.model,
                 messages=anthropic_messages,
                 tools=self.tools,
                 max_tokens=self.max_tokens,
-                reasoning_config=effective_reasoning_config,
+                reasoning_config=self.reasoning_config,
                 is_oauth=getattr(self, "_is_anthropic_oauth", False),
             )
 
@@ -4888,7 +4881,7 @@ class AIAgent:
             if self.provider == "anthropic":
                 self.api_mode = "anthropic_messages"
             elif self.provider == "minimax":
-                self.api_mode = "anthropic_messages"  # MiniMax uses Anthropic-compatible API
+                self.api_mode = "chat_completions"  # MiniMax uses OpenAI-compatible API
             elif self.provider == "openai-codex":
                 self.api_mode = "codex_responses"
             else:
@@ -4896,11 +4889,10 @@ class AIAgent:
 
             # Update base_url if needed for provider-specific endpoints
             if self.provider == "minimax":
-                # MiniMax typically uses Anthropic-compatible endpoints
-                if not self._base_url_lower.endswith("/anthropic"):
-                    self.base_url = "https://api.minimaxi.chat/v1"
-                    self._base_url = self.base_url
-                    self._base_url_lower = self.base_url.lower()
+                # MiniMax uses OpenAI-compatible endpoint
+                self.base_url = "https://api.minimaxi.chat/v1"
+                self._base_url = self.base_url
+                self._base_url_lower = self.base_url.lower()
 
             # Rebuild _anthropic_client when switching INTO anthropic_messages mode.
             # Without this, _anthropic_client stays None (set in __init__ only when
