@@ -1,0 +1,416 @@
+#!/usr/bin/env python3
+"""
+Setup script to create OAuth credential files from Railway environment variables.
+This script runs at Hermes startup and creates the necessary credential files in /data/hermes/
+
+It reads the OAuth tokens from Railway environment variables and writes them to JSON files
+that Hermes can use to access multiple Google Workspace accounts.
+"""
+
+import os
+import json
+import shutil
+import sys
+
+# Accounts and their environment variable mappings
+ACCOUNTS = {
+    "ndr@draas.com": {
+        "refresh_token_env": "DRAAS_OAUTH_REFRESH_TOKEN",
+        "client_id_env": "DRAAS_OAUTH_CLIENT_ID",
+        "client_secret_env": "DRAAS_OAUTH_CLIENT_SECRET",
+        "file_path": "/data/hermes/oauth-draas.json"
+    },
+    "nishantranka@gmail.com": {
+        "refresh_token_env": "GMAIL_OAUTH_REFRESH_TOKEN",
+        "client_id_env": "GMAIL_OAUTH_CLIENT_ID",
+        "client_secret_env": "GMAIL_OAUTH_CLIENT_SECRET",
+        "file_path": "/data/hermes/oauth-gmail.json"
+    },
+    "ndr@ahfl.in": {
+        "refresh_token_env": "AHFL_OAUTH_REFRESH_TOKEN",
+        "client_id_env": "AHFL_OAUTH_CLIENT_ID",
+        "client_secret_env": "AHFL_OAUTH_CLIENT_SECRET",
+        "file_path": "/data/hermes/oauth-ahfl.json"
+    }
+}
+
+def init_submodules():
+    """Ensure git submodules are initialized and updated."""
+    print("\n" + "="*80)
+    print("INITIALIZING GIT SUBMODULES")
+    print("="*80)
+    
+    try:
+        import subprocess
+        # Check if we are in a git repo
+        if not os.path.exists(".git"):
+            print("⚠ Warning: Not in a git repository. Skipping submodule update.")
+            return True
+            
+        print("→ Updating submodules (recursive)...")
+        result = subprocess.run(
+            ["git", "submodule", "update", "--init", "--recursive"],
+            capture_output=True,
+            text=True
+        )
+        
+        if result.returncode == 0:
+            print("✓ Submodules initialized successfully")
+            return True
+        else:
+            print(f"⚠ Warning: Submodule update returned code {result.returncode}")
+            print(f"  Error: {result.stderr}")
+            # Don't fail the whole setup, maybe some files are there
+            return True 
+    except Exception as e:
+        print(f"✗ Error during submodule initialization: {e}")
+        return True
+
+def setup_credentials():
+    """Read OAuth tokens from environment and create credential files."""
+    # First, init submodules to ensure file paths exist
+    init_submodules()
+
+    print("\n" + "="*80)
+    print("HERMES OAUTH CREDENTIALS SETUP")
+    print("="*80)
+
+    # Ensure /data/hermes directory exists
+    hermes_home = "/data/hermes"
+    os.makedirs(hermes_home, exist_ok=True)
+    print(f"\n✓ Ensured {hermes_home} directory exists")
+
+    created_accounts = []
+    missing_accounts = []
+
+    for account, config in ACCOUNTS.items():
+        print(f"\nProcessing {account}...")
+
+        # Get tokens from environment
+        refresh_token = os.environ.get(config["refresh_token_env"])
+        client_id = os.environ.get(config["client_id_env"])
+        client_secret = os.environ.get(config["client_secret_env"])
+
+        # Check if all tokens are available
+        if not all([refresh_token, client_id, client_secret]):
+            missing = []
+            if not refresh_token:
+                missing.append(config["refresh_token_env"])
+            if not client_id:
+                missing.append(config["client_id_env"])
+            if not client_secret:
+                missing.append(config["client_secret_env"])
+
+            print(f"  ✗ Missing environment variables: {', '.join(missing)}")
+            missing_accounts.append(account)
+            continue
+
+        # Create OAuth credential object
+        credentials = {
+            "type": "authorized_user",
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "refresh_token": refresh_token,
+            "account_email": account
+        }
+
+        # Write to file
+        file_path = config["file_path"]
+        try:
+            with open(file_path, "w") as f:
+                json.dump(credentials, f, indent=2)
+
+            # Set restrictive permissions (readable only by owner)
+            os.chmod(file_path, 0o600)
+
+            print(f"  ✓ Created {file_path}")
+            created_accounts.append(account)
+        except Exception as e:
+            print(f"  ✗ Error creating {file_path}: {e}")
+            missing_accounts.append(account)
+
+    # Write .env file so gws CLI can locate credentials without per-invocation setup
+    env_path = os.path.join(hermes_home, ".env")
+    env_lines = [
+        "# Auto-generated at startup from Railway environment variables.",
+        "# Source: setup_oauth_credentials.py — do not edit manually.",
+        "",
+    ]
+    account_env_keys = {
+        "ndr@draas.com":          "GOOGLE_WORKSPACE_CLI_DRAAS_CREDENTIALS",
+        "nishantranka@gmail.com": "GOOGLE_WORKSPACE_CLI_GMAIL_CREDENTIALS",
+        "ndr@ahfl.in":            "GOOGLE_WORKSPACE_CLI_AHFL_CREDENTIALS",
+    }
+    for account in created_accounts:
+        file_path = ACCOUNTS[account]["file_path"]
+        env_key = account_env_keys[account]
+        env_lines.append(f"{env_key}={file_path}")
+
+    # Default GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE points to primary account
+    primary = "ndr@draas.com"
+    if primary in created_accounts:
+        env_lines.append(f"GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE={ACCOUNTS[primary]['file_path']}")
+    elif created_accounts:
+        env_lines.append(f"GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE={ACCOUNTS[created_accounts[0]]['file_path']}")
+
+    try:
+        import tempfile
+        fd, tmp = tempfile.mkstemp(dir=hermes_home, prefix=".env_", suffix=".tmp")
+        with os.fdopen(fd, "w") as f:
+            f.write("\n".join(env_lines) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, env_path)
+        os.chmod(env_path, 0o600)
+        print(f"\n✓ Wrote {env_path} ({len(created_accounts)} account(s))")
+    except Exception as e:
+        print(f"\n⚠ Warning: could not write {env_path}: {e}")
+
+    # Summary
+    print("\n" + "="*80)
+    print("SUMMARY")
+    print("="*80)
+    print(f"\n✓ Successfully created credentials for {len(created_accounts)} account(s):")
+    for account in created_accounts:
+        print(f"  • {account}")
+
+    if missing_accounts:
+        print(f"\n✗ Failed to create credentials for {len(missing_accounts)} account(s):")
+        for account in missing_accounts:
+            print(f"  • {account}")
+        print("\nMake sure the following environment variables are set in Railway:")
+        for account, config in ACCOUNTS.items():
+            if account in missing_accounts:
+                print(f"\n  {account}:")
+                print(f"    - {config['refresh_token_env']}")
+                print(f"    - {config['client_id_env']}")
+                print(f"    - {config['client_secret_env']}")
+        return False
+
+    print("\n✓ All OAuth credentials are ready!")
+    print("="*80 + "\n")
+    return True
+
+
+def setup_model_config():
+    """Write config.yaml to configure OpenRouter gemini-2.5-flash-lite as default model."""
+    print("\n" + "="*80)
+    print("HERMES MODEL CONFIGURATION SETUP")
+    print("="*80)
+
+    hermes_home = "/data/hermes"
+    config_path = os.path.join(hermes_home, "config.yaml")
+
+    # Check if OpenRouter API key is configured
+    openrouter_key = os.environ.get("OPENROUTER_API_KEY")
+    if not openrouter_key:
+        print("\n⚠ OPENROUTER_API_KEY not set — skipping model config write")
+        print("  Set OPENROUTER_API_KEY in Railway Variables to use OpenRouter as default provider")
+        print("="*80 + "\n")
+        return False
+
+    config = {
+        "model": {
+            "provider": "openrouter",
+            "default": "google/gemini-2.5-flash-lite",
+        }
+    }
+
+    # Merge with existing config.yaml if present (preserve other settings)
+    existing = {}
+    if os.path.exists(config_path):
+        try:
+            import yaml
+            with open(config_path) as f:
+                existing = yaml.safe_load(f) or {}
+            print(f"\n✓ Found existing {config_path} — merging configuration")
+        except Exception as e:
+            print(f"\n⚠ Warning: could not read existing {config_path}: {e}")
+            print("  Will create new config file")
+
+    # Update or set model section
+    existing["model"] = config["model"]
+
+    # Write config.yaml
+    try:
+        import yaml
+        with open(config_path, "w") as f:
+            yaml.dump(existing, f, default_flow_style=False, sort_keys=False)
+        print(f"\n✓ Wrote {config_path}")
+        print("  - provider: openrouter")
+        print("  - model: google/gemini-2.5-flash-lite")
+        print("\n✓ google/gemini-2.5-flash-lite (via OpenRouter) is now the default model!")
+        print("="*80 + "\n")
+        return True
+    except Exception as e:
+        print(f"\n✗ Error writing {config_path}: {e}")
+        print("="*80 + "\n")
+        return False
+
+def symlink_gws_skills():
+    """No-op: gws vendor submodule removed; Google Workspace uses Python API directly."""
+    print("\n✓ GWS vendor symlink: skipped (using google-api-python-client instead of gws CLI)")
+    return True
+
+def cleanup_stale_skills():
+    """Remove skills that were deleted from the bundled skills/ but may linger in seeded paths."""
+    print("\n" + "="*80)
+    print("CLEANING UP STALE SKILLS")
+    print("="*80)
+
+    import shutil
+
+    home = os.path.expanduser("~")
+
+    # All possible roots where skills may have been seeded
+    skill_roots = [
+        os.path.join(home, ".hermes", "skills"),
+        "/app/skills",                             # Railway container app dir
+        os.path.join(os.getcwd(), "skills"),       # Local dev / working dir
+    ]
+
+    # Skill directory names (relative to any skill root) that must not persist.
+    # These were removed from the bundled skills/ and contain stale instructions
+    # that reference deleted scripts and wrong tool names.
+    REMOVED_SKILL_RELPATHS = [
+        os.path.join("productivity", "google-workspace"),
+        "google-workspace",   # flat fallback path
+    ]
+
+    found_any = False
+    for root in skill_roots:
+        for relpath in REMOVED_SKILL_RELPATHS:
+            path = os.path.join(root, relpath)
+            if os.path.exists(path):
+                found_any = True
+                try:
+                    shutil.rmtree(path)
+                    print(f"  ✓ Removed stale skill: {path}")
+                except Exception as e:
+                    print(f"  ⚠ Could not remove {path}: {e}")
+
+    if not found_any:
+        print("  ✓ No stale skills found")
+
+    print("="*80 + "\n")
+
+
+def setup_registry_sheet():
+    """Create entity registry tabs using google-api-python-client (no gws CLI needed)."""
+    print("\n" + "="*80)
+    print("SETTING UP ENTITY REGISTRY SHEET TABS")
+    print("="*80)
+
+    SHEET_ID = "1XbSRAXxPLY4cXMTm2rmvKh11Nx3x0aKUxxuWualoV9g"
+    CRED_FILE = ACCOUNTS["ndr@draas.com"]["file_path"]
+
+    if not os.path.exists(CRED_FILE):
+        print(f"\n⚠ Skipping sheet setup — draas.com credentials not found at {CRED_FILE}")
+        print("="*80 + "\n")
+        return False
+
+    try:
+        from google.oauth2.credentials import Credentials
+        from google.auth.transport.requests import Request as GoogleRequest
+        from googleapiclient.discovery import build
+    except ImportError:
+        print("\n⚠ google-api-python-client not installed yet — sheet setup will run after redeploy")
+        print("="*80 + "\n")
+        return False
+
+    try:
+        with open(CRED_FILE) as f:
+            data = json.load(f)
+        creds = Credentials(
+            token=None,
+            refresh_token=data["refresh_token"],
+            client_id=data["client_id"],
+            client_secret=data["client_secret"],
+            token_uri="https://oauth2.googleapis.com/token",
+        )
+        creds.refresh(GoogleRequest())
+        svc = build("sheets", "v4", credentials=creds, cache_discovery=False)
+    except Exception as e:
+        print(f"\n⚠ Could not build Sheets client: {e}")
+        print("="*80 + "\n")
+        return False
+
+    # Get existing tab names
+    try:
+        meta = svc.spreadsheets().get(spreadsheetId=SHEET_ID).execute()
+        existing = {s["properties"]["title"] for s in meta.get("sheets", [])}
+        print(f"\n  Existing tabs: {sorted(existing)}")
+    except Exception as e:
+        print(f"\n⚠ Could not read sheet metadata: {e}")
+        print("="*80 + "\n")
+        return False
+
+    TABS = {
+        "projects":       ["canonical_name","aliases","voice_misspellings",
+                           "associated_contacts","associated_entities",
+                           "associated_land_proposals","status","notes"],
+        "land_proposals": ["canonical_name","aliases","voice_misspellings",
+                           "location","entity","associated_contacts",
+                           "associated_projects","status","notes"],
+        "entities":       ["canonical_name","aliases","voice_misspellings",
+                           "type","associated_contacts","associated_projects","notes"],
+    }
+
+    all_ok = True
+    for tab_name, headers in TABS.items():
+        if tab_name in existing:
+            print(f"  ✓ Tab already exists: {tab_name}")
+            continue
+        try:
+            svc.spreadsheets().batchUpdate(
+                spreadsheetId=SHEET_ID,
+                body={"requests": [{"addSheet": {"properties": {"title": tab_name}}}]}
+            ).execute()
+            print(f"  ✓ Created tab: {tab_name}")
+        except Exception as e:
+            print(f"  ✗ Could not create tab '{tab_name}': {e}")
+            all_ok = False
+            continue
+
+        hdr_range = f"{tab_name}!A1:{chr(ord('A') + len(headers) - 1)}1"
+        try:
+            svc.spreadsheets().values().update(
+                spreadsheetId=SHEET_ID, range=hdr_range,
+                valueInputOption="RAW",
+                body={"values": [headers]}
+            ).execute()
+            print(f"  ✓ Headers written to: {tab_name}")
+        except Exception as e:
+            print(f"  ✗ Could not write headers for '{tab_name}': {e}")
+            all_ok = False
+
+    if all_ok:
+        print("\n✓ Entity registry sheet is ready!")
+    print("="*80 + "\n")
+    return all_ok
+
+
+if __name__ == "__main__":
+    # Setup OAuth credentials first
+    oauth_success = setup_credentials()
+
+    # Clean up any stale skills that reference deleted scripts
+    cleanup_stale_skills()
+
+    # Create entity registry tabs in contacts sheet (idempotent — skips existing tabs)
+    setup_registry_sheet()
+
+    # Then setup model configuration
+    model_success = setup_model_config()
+
+    # Only fail hard if the PRIMARY account (ndr@draas.com) is missing.
+    # Secondary accounts (ahfl.in, gmail) are optional — missing them is a warning,
+    # not a reason to keep the bot from starting.
+    primary_cred = ACCOUNTS["ndr@draas.com"]["file_path"]
+    primary_ok = os.path.exists(primary_cred)
+    if not primary_ok:
+        print("\n✗ FATAL: Primary account credentials (ndr@draas.com) not created.")
+        print("  Set DRAAS_OAUTH_REFRESH_TOKEN, DRAAS_OAUTH_CLIENT_ID, DRAAS_OAUTH_CLIENT_SECRET in Railway.")
+        sys.exit(1)
+
+    sys.exit(0)
