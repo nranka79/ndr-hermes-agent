@@ -6563,6 +6563,24 @@ class AIAgent:
                         
                         if self._empty_content_retries < 3:
                             self._vprint(f"{self.log_prefix}🔄 Retrying API call ({self._empty_content_retries}/3)...")
+                            # When the model produced only reasoning with no text/tool calls,
+                            # a bare retry repeats identically. Instead, append the empty
+                            # assistant turn and a nudge so the model acts on its reasoning.
+                            if reasoning_text:
+                                partial_msg: Dict[str, Any] = {
+                                    "role": "assistant",
+                                    "content": "",
+                                }
+                                # Preserve reasoning for models that need it in history
+                                partial_msg["reasoning_content"] = reasoning_text
+                                messages.append(partial_msg)
+                                messages.append({
+                                    "role": "user",
+                                    "content": (
+                                        "[System: Your previous turn contained only reasoning with no response. "
+                                        "Please complete the action now — respond directly or call the appropriate tool.]"
+                                    ),
+                                })
                             continue
                         else:
                             self._vprint(f"{self.log_prefix}❌ Max retries (3) for empty content exceeded.", force=True)
