@@ -3800,6 +3800,12 @@ class AIAgent:
             "timeout": float(os.getenv("HERMES_API_TIMEOUT", 900.0)),
         }
 
+        # If a previous turn produced only thinking with no tool call, force
+        # tool_choice="required" on this retry so the model must call a tool.
+        if getattr(self, "_force_required_tool_call", False) and self.tools:
+            api_kwargs["tool_choice"] = "required"
+            self._force_required_tool_call = False
+
         if self.max_tokens is not None:
             api_kwargs.update(self._max_tokens_param(self.max_tokens))
 
@@ -6563,24 +6569,11 @@ class AIAgent:
                         
                         if self._empty_content_retries < 3:
                             self._vprint(f"{self.log_prefix}🔄 Retrying API call ({self._empty_content_retries}/3)...")
-                            # When the model produced only reasoning with no text/tool calls,
-                            # a bare retry repeats identically. Instead, append the empty
-                            # assistant turn and a nudge so the model acts on its reasoning.
-                            if reasoning_text:
-                                partial_msg: Dict[str, Any] = {
-                                    "role": "assistant",
-                                    "content": "",
-                                }
-                                # Preserve reasoning for models that need it in history
-                                partial_msg["reasoning_content"] = reasoning_text
-                                messages.append(partial_msg)
-                                messages.append({
-                                    "role": "user",
-                                    "content": (
-                                        "[System: Your previous turn contained only reasoning with no response. "
-                                        "Please complete the action now — respond directly or call the appropriate tool.]"
-                                    ),
-                                })
+                            # When the model produced only reasoning with no tool call,
+                            # force tool_choice="required" on the next attempt so it
+                            # must call a tool instead of generating another think block.
+                            if reasoning_text and self.valid_tool_names:
+                                self._force_required_tool_call = True
                             continue
                         else:
                             self._vprint(f"{self.log_prefix}❌ Max retries (3) for empty content exceeded.", force=True)
