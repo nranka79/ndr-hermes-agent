@@ -3679,12 +3679,19 @@ class AIAgent:
         if self.api_mode == "anthropic_messages":
             from agent.anthropic_adapter import build_anthropic_kwargs
             anthropic_messages = self._prepare_anthropic_messages_for_api(api_messages)
+            # MiniMax uses an Anthropic-compatible endpoint but does not support
+            # the Anthropic thinking parameter — passing it causes the model to
+            # return only thinking blocks with no text, triggering retry loops.
+            effective_reasoning_config = (
+                None if self.provider == "minimax"
+                else self.reasoning_config
+            )
             return build_anthropic_kwargs(
                 model=self.model,
                 messages=anthropic_messages,
                 tools=self.tools,
                 max_tokens=self.max_tokens,
-                reasoning_config=self.reasoning_config,
+                reasoning_config=effective_reasoning_config,
                 is_oauth=getattr(self, "_is_anthropic_oauth", False),
             )
 
