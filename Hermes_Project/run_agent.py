@@ -4900,22 +4900,19 @@ class AIAgent:
                 self._base_url = self.base_url
                 self._base_url_lower = self.base_url.lower()
 
-            # Rebuild _anthropic_client when switching INTO anthropic_messages mode.
-            # Without this, _anthropic_client stays None (set in __init__ only when
-            # the *starting* api_mode was anthropic_messages), causing:
-            #   AttributeError: 'NoneType' object has no attribute 'messages'
-            # on the very next _anthropic_messages_create() call.
+            # Rebuild clients when switching providers.
             if self.api_mode == "anthropic_messages":
+                # Switching INTO Anthropic mode — build the Anthropic client.
+                # Without this, _anthropic_client stays None (set in __init__
+                # only when the *starting* api_mode was anthropic_messages),
+                # causing AttributeError: 'NoneType' object has no attribute
+                # 'messages' on the very next _anthropic_messages_create() call.
                 try:
                     from agent.anthropic_adapter import build_anthropic_client
                     import os as _os
-                    # Use provider-specific env key; fall back to existing key
                     new_key = (
-                        _os.environ.get("MINIMAX_API_KEY")
-                        if self.provider == "minimax"
-                        else None
-                    ) or getattr(self, "_anthropic_api_key", None) or getattr(self, "api_key", "")
-                    # Close old client if one exists
+                        getattr(self, "_anthropic_api_key", None) or getattr(self, "api_key", "")
+                    )
                     old_client = getattr(self, "_anthropic_client", None)
                     if old_client:
                         try:
@@ -4928,6 +4925,30 @@ class AIAgent:
                     self._is_anthropic_oauth = False
                 except Exception as _build_err:
                     logger.warning("Could not rebuild Anthropic client after model switch: %s", _build_err)
+            else:
+                # Switching INTO chat_completions or codex mode.
+                # If the session started in anthropic_messages mode, _client_kwargs
+                # is {} and self.client is None — rebuild the OpenAI client now
+                # so subsequent chat_completions calls work.
+                try:
+                    from agent.auxiliary_client import resolve_provider_client
+                    import os as _os
+                    new_client, _ = resolve_provider_client(
+                        self.provider, model=self.model, raw_codex=True
+                    )
+                    if new_client is not None:
+                        self.client = new_client
+                        self._client_kwargs = {
+                            "api_key": new_client.api_key,
+                            "base_url": str(new_client.base_url).rstrip("/"),
+                        }
+                        # Sync base_url so _build_api_kwargs checks are correct
+                        self.base_url = self._client_kwargs["base_url"]
+                        self._base_url = self.base_url
+                        self._base_url_lower = self.base_url.lower()
+                        self._replace_primary_openai_client(reason="model_switch_rebuild")
+                except Exception as _rebuild_err:
+                    logger.warning("Could not rebuild OpenAI client after model switch: %s", _rebuild_err)
 
             if not self.quiet_mode:
                 print(f"🔄 Model switched: {old_provider or 'unknown'} ({old_model}) → {self.provider} ({self.model})")
