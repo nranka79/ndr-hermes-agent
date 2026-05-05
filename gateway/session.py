@@ -20,6 +20,26 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Any
 
 logger = logging.getLogger(__name__)
+_audit_logger = logging.getLogger("HERMES_AUDIT")
+
+
+def _audit_log_session(context: Any, user_cfg: dict) -> None:
+    """Emit one structured HERMES_AUDIT JSON line per session start."""
+    try:
+        import time
+        record = {
+            "event": "session_start",
+            "ts": time.time(),
+            "platform": context.source.platform.value,
+            "user_id": context.source.user_id or "",
+            "user_name": user_cfg.get("name") or context.source.user_name or "",
+            "user_email": user_cfg.get("email") or "",
+            "role": user_cfg.get("role") or "",
+            "session_key": context.session_key,
+        }
+        _audit_logger.info(json.dumps(record))
+    except Exception:
+        pass
 
 
 def _now() -> datetime:
@@ -313,6 +333,28 @@ def build_session_context_prompt(
         if redact_pii:
             uid = _hash_sender_id(uid)
         lines.append(f"**User ID:** {uid}")
+
+    # Inject per-user profile from users.json (Telegram sessions only)
+    _user_cfg: dict = {}
+    if context.source.platform.value == "telegram" and context.source.user_id:
+        try:
+            from tools._user_registry import get_user_config
+            _user_cfg = get_user_config(context.source.user_id)
+        except Exception:
+            pass
+    if _user_cfg:
+        lines.append("")
+        lines.append("**User Profile:**")
+        if _user_cfg.get("name"):
+            lines.append(f"  - Name: {_user_cfg['name']}")
+        if _user_cfg.get("email"):
+            lines.append(f"  - Email (Google Workspace): {_user_cfg['email']}")
+            lines.append(f"  - Google SA subject: {_user_cfg['email']} (use as impersonation target for all GWS calls)")
+        if _user_cfg.get("role"):
+            lines.append(f"  - Role: {_user_cfg['role']}")
+        if _user_cfg.get("gbrain_home"):
+            lines.append(f"  - GBrain home: {_user_cfg['gbrain_home']} (prefix all gbrain commands with HOME={_user_cfg['gbrain_home']})")
+        _audit_log_session(context, _user_cfg)
 
     # Platform-specific behavioral notes
     if context.source.platform == Platform.SLACK:

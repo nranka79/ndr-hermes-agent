@@ -103,15 +103,12 @@ services:
       PYTHONUNBUFFERED: "1"
       NO_COLOR: "1"
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
-      TELEGRAM_BOT_TOKEN_2: ${TELEGRAM_BOT_TOKEN_2}
-      TELEGRAM_BOT_TOKEN_3: ${TELEGRAM_BOT_TOKEN_3}
-      TELEGRAM_BOT_TOKEN_4: ${TELEGRAM_BOT_TOKEN_4}
-      TELEGRAM_BOT_TOKEN_5: ${TELEGRAM_BOT_TOKEN_5}
       TELEGRAM_ALLOWED_USERS: ${TELEGRAM_ALLOWED_USERS}
       HERMES_N8N_TOKEN: ${HERMES_N8N_TOKEN}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
       GOOGLE_AI_STUDIO_API_KEY: ${GOOGLE_AI_STUDIO_API_KEY}
       GEMINI_API_KEY: ${GOOGLE_AI_STUDIO_API_KEY}
+      GOOGLE_SA_KEY: ${GOOGLE_SA_KEY}
       MINIMAX_API_KEY: ${MINIMAX_API_KEY}
       GITHUB_TOKEN: ${GITHUB_TOKEN}
       GITHUB_REPO: ${GITHUB_REPO}
@@ -127,6 +124,12 @@ services:
       HERMES_FORCE_SKILL_SYNC: ${HERMES_FORCE_SKILL_SYNC}
     volumes:
       - ./hermes-data:/data/hermes
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+        tag: "hermes"
 
   smart-browser:
     build:
@@ -156,3 +159,36 @@ services:
       AUTH_FILE: /data/.auth
     volumes:
       - ./voice-data:/data
+
+  loki:
+    image: grafana/loki:2.9.4
+    restart: always
+    ports:
+      - "127.0.0.1:3100:3100"
+    command: -config.file=/etc/loki/loki.yaml
+    volumes:
+      - ./monitoring/loki.yaml:/etc/loki/loki.yaml:ro
+      - ./loki-data:/loki
+
+  promtail:
+    image: grafana/promtail:2.9.4
+    restart: always
+    command: -config.file=/etc/promtail/promtail.yaml
+    volumes:
+      - ./monitoring/promtail.yaml:/etc/promtail/promtail.yaml:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+
+  grafana:
+    image: grafana/grafana:10.4.2
+    restart: always
+    ports:
+      - "127.0.0.1:3001:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD}
+      GF_SECURITY_ADMIN_USER: admin
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_SERVER_ROOT_URL: https://monitor.ahfl.in
+    volumes:
+      - ./grafana-data:/var/lib/grafana
+      - ./monitoring/grafana-datasources.yaml:/etc/grafana/provisioning/datasources/loki.yaml:ro

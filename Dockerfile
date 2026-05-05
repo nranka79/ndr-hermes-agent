@@ -25,7 +25,8 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/opt/hermes/.playwright
 # hermes process, the dashboard, and per-profile gateways.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-    ca-certificates curl iputils-ping python3 python-is-python3 ripgrep ffmpeg gcc python3-dev python3-venv libffi-dev libolm-dev procps git openssh-client docker-cli xz-utils && \
+    ca-certificates curl iputils-ping python3 python-is-python3 ripgrep ffmpeg gcc python3-dev python3-venv libffi-dev libolm-dev procps git openssh-client docker-cli xz-utils \
+    zip unzip poppler-utils ocrmypdf tesseract-ocr tesseract-ocr-eng ghostscript qpdf && \
     rm -rf /var/lib/apt/lists/*
 
 # ---------- s6-overlay install ----------
@@ -101,6 +102,15 @@ COPY --from=node_source /usr/local/lib/node_modules/corepack /usr/local/lib/node
 RUN ln -sf /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm && \
     ln -sf /usr/local/lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx && \
     ln -sf /usr/local/lib/node_modules/corepack/dist/corepack.js /usr/local/bin/corepack
+
+# Install Bun (used by GBrain)
+RUN curl -fsSL https://bun.sh/install | bash
+ENV PATH="/root/.bun/bin:${PATH}"
+
+# Install GBrain — must use git clone + bun link, not bun install -g
+RUN git clone --depth 1 https://github.com/garrytan/gbrain.git /opt/gbrain && \
+    cd /opt/gbrain && bun install && bun link && \
+    chmod -R a+rX /opt/gbrain
 
 WORKDIR /opt/hermes
 

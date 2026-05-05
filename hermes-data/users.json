@@ -1,0 +1,14 @@
+{
+  "REPLACE_WITH_YOUR_TELEGRAM_ID": {
+    "name": "Nishant Ranka",
+    "email": "ndr@draas.com",
+    "role": "admin",
+    "gbrain_home": "/data/hermes/users/REPLACE_WITH_YOUR_TELEGRAM_ID"
+  },
+  "8717455402": {
+    "name": "Bharat Hawaldar",
+    "email": "sales1.blr@draas.com",
+    "role": "employee",
+    "gbrain_home": "/data/hermes/users/8717455402"
+  }
+}
