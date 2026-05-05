@@ -20,22 +20,15 @@ scrape_configs:
       - source_labels: [__meta_docker_container_log_stream]
         target_label: stream
     pipeline_stages:
-      # Parse HERMES_AUDIT structured JSON lines from hermes container
       - match:
-          selector: '{container="hermes"}'
+          selector: '{container="hermes-hermes-1"}'
           stages:
             - json:
                 expressions:
                   audit_event: event
                   user_email: user_email
-                  user_name: user_name
-                  user_id: user_id
                   role: role
-                  session_key: session_key
             - labels:
                 audit_event:
-                  source: audit_event
                 user_email:
-                  source: user_email
                 role:
-                  source: role
