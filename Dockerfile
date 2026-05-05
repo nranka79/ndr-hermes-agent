@@ -14,8 +14,17 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/opt/hermes/.playwright
 # that would otherwise accumulate when hermes runs as PID 1. See #15012.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-    build-essential curl nodejs npm python3 ripgrep ffmpeg gcc python3-dev libffi-dev procps git openssh-client docker-cli tini && \
+    build-essential curl nodejs npm python3 ripgrep ffmpeg gcc python3-dev libffi-dev procps git openssh-client docker-cli tini zip unzip && \
     rm -rf /var/lib/apt/lists/*
+
+# Install Bun (used by GBrain)
+RUN curl -fsSL https://bun.sh/install | bash
+ENV PATH="/root/.bun/bin:${PATH}"
+
+# Install GBrain (Garry Tan) — must use git clone + bun link, not bun install -g
+RUN git clone --depth 1 https://github.com/garrytan/gbrain.git /opt/gbrain && \
+    cd /opt/gbrain && bun install && bun link && \
+    chmod -R a+rX /opt/gbrain
 
 # Non-root user for runtime; UID can be overridden via HERMES_UID at runtime
 RUN useradd -u 10000 -m -d /opt/data hermes
