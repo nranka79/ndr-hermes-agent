@@ -1,0 +1,139 @@
+{
+  "name": "hermes-oauth-callback",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "hermes-oauth-callback",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "node-webhook",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [240, 300],
+      "webhookId": "hermes-oauth-callback"
+    },
+    {
+      "parameters": {
+        "jsCode": "const query = $input.first().json.query || {};\nconst code = query.code || '';\nconst telegram_id = query.state || '';\n\nif (!code) throw new Error('Missing OAuth code in callback');\nif (!telegram_id) throw new Error('Missing state (telegram_id) in callback');\n\nreturn [{ json: { code, telegram_id } }];"
+      },
+      "id": "node-extract",
+      "name": "Extract Params",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://oauth2.googleapis.com/token",
+        "sendBody": true,
+        "contentType": "form-urlencoded",
+        "bodyParameters": {
+          "parameters": [
+            { "name": "code", "value": "={{ $json.code }}" },
+            { "name": "client_id", "value": "={{ $env.HERMES_GOOGLE_CLIENT_ID }}" },
+            { "name": "client_secret", "value": "={{ $env.HERMES_GOOGLE_CLIENT_SECRET }}" },
+            { "name": "redirect_uri", "value": "={{ $env.HERMES_GOOGLE_REDIRECT_URI }}" },
+            { "name": "grant_type", "value": "authorization_code" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "node-token-exchange",
+      "name": "Exchange Code for Tokens",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const tokenData = $input.first().json;\nconst extractNode = $('Extract Params').first().json;\n\nif (!tokenData.refresh_token) {\n  throw new Error('No refresh_token returned. Ensure prompt=consent was set in the OAuth URL.');\n}\n\nconst expiryMs = Date.now() + (tokenData.expires_in || 3600) * 1000;\nconst token_expiry = new Date(expiryMs).toISOString();\n\nreturn [{\n  json: {\n    telegram_id: extractNode.telegram_id,\n    access_token: tokenData.access_token,\n    refresh_token: tokenData.refresh_token,\n    token_expiry,\n    scope: tokenData.scope || ''\n  }\n}];"
+      },
+      "id": "node-parse-tokens",
+      "name": "Parse Token Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [900, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "https://www.googleapis.com/oauth2/v2/userinfo",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Bearer {{ $('Exchange Code for Tokens').first().json.access_token }}" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "node-userinfo",
+      "name": "Get User Email",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1120, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO gws_oauth_tokens (telegram_id, email, refresh_token, access_token, token_expiry, scope, updated_at)\nVALUES ($1, $2, $3, $4, $5::timestamptz, $6, NOW())\nON CONFLICT (telegram_id) DO UPDATE SET\n  email = EXCLUDED.email,\n  refresh_token = EXCLUDED.refresh_token,\n  access_token = EXCLUDED.access_token,\n  token_expiry = EXCLUDED.token_expiry,\n  scope = EXCLUDED.scope,\n  updated_at = NOW()\nRETURNING telegram_id, email",
+        "additionalFields": {
+          "queryParams": "={{ [$('Parse Token Response').first().json.telegram_id, $('Get User Email').first().json.email, $('Parse Token Response').first().json.refresh_token, $('Parse Token Response').first().json.access_token, $('Parse Token Response').first().json.token_expiry, $('Parse Token Response').first().json.scope] }}"
+        }
+      },
+      "id": "node-upsert",
+      "name": "Upsert Token in DB",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [1340, 300],
+      "credentials": {
+        "postgres": {
+          "name": "Hermes Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "<!DOCTYPE html><html><head><title>Authorized</title><style>body{font-family:sans-serif;text-align:center;padding:60px;background:#f0fdf4;}h2{color:#166534;}p{color:#374151;}</style></head><body><h2>Authorization Successful</h2><p>Your Google Workspace account has been connected to Anjali.</p><p>You can now close this window and return to your chat.</p></body></html>",
+        "options": {
+          "responseHeaders": {
+            "entries": [{ "name": "Content-Type", "value": "text/html" }]
+          }
+        }
+      },
+      "id": "node-respond",
+      "name": "Return Success HTML",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1560, 300]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [[{ "node": "Extract Params", "type": "main", "index": 0 }]]
+    },
+    "Extract Params": {
+      "main": [[{ "node": "Exchange Code for Tokens", "type": "main", "index": 0 }]]
+    },
+    "Exchange Code for Tokens": {
+      "main": [[{ "node": "Parse Token Response", "type": "main", "index": 0 }]]
+    },
+    "Parse Token Response": {
+      "main": [[{ "node": "Get User Email", "type": "main", "index": 0 }]]
+    },
+    "Get User Email": {
+      "main": [[{ "node": "Upsert Token in DB", "type": "main", "index": 0 }]]
+    },
+    "Upsert Token in DB": {
+      "main": [[{ "node": "Return Success HTML", "type": "main", "index": 0 }]]
+    }
+  },
+  "active": true,
+  "settings": { "executionOrder": "v1" }
+}
