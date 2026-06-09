@@ -1,0 +1,145 @@
+{
+  "name": "hermes-gmail",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "hermes-gmail",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "node-webhook",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [240, 400],
+      "webhookId": "hermes-gmail"
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $input.first().json.body || $input.first().json;\nconst telegram_id = String(body.telegram_id || '').trim();\nconst operation = String(body.operation || '').trim();\nif (!telegram_id) return [{ json: { error: 'No telegram_id — cannot identify user. This is a system error.' } }];\nif (!operation) return [{ json: { error: 'Missing operation' } }];\nreturn [{ json: { ...body, telegram_id, operation } }];"
+      },
+      "id": "node-extract",
+      "name": "Extract & Validate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 400]
+    },
+    {
+      "parameters": {
+        "workflowId": "={{ $workflow.id }}",
+        "source": "id",
+        "workflowData": {
+          "workflowId": "hermes-token-for-request"
+        },
+        "inputData": "={{ { telegram_id: $json.telegram_id } }}"
+      },
+      "id": "node-get-token",
+      "name": "Get Access Token",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1,
+      "position": [680, 400]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            {
+              "id": "cond-needs-auth",
+              "leftValue": "={{ $json.needs_auth }}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "equals" }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "node-if-auth",
+      "name": "Needs Auth?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [900, 400]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ success: false, needs_auth: true, auth_url: $json.auth_url, message: 'Google authorization required. Send the auth_url to the user.' }) }}",
+        "options": {}
+      },
+      "id": "node-respond-auth",
+      "name": "Respond Needs Auth",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1120, 240]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Route to correct Gmail operation\nconst body = $('Extract & Validate').first().json;\nconst access_token = $input.first().json.access_token;\nconst op = body.operation;\n\n// Build the Gmail API request params based on operation\nlet method = 'GET';\nlet urlPath = '';\nlet requestBody = null;\n\nif (op === 'messages.list') {\n  const q = encodeURIComponent(body.query || '');\n  const max = body.maxResults || 10;\n  urlPath = `https://gmail.googleapis.com/gmail/v1/users/me/messages?q=${q}&maxResults=${max}`;\n} else if (op === 'messages.get') {\n  urlPath = `https://gmail.googleapis.com/gmail/v1/users/me/messages/${body.messageId}?format=full`;\n} else if (op === 'threads.get') {\n  urlPath = `https://gmail.googleapis.com/gmail/v1/users/me/threads/${body.threadId}?format=full`;\n} else if (op === 'messages.send' || op === 'messages.send-reply') {\n  method = 'POST';\n  urlPath = `https://gmail.googleapis.com/gmail/v1/users/me/messages/send`;\n  const toAddr = body.to || '';\n  const subject = body.subject || '';\n  const bodyText = body.body || '';\n  const cc = body.cc ? `Cc: ${body.cc}\\r\\n` : '';\n  const replyTo = body.replyTo ? `In-Reply-To: ${body.replyTo}\\r\\nReferences: ${body.replyTo}\\r\\n` : '';\n  const rawMsg = `To: ${toAddr}\\r\\nSubject: ${subject}\\r\\n${cc}${replyTo}Content-Type: text/plain; charset=utf-8\\r\\n\\r\\n${bodyText}`;\n  const encoded = Buffer.from(rawMsg).toString('base64').replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=/g, '');\n  requestBody = JSON.stringify({ raw: encoded });\n} else {\n  throw new Error(`Unknown Gmail operation: ${op}`);\n}\n\nreturn [{ json: { method, urlPath, requestBody, access_token } }];"
+      },
+      "id": "node-route",
+      "name": "Route Operation",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1120, 560]
+    },
+    {
+      "parameters": {
+        "method": "={{ $json.method }}",
+        "url": "={{ $json.urlPath }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Bearer {{ $json.access_token }}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": "={{ $json.method !== 'GET' }}",
+        "body": "={{ $json.requestBody || '' }}",
+        "options": {}
+      },
+      "id": "node-gmail-api",
+      "name": "Call Gmail API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1340, 560]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ success: true, data: $json }) }}",
+        "options": {}
+      },
+      "id": "node-respond-ok",
+      "name": "Respond Success",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1560, 560]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [[{ "node": "Extract & Validate", "type": "main", "index": 0 }]]
+    },
+    "Extract & Validate": {
+      "main": [[{ "node": "Get Access Token", "type": "main", "index": 0 }]]
+    },
+    "Get Access Token": {
+      "main": [[{ "node": "Needs Auth?", "type": "main", "index": 0 }]]
+    },
+    "Needs Auth?": {
+      "main": [
+        [{ "node": "Respond Needs Auth", "type": "main", "index": 0 }],
+        [{ "node": "Route Operation", "type": "main", "index": 0 }]
+      ]
+    },
+    "Route Operation": {
+      "main": [[{ "node": "Call Gmail API", "type": "main", "index": 0 }]]
+    },
+    "Call Gmail API": {
+      "main": [[{ "node": "Respond Success", "type": "main", "index": 0 }]]
+    }
+  },
+  "active": true,
+  "settings": { "executionOrder": "v1" }
+}
