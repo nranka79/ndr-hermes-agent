@@ -1027,6 +1027,76 @@ def get_cute_tool_message(
 
 
 # =========================================================================
+# Context pressure display (CLI user-facing warnings)
+# =========================================================================
+
+# ANSI color codes for context pressure tiers
+_CYAN = "\033[36m"
+_YELLOW = "\033[33m"
+_BOLD = "\033[1m"
+_DIM_ANSI = "\033[2m"
+
+# Bar characters
+_BAR_FILLED = "▰"
+_BAR_EMPTY = "▱"
+_BAR_WIDTH = 20
+
+
+def format_context_pressure(
+    compaction_progress: float,
+    threshold_tokens: int,
+    threshold_percent: float,
+    compression_enabled: bool = True,
+) -> str:
+    """Build a formatted context pressure line for CLI display."""
+    pct_int = int(compaction_progress * 100)
+    filled = min(int(compaction_progress * _BAR_WIDTH), _BAR_WIDTH)
+    bar = _BAR_FILLED * filled + _BAR_EMPTY * (_BAR_WIDTH - filled)
+
+    threshold_k = f"{threshold_tokens // 1000}k" if threshold_tokens >= 1000 else str(threshold_tokens)
+    threshold_pct_int = int(threshold_percent * 100)
+
+    if compaction_progress >= 0.85:
+        color = f"{_BOLD}{_YELLOW}"
+        icon = "⚠"
+        hint = "compaction imminent" if compression_enabled else "no auto-compaction"
+    else:
+        color = _CYAN
+        icon = "◐"
+        hint = "approaching compaction"
+
+    return (
+        f"  {color}{icon} context {bar} {pct_int}% to compaction{_ANSI_RESET}"
+        f"  {_DIM_ANSI}{threshold_k} threshold ({threshold_pct_int}%) · {hint}{_ANSI_RESET}"
+    )
+
+
+def format_context_pressure_gateway(
+    compaction_progress: float,
+    threshold_percent: float,
+    compression_enabled: bool = True,
+) -> str:
+    """Build a plain-text context pressure notification for messaging platforms."""
+    pct_int = int(compaction_progress * 100)
+    filled = min(int(compaction_progress * _BAR_WIDTH), _BAR_WIDTH)
+    bar = _BAR_FILLED * filled + _BAR_EMPTY * (_BAR_WIDTH - filled)
+
+    threshold_pct_int = int(threshold_percent * 100)
+
+    if compaction_progress >= 0.85:
+        icon = "⚠️"
+        if compression_enabled:
+            hint = f"Context compaction is imminent (threshold: {threshold_pct_int}% of window)."
+        else:
+            hint = "Auto-compaction is disabled — context may be truncated."
+    else:
+        icon = "ℹ️"
+        hint = f"Compaction threshold is at {threshold_pct_int}% of context window."
+
+    return f"{icon} Context: {bar} {pct_int}% to compaction\n{hint}"
+
+
+# =========================================================================
 # Honcho session line (one-liner with clickable OSC 8 hyperlink)
 # =========================================================================
 
