@@ -685,7 +685,13 @@ class AIAgent:
     def switch_model(self, new_model, new_provider, api_key='', base_url='', api_mode=''):
         """Forwarder — see ``agent.agent_runtime_helpers.switch_model``."""
         from agent.agent_runtime_helpers import switch_model
-        return switch_model(self, new_model, new_provider, api_key, base_url, api_mode)
+        result = switch_model(self, new_model, new_provider, api_key, base_url, api_mode)
+        try:
+            from tools._agent_context import set_llm_config as _set_llm_ctx
+            _set_llm_ctx(self.base_url, self.api_key, self.model)
+        except Exception:
+            pass
+        return result
 
     def _safe_print(self, *args, **kwargs):
         """Print that silently handles broken pipes / closed stdout.

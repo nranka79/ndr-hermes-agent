@@ -1261,6 +1261,15 @@ def execute_code(
             child_env["TZ"] = _tz_name
         child_env.pop("HERMES_TIMEZONE", None)
 
+        # Inject session user identity so gws_auth.py can find the right token.
+        try:
+            from gateway.session_context import get_session_env as _gse
+            _session_tid = _gse("HERMES_SESSION_USER_ID", "")
+            if _session_tid:
+                child_env["HERMES_SESSION_USER_ID"] = _session_tid
+        except Exception:
+            pass
+
         # Per-profile HOME isolation: redirect system tool configs into
         # {HERMES_HOME}/home/ when that directory exists.
         from hermes_constants import get_subprocess_home
