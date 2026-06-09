@@ -217,6 +217,17 @@ class GatewayAuthorizationMixin:
         if self.pairing_store.is_approved(platform_name, user_id):
             return True
 
+        # Users registered in users.json are always authorized (Telegram only).
+        # This allows add-user to take effect immediately without restarting the
+        # gateway or updating TELEGRAM_ALLOWED_USERS in the environment.
+        if source.platform == Platform.TELEGRAM and user_id:
+            try:
+                from tools._user_registry import load_user_registry
+                if str(user_id).strip() in load_user_registry():
+                    return True
+            except Exception:
+                pass
+
         # Check platform-specific and global allowlists
         platform_allowlist = os.getenv(platform_env_map.get(source.platform, ""), "").strip()
         group_user_allowlist = ""

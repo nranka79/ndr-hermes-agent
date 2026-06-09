@@ -287,6 +287,45 @@ def _handle_send(args):
     if duplicate_skip:
         return json.dumps(duplicate_skip)
 
+    # Security: enforce session user boundary.
+    # Model cannot route a live user's results to a different user's chat,
+    # UNLESS both the sender and target have cross_message_allowed=true in users.json.
+    # Cron and CLI contexts have no HERMES_SESSION_CHAT_ID -- unaffected.
+    from gateway.session_context import get_session_env as _gse
+    _sess_chat = _gse("HERMES_SESSION_CHAT_ID", "").strip()
+    _sess_plat = _gse("HERMES_SESSION_PLATFORM", "").strip()
+    if (
+        _sess_chat
+        and _sess_plat == platform_name
+        and str(chat_id).strip() != str(_sess_chat).strip()
+    ):
+        _cross_ok = False
+        if platform_name == "telegram":
+            try:
+                from tools._user_registry import get_user_config
+                _sender_cfg = get_user_config(_sess_chat)
+                _target_cfg = get_user_config(chat_id)
+                if _sender_cfg.get("cross_message_allowed") and _target_cfg.get("cross_message_allowed"):
+                    _cross_ok = True
+                    logger.info(
+                        "send_message cross-user ALLOWED (allowlist): session %s (chat %s) -> %s:%s",
+                        _gse("HERMES_SESSION_USER_ID", "?"), _sess_chat, platform_name, chat_id,
+                    )
+            except Exception as _cm_err:
+                logger.warning("send_message: cross-message allowlist check failed: %s", _cm_err)
+        if not _cross_ok:
+            logger.warning(
+                "send_message BLOCKED cross-user: session %s (chat %s) -> %s:%s",
+                _gse("HERMES_SESSION_USER_ID", "?"), _sess_chat, platform_name, chat_id,
+            )
+            return json.dumps({
+                "error": (
+                    "Cross-user send blocked. Deliver results to the requesting user only. "
+                    "Use target='telegram' (no explicit ID) or target='origin' -- "
+                    "the gateway routes it to the correct session chat automatically."
+                )
+            })
+
     # Slack: resolve user IDs (U...) to DM channel IDs via conversations.open
     if platform_name == "slack" and chat_id and chat_id.startswith("U"):
         try:

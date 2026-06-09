@@ -70,6 +70,13 @@ _HERMES_CORE_TOOLS = [
     "kanban_unblock",
     # Computer use (macOS, gated on cua-driver being installed via check_fn)
     "computer_use",
+    # Smart browser and cloud browser tools
+    "smart_browser",
+    "browser_use_cloud",
+    # OpenRouter ad-hoc model routing (explicit-trigger only)
+    "call_openrouter_model",
+    # User management (admin-only, gated inside the handler)
+    "manage_user",
 ]
 
 # Webhook events may originate from untrusted third-party content (for example,
@@ -174,11 +181,19 @@ TOOLSETS = {
             "browser_type", "browser_scroll", "browser_back",
             "browser_press", "browser_get_images",
             "browser_vision", "browser_console", "browser_cdp",
-            "browser_dialog", "web_search"
+            "browser_dialog", "web_search",
+            "smart_browser",
+            "browser_use_cloud"
         ],
         "includes": []
     },
-    
+
+    "external_model": {
+        "description": "Route a sub-task to a user-specified model via OpenRouter (explicit request only)",
+        "tools": ["call_openrouter_model"],
+        "includes": []
+    },
+
     "cronjob": {
         "description": "Cronjob management tool - create, list, update, pause, resume, remove, and trigger scheduled tasks",
         "tools": ["cronjob"],
