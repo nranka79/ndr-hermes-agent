@@ -40,6 +40,7 @@ from agent.prompt_builder import (
     TASK_COMPLETION_GUIDANCE,
     TOOL_USE_ENFORCEMENT_GUIDANCE,
     TOOL_USE_ENFORCEMENT_MODELS,
+    WHATSAPP_LINK_GUIDANCE,
 )
 from agent.runtime_cwd import resolve_context_cwd
 
