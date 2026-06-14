@@ -478,6 +478,14 @@ STEER_CHANNEL_NOTE = (
 # message representation stays consistent ("system" everywhere).
 DEVELOPER_ROLE_MODELS = ("gpt-5", "codex")
 
+WHATSAPP_LINK_GUIDANCE = (
+    "When you need to produce a WhatsApp link (wa.me URL) for any reason, "
+    "you MUST call the whatsapp_link tool — never construct or type a wa.me "
+    "URL manually. The tool handles all required URL encoding, including the "
+    "special rule that '&' in message text must be encoded as %EF%BC%86 "
+    "(fullwidth ampersand) rather than %26."
+)
+
 PLATFORM_HINTS = {
     "whatsapp": (
         "You are on a text messaging communication platform, WhatsApp. "
@@ -487,7 +495,9 @@ PLATFORM_HINTS = {
         "will be sent as a native WhatsApp attachment — images (.jpg, .png, "
         ".webp) appear as photos, videos (.mp4, .mov) play inline, and other "
         "files arrive as downloadable documents. You can also include image "
-        "URLs in markdown format ![alt](url) and they will be sent as photos."
+        "URLs in markdown format ![alt](url) and they will be sent as photos. "
+        "When producing any WhatsApp link (wa.me URL), always call the "
+        "whatsapp_link tool — never type the URL manually."
     ),
     "telegram": (
         "You are on a text messaging communication platform, Telegram. "
