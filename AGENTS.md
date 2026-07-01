@@ -4,6 +4,252 @@ Instructions for AI coding assistants and developers working on the hermes-agent
 
 **Never give up on the right solution.**
 
+## Hetzner VPS — Infrastructure Briefing (canonical memory, inlined)
+
+> **This section is canonical memory for the production Hermes deployment on Hetzner. Read it FIRST for any work involving the VPS, Docker, Telegram, N8N, GWS, Google Sheets, or service infrastructure. The same content also lives in `hermes-data/connections/hetzner.md` (under the Hermes project checkout) for editing — keep both in sync.**
+
+**Last updated:** 2026-06-29
+**Owner:** Nishant Ranka (admin)
+
+### SSH Access
+
+| Field | Value |
+|---|---|
+| Host | `178.105.35.94` |
+| DNS | `transcribe.ahfl.in` |
+| User | `root` |
+| App root (on VPS) | `/opt/hermes/` |
+
+**Connect:**
+```bash
+ssh root@178.105.35.94
+```
+
+#### Local SSH key (Windows) — to find
+
+- `C:\Users\ruhaan\.ssh\id_rsa`
+- `C:\Users\ruhaan\.ssh\id_ed25519`
+- `C:\Users\ruhaan\.ssh\config` ← may have a `Host transcribe.ahfl.in` block
+
+From Git Bash: `ssh root@178.105.35.94`. If non-default key, check `~/.ssh/config` for a matching `Host` block.
+
+### Platform
+
+- **Provider:** Hetzner VPS, self-hosted
+- **Orchestration:** Docker Compose (NOT Railway — that account is disabled/dead)
+- **Compose file:** `/opt/hermes/docker-compose.yml`
+- **Local mirror:** `Infrastructure_Scripts/hetzner/docker-compose.yml`
+
+### Services
+
+| Service | Image / Build | Host Port | Public URL |
+|---|---|---|---|
+| postgres | `postgres:16-alpine` | internal | — |
+| redis | `redis:7-alpine` | internal | — |
+| n8n | custom `./n8n-custom/Dockerfile` | `127.0.0.1:5678` | https://transcribe.ahfl.in |
+| n8n-worker | same image, `cmd: worker` | internal | — |
+| hermes | `./hermes-agent/Dockerfile` | internal | Telegram @NDRHermes_bot |
+| smart-browser | `./smart-browser/Dockerfile` | internal | — |
+| voice | `./voice-app/Dockerfile` | `127.0.0.1:3000` | https://voice.ahfl.in |
+| loki | `grafana/loki:2.9.4` | `127.0.0.1:3100` | — |
+| promtail | `grafana/promtail:2.9.4` | internal | — |
+| grafana | `grafana/grafana:10.4.2` | `127.0.0.1:3001` | https://monitor.ahfl.in |
+
+### Hermes Container
+
+**Startup command:**
+```bash
+python3 setup_oauth_credentials.py && exec hermes gateway run -v
+```
+
+**Volumes:**
+- `/opt/hermes/hermes-data` → `/data/hermes` (this is `HERMES_HOME` inside the container)
+
+**Temporary bind mounts (subagent-polling fix, Jun 2026 — REMOVE once image is rebuilt):**
+- `…/hermes-agent/hermes_state.py` → `/opt/hermes/hermes_state.py` (ro)
+- `…/hermes-agent/gateway/platforms/api_server.py` → `/opt/hermes/gateway/platforms/api_server.py` (ro)
+
+**Logging:** `json-file`, 50MB × 5 files, tag=`hermes`
+
+### Environment Variables — hermes service
+
+| Var | Notes |
+|---|---|
+| `HERMES_HOME` | `/data/hermes` |
+| `TELEGRAM_BOT_TOKEN` | secret |
+| `TELEGRAM_ALLOWED_USERS` | secret |
+| `HERMES_N8N_TOKEN` | secret |
+| `OPENROUTER_API_KEY` | secret |
+| `GOOGLE_AI_STUDIO_API_KEY` | also passed as `GEMINI_API_KEY`; secret |
+| `MINIMAX_API_KEY` | secret |
+| `GITHUB_TOKEN`, `GITHUB_REPO` | secret |
+| `DRAAS_OAUTH_CLIENT_ID` / `_SECRET` / `_REFRESH_TOKEN` | per-user GWS auth |
+| `AHFL_OAUTH_CLIENT_ID` / `_SECRET` / `_REFRESH_TOKEN` | per-user GWS auth |
+| `GMAIL_OAUTH_CLIENT_ID` / `_SECRET` / `_REFRESH_TOKEN` | per-user GWS auth |
+| `HERMES_FORCE_SKILL_SYNC` | optional flag |
+
+> **Note:** `GOOGLE_SA_KEY` appears in the compose file but is **DEAD** — the service-account approach was dropped 2026-05-08. All Google Workspace access now uses per-user OAuth (see GWS Auth below).
+
+### N8N
+
+- **URL:** https://transcribe.ahfl.in
+- **Container:** `127.0.0.1:5678`, reverse-proxied by nginx
+- **Mode:** `queue` (n8n + n8n-worker)
+- **Webhook base:** `https://transcribe.ahfl.in/webhook/{workflow-name}`
+- **Body pattern:** all webhooks read `$input.first().json.body || $input.first().json` (POST)
+
+**Workflows:**
+
+| Name | Workflow ID | Purpose |
+|---|---|---|
+| hermes-sheets | `ldcUjFvyJsrVVDRz` | Sheets CRUD |
+| hermes-gmail | `07skMESRJ1rvFwI3` | Gmail read/send |
+| hermes-calendar | `vQJMyrOLwnxgu2A0` | Calendar CRUD |
+| hermes-docs | `2BOMt8fhwpXPlrw5` | Google Docs |
+| hermes-tasks | `Qr53kyRRekxaFINN` | Google Tasks |
+| hermes-contacts | `Q77vS5DKTRlW1lSd` | Google Contacts |
+
+**N8N gotchas:**
+- `N8N_BLOCK_ENV_ACCESS_IN_NODE=false` must be set on BOTH n8n AND n8n-worker
+- `NODE_FUNCTION_ALLOW_BUILTIN="*"` on both (crypto + https needed)
+- No `fetch` / `URL` / `URLSearchParams` globals in Code nodes — use the `https`-module polyfill + manual `encodeURIComponent`
+- SA auth for direct Google API calls uses `GOOGLE_SA_KEY` env (n8n/n8n-worker only — NOT hermes)
+
+### Google Workspace Auth (Hermes agent)
+
+- **Approach:** per-user OAuth2 refresh tokens (NOT service account / DWD — those are dead)
+- **Module:** `tools/gws_auth.py` → `build_service(telegram_id, service_name)`
+- **Token storage (container):** `/data/hermes/users/{telegram_id}/gws_token.json`
+- **Token storage (host):** `/opt/hermes/hermes-data/users/{telegram_id}/gws_token.json`
+- **Client env vars:** `HERMES_OAUTH_CLIENT_ID` + `HERMES_OAUTH_CLIENT_SECRET`
+- **Auth callback:** `https://transcribe.ahfl.in/gws/auth/callback`
+
+### Data Paths (host)
+
+| Path | Purpose |
+|---|---|
+| `/opt/hermes/hermes-data/` | Hermes persistent data (mounted as `/data/hermes` in container) |
+| `/opt/hermes/hermes-data/users/` | Per-user GBrain dirs |
+| `/opt/hermes/hermes-data/users.json` | Allowed users list |
+| `/opt/hermes/n8n-data/` | n8n persistent data |
+| `/opt/hermes/postgres-data/` | postgres DB files |
+| `/opt/hermes/redis-data/` | redis AOF |
+
+### Users
+
+| Name | Telegram ID | Email | Role | GBrain home (slug) |
+|---|---|---|---|---|
+| Nishant Ranka | `7449813913` | `ndr@draas.com` | admin | `/data/hermes/users/ndr` |
+| Roshini Ranka | `7245204091` | `rnr@draas.com` | admin | `/data/hermes/users/rnr` |
+| Bharat Hawaldar | `8717455402` | `sales1.blr@draas.com` | employee | `/data/hermes/users/sales1.blr` |
+| Vinod Kumar Das | `8654428154` | `vkdas@draas.com` | employee | `/data/hermes/users/vkdas` |
+| Anbarasan Murugaperumal | `7281906252` | `pm2.blr@draas.com` | employee | `/data/hermes/users/pm2.blr` |
+| Prakash Singh | `8502281203` | `psingh@draas.com` | employee | `/data/hermes/users/psingh` |
+
+Per-user GBrain dir (in container): `/data/hermes/users/{draas_user_id}/`. Each dir is owned by UID `10000` so the agent (running as that UID inside the container) can read + write per-user data.
+
+Source of truth: `/opt/hermes/hermes-data/users.json` on the VPS — see **Local-VPS Sync Policy** below.
+
+### Local-VPS Sync Policy (Hetzner)
+
+**The local `hermes-data/users.json` (and any other file under `hermes-data/` in any Hermes project checkout) is a one-way mirror of the VPS.** The VPS is the source of truth.
+
+> **Before reading, writing, or referencing any file under `hermes-data/` that mirrors VPS state, run `scripts/sync-from-vps.ps1` to pull the latest version from the VPS.**
+
+The local copy is never the source of truth. The VPS is.
+
+**Currently synced files:**
+
+| File | Purpose |
+|---|---|
+| `users.json` | User identity + access registry |
+| `SOUL.md` | Agent persona / system-of-record prompt |
+
+**How the sync works:** one-way pull (VPS → local), SHA-256 hash compare first, auto-backup of any local file that differs (`<file>.bak.<timestamp>`), preflight check on SSH key + VPS reachability. To push local changes to the VPS, do it explicitly via `ssh` + `scp` — never silently.
+
+**Manual fallback** (one-off, no script):
+```powershell
+ssh -i $env:USERPROFILE\.ssh\hetzner_new root@178.105.35.94 `
+  cat /opt/hermes/hermes-data/users.json `
+  > hermes-data/users.json
+```
+
+### Google Sheets Registry
+
+- **Spreadsheet ID:** `1XbSRAXxPLY4cXMTm2rmvKh11Nx3x0aKUxxuWualoV9g`
+
+**Tab names (exact):**
+- `'NDR DRAAS Google contacts.csv'` ← contacts (quote it — spaces + dots)
+- `projects`
+- `entities`
+- `land_proposals`
+- `topics`
+
+**Key contact columns (0-based):**
+
+| Col | Field |
+|---|---|
+| A (0) | first_name |
+| C (2) | last_name |
+| I (8) | nickname |
+| K (10) | org |
+| CA (78) | project_assoc |
+| CB (79) | land_assoc |
+| CE (82) | addressed_as |
+| CN (91) | voice_misspellings |
+| CO (92) | contact_score |
+
+**Key non-contact columns (projects / entities / land / topics):**
+
+| Col | Field |
+|---|---|
+| A (0) | canonical_name |
+| B (1) | aliases |
+| C (2) | voice_misspellings |
+| D (3) / E (4) / F (5) | associated_contacts |
+
+### Key Source Files (in hermes-agent repo / container)
+
+| Path | Purpose |
+|---|---|
+| `tools/n8n_tool.py` | Routes GWS ops through N8N webhooks |
+| `tools/noun_resolver.py` | In-memory fuzzy / phonetic search across registry sheets |
+| `tools/entity_resolver_tool.py` | Agent tool: search contacts/projects/entities/land |
+| `tools/contact_resolver_tool.py` | Agent tool: ranked contact lookup |
+| `tools/noun_learner_tool.py` | Writes corrections/associations back to sheets |
+| `tools/gws_auth.py` | Per-user OAuth2 token management |
+| `model_tools.py` | Tool discovery / registration list |
+| `toolsets.py` | Tool groupings by capability |
+
+### Useful Commands (run on server)
+
+```bash
+cd /opt/hermes
+
+# View logs
+docker compose logs -f hermes
+docker compose logs -f n8n
+
+# Restart a service
+docker compose restart hermes
+
+# Rebuild + restart hermes after code change
+docker compose up -d --build hermes
+
+# Exec into the hermes container
+docker compose exec hermes bash
+
+# Check all service status
+docker compose ps
+```
+
+### Maintenance
+
+- **Update this section** when the infra changes (new service, new env var, new user, new tab, new workflow ID, port change, etc.). Bump the `Last updated` line at the top.
+- **Secrets stay out of this file.** All `(secret)` values live only in `docker-compose.yml` (or a `.env` it sources) on the server. Never paste a real token into this file.
+- **Keep `hermes-data/connections/hetzner.md` in sync** with this inlined copy. Edit the file first, then copy the changed block here.
+- **Mirrored files under `hermes-data/`** (e.g. `users.json`) come from the VPS, not this file. To update them, change them on the VPS first, then `pwsh scripts/sync-from-vps.ps1` to pull.
+
 ## Development Environment
 
 ```bash
