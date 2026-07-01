@@ -1,0 +1,278 @@
+"""
+Per-user Google Workspace OAuth token manager.
+
+Tokens are stored in the Token Vault daemon (token-vault-server / gws-vault-server),
+NOT in HERMES_HOME. Access is exclusively through:
+  tools/gws_vault_client.py → Unix socket → daemon → /opt/gws-vault/tokens/
+
+## Design principles
+
+1. The user identity (telegram_id) is ALWAYS read from the session context
+   (HERMES_SESSION_USER_ID, injected by the gateway for every request).
+   It is NEVER accepted as a parameter from LLM tool calls.
+
+2. The LLM-facing tool (gws_vault_tool.py / schema name "token_auth") provides:
+     - check   → is the current session user authorized?
+     - authorize → give me a URL the user should open
+   The LLM never sees raw tokens; it never specifies which user to act on.
+
+3. The OAuth callback (exchange_and_store) is called by the HTTP callback route
+   at /gws/auth/callback after Google redirects back. The telegram_id there comes
+   from the OAuth `state` parameter, which was embedded in the URL when the
+   current session user called `authorize`. This is server-side code, not LLM code.
+
+4. Tokens are stored under the service name "google" in the vault.
+
+Usage from skill code (terminal subprocesses or execute_code):
+    from tools.gws_auth import build_service
+    svc = build_service("gmail", "v1")      # uses HERMES_SESSION_USER_ID from env
+    svc = build_service("calendar", "v3")
+"""
+
+import logging
+import os
+
+logger = logging.getLogger(__name__)
+
+SERVICE_NAME = "google"
+
+HERMES_GWS_SCOPES = [
+    "https://www.googleapis.com/auth/gmail.modify",
+    "https://www.googleapis.com/auth/calendar",
+    "https://www.googleapis.com/auth/drive",
+    "https://www.googleapis.com/auth/contacts",
+    "https://www.googleapis.com/auth/tasks",
+    "https://www.googleapis.com/auth/documents",
+    "https://www.googleapis.com/auth/spreadsheets",
+]
+
+_REDIRECT_URI = "https://transcribe.ahfl.in/gws/auth/callback"
+
+
+# ---------------------------------------------------------------------------
+# Session identity — ALWAYS from context, NEVER from LLM arguments
+# ---------------------------------------------------------------------------
+
+def _current_user_id() -> str:
+    """
+    Return the internal user ID for the current request.
+
+    Reads HERMES_SESSION_USER_ID, which always holds the *internal user ID*
+    resolved from whichever channel the request arrived on (Telegram, OpenUI,
+    Slack, WhatsApp, …). It is injected by the gateway infrastructure:
+    - Async event loop: set via contextvars by the platform handler
+    - Terminal subprocesses: injected into os.environ by terminal_tool.py
+    - CLI/cron: set in os.environ by the runner
+
+    This is the ONLY way a user ID enters gws_auth — it is NEVER accepted as
+    a parameter from the LLM.
+    """
+    try:
+        from gateway.session_context import get_session_env
+        uid = get_session_env("HERMES_SESSION_USER_ID", "").strip()
+    except Exception:
+        uid = ""
+    if not uid:
+        uid = os.environ.get("HERMES_SESSION_USER_ID", "").strip()
+    if not uid:
+        raise ValueError(
+            "HERMES_SESSION_USER_ID is not set for this request. "
+            "Cannot determine which user's Google token to use. "
+            "Via OpenUI/API: ensure X-Hermes-User-Email or X-Hermes-User-Id "
+            "is sent in the request header. Via Telegram: this is injected automatically."
+        )
+    return uid
+
+
+# ---------------------------------------------------------------------------
+# OAuth client config
+# ---------------------------------------------------------------------------
+
+def _client_config() -> dict:
+    client_id = os.environ.get("HERMES_OAUTH_CLIENT_ID", "")
+    client_secret = os.environ.get("HERMES_OAUTH_CLIENT_SECRET", "")
+    if not client_id or not client_secret:
+        raise EnvironmentError(
+            "HERMES_OAUTH_CLIENT_ID and HERMES_OAUTH_CLIENT_SECRET must be set"
+        )
+    return {
+        "web": {
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "redirect_uris": [_REDIRECT_URI],
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://oauth2.googleapis.com/token",
+        }
+    }
+
+
+# ---------------------------------------------------------------------------
+# Credential management — vault-backed, session-identity only
+# ---------------------------------------------------------------------------
+
+def load_credentials():
+    """
+    Load Google OAuth credentials for the current session user from the vault.
+
+    The user identity is read from HERMES_SESSION_USER_ID (session context).
+    This function NEVER accepts telegram_id as a parameter.
+
+    Raises:
+        ValueError       — HERMES_SESSION_USER_ID not set (no session context)
+        FileNotFoundError — no token; user must call get_auth_url() and authorize
+        PermissionError  — vault refused (cross-user block)
+        RuntimeError     — vault unreachable
+    """
+    from google.oauth2.credentials import Credentials  # lazy import
+    from tools.gws_vault_client import (
+        get_token, VaultNoTokenError, VaultUnauthorizedError,
+    )
+
+    user_id = _current_user_id()
+
+    try:
+        token_json = get_token(user_id, SERVICE_NAME)
+    except VaultNoTokenError:
+        raise FileNotFoundError(
+            f"No Google token for user {user_id}. "
+            "Ask the agent to run `token_auth check` to get the authorization URL."
+        )
+    except VaultUnauthorizedError as exc:
+        raise PermissionError(str(exc)) from exc
+    except (ConnectionRefusedError, FileNotFoundError) as exc:
+        raise RuntimeError(
+            f"Token Vault daemon is not running ({exc}). "
+            "Start it: systemctl start gws-vault"
+        ) from exc
+
+    creds = Credentials.from_authorized_user_json(token_json, HERMES_GWS_SCOPES)
+
+    if creds.expired and creds.refresh_token:
+        try:
+            from google.auth.transport.requests import Request
+            creds.refresh(Request())
+            save_credentials(creds)
+        except Exception as exc:
+            logger.warning("Google token refresh failed for %s: %s", user_id, exc)
+
+    return creds
+
+
+def save_credentials(creds) -> None:
+    """
+    Store Google OAuth credentials for the current session user in the vault.
+
+    The user identity is read from HERMES_SESSION_USER_ID (session context).
+    This function NEVER accepts telegram_id as a parameter.
+
+    Called by:
+    - load_credentials() after a successful token refresh
+    - NEVER called directly with user-supplied arguments
+    """
+    from tools.gws_vault_client import set_token
+    user_id = _current_user_id()
+    try:
+        set_token(user_id, SERVICE_NAME, creds.to_json())
+    except Exception as exc:
+        raise RuntimeError(f"Failed to store Google credentials in vault: {exc}") from exc
+
+
+def build_service(api: str, version: str):
+    """
+    Build a Google API client for the current session user.
+
+    Args:
+        api:     e.g. "gmail", "calendar", "drive", "sheets", "people"
+        version: e.g. "v1", "v3", "v4"
+
+    The user identity (telegram_id) is read from HERMES_SESSION_USER_ID.
+    This function NEVER accepts telegram_id as a parameter — passing the wrong
+    user's identity via LLM arguments is architecturally impossible.
+    """
+    from googleapiclient.discovery import build  # lazy import
+    creds = load_credentials()
+    return build(api, version, credentials=creds)
+
+
+def has_token() -> bool:
+    """
+    Return True if the current session user has a stored Google token.
+    Identity is read from HERMES_SESSION_USER_ID.
+    """
+    try:
+        uid = _current_user_id()
+    except ValueError:
+        return False
+    try:
+        from tools.gws_vault_client import has_token as vault_has_token
+        return vault_has_token(uid, SERVICE_NAME)
+    except Exception:
+        return False
+
+
+# ---------------------------------------------------------------------------
+# OAuth flow — auth URL generation and token exchange
+# ---------------------------------------------------------------------------
+
+def get_auth_url(telegram_id: str) -> str:
+    """
+    Generate an OAuth authorization URL for *telegram_id*.
+
+    *telegram_id* here comes from the LLM-facing tool reading the session context —
+    the tool reads it from HERMES_SESSION_USER_ID and passes it here as a verified
+    value. This function is NOT exposed to the LLM directly.
+
+    The URL should be sent to the user so they can authorize Hermes.
+    """
+    from google_auth_oauthlib.flow import Flow  # lazy import
+
+    flow = Flow.from_client_config(
+        _client_config(),
+        scopes=HERMES_GWS_SCOPES,
+        redirect_uri=_REDIRECT_URI,
+        # Confidential server client: client_secret authenticates the exchange.
+        # PKCE not needed and disabled to avoid library-version quirks.
+        autogenerate_code_verifier=False,
+    )
+
+    auth_kwargs: dict = {
+        "access_type": "offline",
+        "prompt": "consent",
+        "state": str(telegram_id),
+    }
+
+    try:
+        from tools._user_registry import get_user_config
+        user = get_user_config(str(telegram_id))
+        if user and user.get("email"):
+            auth_kwargs["login_hint"] = user["email"]
+    except Exception:
+        pass
+
+    url, _ = flow.authorization_url(**auth_kwargs)
+    return url
+
+
+def exchange_and_store(user_id: str, code: str) -> None:
+    """
+    Exchange an OAuth authorization code for tokens and store them in the vault.
+
+    Called EXCLUSIVELY by the HTTP callback route (_handle_gws_auth_callback in
+    api_server.py) when Google redirects back after user consent. The *user_id*
+    argument is the internal user ID embedded in the OAuth ``state`` parameter
+    when the auth URL was generated — NOT from LLM input.
+
+    The LLM has no path to call this function. Token storage is entirely server-side.
+    """
+    from google_auth_oauthlib.flow import Flow  # lazy import
+    from tools.gws_vault_client import set_token
+
+    flow = Flow.from_client_config(
+        _client_config(),
+        scopes=HERMES_GWS_SCOPES,
+        redirect_uri=_REDIRECT_URI,
+        state=str(user_id),
+    )
+    flow.fetch_token(code=code)
+    set_token(user_id, SERVICE_NAME, flow.credentials.to_json())
+    logger.info("Google token stored in vault for user %s", user_id)
