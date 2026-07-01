@@ -1,0 +1,157 @@
+{
+  "name": "hermes-user-lookup",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "hermes-user-lookup",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "node-webhook",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [240, 300],
+      "webhookId": "hermes-user-lookup"
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $input.first().json.body || $input.first().json;\nconst operation = (body.operation || 'find').trim();\nconst query = (body.query || '').trim();\nreturn [{ json: { operation, query } }];"
+      },
+      "id": "node-extract",
+      "name": "Extract Params",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            {
+              "id": "cond-list",
+              "leftValue": "={{ $json.operation }}",
+              "rightValue": "list_all",
+              "operator": { "type": "string", "operation": "equals" }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "node-if-list",
+      "name": "List All?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT telegram_id, telegram_username, display_name, email FROM gws_oauth_tokens ORDER BY display_name, email"
+      },
+      "id": "node-list-all",
+      "name": "List All Users",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [900, 180],
+      "credentials": {
+        "postgres": {
+          "name": "Hermes Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT telegram_id, telegram_username, display_name, email FROM gws_oauth_tokens WHERE LOWER(display_name) LIKE LOWER($1) OR LOWER(telegram_username) LIKE LOWER($1) OR LOWER(email) LIKE LOWER($1) ORDER BY display_name, email LIMIT 10",
+        "additionalFields": {
+          "queryParams": "={{ ['%' + $('Extract Params').first().json.query + '%'] }}"
+        }
+      },
+      "id": "node-find",
+      "name": "Find User by Query",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [900, 420],
+      "credentials": {
+        "postgres": {
+          "name": "Hermes Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const rows = $input.all().map(item => item.json);\nreturn [{ json: { users: rows, count: rows.length } }];"
+      },
+      "id": "node-format-list",
+      "name": "Format List Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1120, 180]
+    },
+    {
+      "parameters": {
+        "jsCode": "const rows = $input.all().map(item => item.json);\nif (rows.length === 0) {\n  return [{ json: { users: [], count: 0, message: 'No employees found matching that query.' } }];\n}\nreturn [{ json: { users: rows, count: rows.length } }];"
+      },
+      "id": "node-format-find",
+      "name": "Format Find Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1120, 420]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": {}
+      },
+      "id": "node-respond-list",
+      "name": "Respond List",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1340, 180]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": {}
+      },
+      "id": "node-respond-find",
+      "name": "Respond Find",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1340, 420]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [[{ "node": "Extract Params", "type": "main", "index": 0 }]]
+    },
+    "Extract Params": {
+      "main": [[{ "node": "List All?", "type": "main", "index": 0 }]]
+    },
+    "List All?": {
+      "main": [
+        [{ "node": "List All Users", "type": "main", "index": 0 }],
+        [{ "node": "Find User by Query", "type": "main", "index": 0 }]
+      ]
+    },
+    "List All Users": {
+      "main": [[{ "node": "Format List Result", "type": "main", "index": 0 }]]
+    },
+    "Find User by Query": {
+      "main": [[{ "node": "Format Find Result", "type": "main", "index": 0 }]]
+    },
+    "Format List Result": {
+      "main": [[{ "node": "Respond List", "type": "main", "index": 0 }]]
+    },
+    "Format Find Result": {
+      "main": [[{ "node": "Respond Find", "type": "main", "index": 0 }]]
+    }
+  },
+  "active": true,
+  "settings": { "executionOrder": "v1" }
+}
