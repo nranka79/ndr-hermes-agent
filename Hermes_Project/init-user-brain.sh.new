@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# Usage: init-user-brain.sh <draas_user_id> <telegram_user_id> <user_email> <user_name>
+# Run inside the hermes container or on the host with /opt/hermes prefix.
+#
+# As of 2026-06-28, user brains are keyed by the draas.com user ID
+# (typically the email local-part, e.g. "ndr" for ndr@draas.com) rather than
+# the telegram_id. The telegram_id is now one of many channel identities
+# stored in users.json — the gateway resolves telegram_id -> draas_user_id
+# via tools/_identity_resolver.py at message time.
+#
+# All 4 positional args are required; the script refuses to proceed with
+# fewer so callers can't accidentally fall back to the legacy telegram_id
+# keying.
+
+set -euo pipefail
+
+DRAAS_USER_ID="${1:?Usage: $0 <draas_user_id> <telegram_user_id> <user_email> <user_name>}"
+TELEGRAM_USER_ID="${2:?missing telegram_user_id}"
+USER_EMAIL="${3:?missing user_email}"
+USER_NAME="${4:?missing user_name}"
+
+BRAIN_BASE="/data/hermes/users/${DRAAS_USER_ID}"
+
+echo "Initializing brain for ${USER_NAME} (${USER_EMAIL}) -> ${BRAIN_BASE}  (draas_user_id=${DRAAS_USER_ID}, telegram_id=${TELEGRAM_USER_ID})"
+
+mkdir -p \
+  "${BRAIN_BASE}/.gbrain" \
+  "${BRAIN_BASE}/brain/people" \
+  "${BRAIN_BASE}/brain/projects" \
+  "${BRAIN_BASE}/brain/notes"
+
+# Write a minimal brain identity file
+cat > "${BRAIN_BASE}/brain/identity.md" <<EOF
+# ${USER_NAME}
+Email: ${USER_EMAIL}
+Telegram ID: ${TELEGRAM_USER_ID}
+draas_user_id: ${DRAAS_USER_ID}
+EOF
+
+# Initialize GBrain PGLite database under this user's HOME
+if command -v gbrain &>/dev/null; then
+  HOME="${BRAIN_BASE}" gbrain init --pglite 2>/dev/null || true
+  echo "GBrain initialized for ${USER_NAME}"
+else
+  echo "gbrain not found — skipping gbrain init (run after container rebuild)"
+fi
+
+echo "Done: ${BRAIN_BASE}"
