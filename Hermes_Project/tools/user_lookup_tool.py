@@ -19,6 +19,8 @@ import os
 import urllib.request
 import urllib.error
 
+from gateway.session_context import get_session_env
+
 logger = logging.getLogger(__name__)
 
 _N8N_BASE_URL = os.environ.get("HERMES_N8N_BASE_URL", "https://transcribe.ahfl.in")
@@ -43,9 +45,15 @@ def _handle_user_lookup_tool(args: dict, **kwargs) -> str:
 
 
 def _whoami() -> str:
-    """Return the current Telegram user's identity from session env vars."""
-    user_id = os.environ.get("HERMES_SESSION_USER_ID", "")
-    user_name = os.environ.get("HERMES_SESSION_USER_NAME", "")
+    """Return the current Telegram user's identity from session env vars.
+
+    Reads via ``get_session_env()`` (contextvar first, then os.environ fallback
+    for CLI / cron) so a stale ``os.environ["HERMES_SESSION_USER_ID"]`` from
+    process startup — or from a previous gateway request that ran on the
+    same long-lived process — cannot masquerade as the current user.
+    """
+    user_id = get_session_env("HERMES_SESSION_USER_ID", "")
+    user_name = get_session_env("HERMES_SESSION_USER_NAME", "")
     if not user_id:
         return json.dumps({"error": "No active Telegram session — user_id not available."})
     return json.dumps({
