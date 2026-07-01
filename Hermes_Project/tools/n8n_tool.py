@@ -251,7 +251,7 @@ def _register():
         name="n8n_tool",
         schema=_N8N_TOOL_SCHEMA,
         handler=_handle_n8n_tool,
-        toolset="general",
+        toolset="google_workspace",
         check_fn=_check_n8n_available,
         description="Route Google Workspace calls through N8N (Sheets/Gmail/Drive/Calendar/Docs/Tasks/Contacts).",
     )
