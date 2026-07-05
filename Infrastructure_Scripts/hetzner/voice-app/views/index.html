@@ -408,7 +408,8 @@
         <button id="uploadButton" class="record-button" style="background-color: var(--info);"><i class="fas fa-upload"></i> Upload Audio</button>
         <input type="file" id="audioFileInput" accept="audio/mp3,audio/wav,audio/m4a,audio/ogg,audio/webm,audio/mp4,.mp3,.wav,.m4a,.ogg,.webm,.mp4" style="display: none;" />
         <button id="continueRecordButton" class="record-button" style="display: none;"><i class="fas fa-play-circle"></i> Continue Recording</button>
-        <span id="timer" class="timer" style="display: none;">00:00</span>
+        <span id="timer" class="timer" style="display: none;">00:00.000</span>
+        <span id="processingTimer" class="timer" style="display: none; color: var(--warning);">Transcribing: 00:00.000</span>
     </div>
 
     <div class="status-container">
@@ -477,6 +478,7 @@
     const formattedResultElement = document.getElementById('formattedResult');
     const formattedResultHeader = document.getElementById('formattedResultHeader');
     const timerElement = document.getElementById('timer');
+    const processingTimerElement = document.getElementById('processingTimer');
     const debugElement = document.getElementById('debug');
     const copyTranscriptionButton = document.getElementById('copyTranscriptionButton');
     const copyFormattedButton = document.getElementById('copyFormattedButton');
@@ -535,6 +537,8 @@
     let webSpeechShouldBeRunning = false;
     let webSpeechRestartTimer = null;
     let uploadedFileName = null;
+    let processingStartTime = null;
+    let processingTimerInterval = null;
 
     function log(message) {
         const timestamp = new Date().toLocaleTimeString();
@@ -713,7 +717,24 @@
         catch (error) { log(`Error accessing microphone: ${error.message}`); statusElement.textContent = `Error: ${error.message}. Please check your browser permissions.`; statusElement.classList.add('error'); }
     }
 
-    function updateTimer() { const e = new Date(Date.now() - startTime); timerElement.textContent = `${e.getUTCMinutes().toString().padStart(2,'0')}:${e.getUTCSeconds().toString().padStart(2,'0')}`; }
+    function formatTimerMs(ms) {
+        const totalMs = Math.max(0, Math.floor(ms));
+        const minutes = Math.floor(totalMs / 60000);
+        const seconds = Math.floor((totalMs % 60000) / 1000);
+        const millis = totalMs % 1000;
+        return `${minutes.toString().padStart(2,'0')}:${seconds.toString().padStart(2,'0')}.${millis.toString().padStart(3,'0')}`;
+    }
+    function updateTimer() { timerElement.textContent = formatTimerMs(Date.now() - startTime); }
+    function updateProcessingTimer() { processingTimerElement.textContent = `Transcribing: ${formatTimerMs(Date.now() - processingStartTime)}`; }
+    function startProcessingTimer() {
+        processingStartTime = Date.now();
+        processingTimerElement.style.display = 'inline-block';
+        updateProcessingTimer();
+        processingTimerInterval = setInterval(updateProcessingTimer, 47);
+    }
+    function stopProcessingTimer() {
+        if (processingTimerInterval) { clearInterval(processingTimerInterval); processingTimerInterval = null; }
+    }
     async function toggleRecording() { if (!isRecording) startNewRecording(); else stopRecording(); }
 
     function startNewRecording() {
@@ -729,12 +750,12 @@
             recordButton.innerHTML = '<i class="fas fa-stop"></i> Stop Recording'; recordButton.classList.add('recording'); recordButton.style.display = 'inline-flex'; continueRecordButton.style.display = 'none';
             if(isFirstRecordingInSession) { transcriptionResultElement.textContent = 'Recording in progress...'; formattedResultElement.textContent = 'Waiting for transcription...'; }
             copyTranscriptionButton.disabled = true; copyFormattedButton.disabled = true; resubmitButton.disabled = true; resaveButton.disabled = true; downloadButton.disabled = true; reformatButton.disabled = true;
-            if (selectedModel === 'webapi') { log('Web API mode: Using SpeechRecognition ONLY'); startWebSpeechRecognition(); startTime = Date.now(); timerInterval = setInterval(updateTimer, 1000); updateTimer(); timerElement.style.display = 'inline-block'; isRecording = true; return; }
+            if (selectedModel === 'webapi') { log('Web API mode: Using SpeechRecognition ONLY'); startWebSpeechRecognition(); startTime = Date.now(); timerInterval = setInterval(updateTimer, 47); updateTimer(); timerElement.style.display = 'inline-block'; isRecording = true; return; }
             audioChunks = []; stream = await navigator.mediaDevices.getUserMedia({ audio: true });
             mediaRecorder = new MediaRecorder(stream);
             mediaRecorder.addEventListener('dataavailable', event => { log(`Received audio chunk: ${Math.round(event.data.size / 1024)} KB`); audioChunks.push(event.data); });
             mediaRecorder.start(); log('MediaRecorder started');
-            startTime = Date.now(); timerInterval = setInterval(updateTimer, 1000); updateTimer(); timerElement.style.display = 'inline-block'; isRecording = true;
+            startTime = Date.now(); timerInterval = setInterval(updateTimer, 47); updateTimer(); timerElement.style.display = 'inline-block'; isRecording = true;
         } catch (error) { log(`Error starting recording: ${error.message}`); statusElement.textContent = 'Error: ' + error.message; statusElement.className = 'status error'; }
     }
 
@@ -810,7 +831,7 @@
                 log('Web API mode: Stopping SpeechRecognition only'); stopWebSpeechRecognition();
                 statusElement.textContent = 'Processing transcription...'; statusElement.className = 'status processing';
                 audioBlob = null; audioURL = null; audioContainer.innerHTML = '<p style="color: var(--gray); font-style: italic;">Audio playback not available in Web API mode</p>';
-                downloadButton.disabled = true; resubmitButton.disabled = true; handleWebSpeechResult(); return;
+                downloadButton.disabled = true; resubmitButton.disabled = true; startProcessingTimer(); handleWebSpeechResult().finally(stopProcessingTimer); return;
             }
             if(mediaRecorder && mediaRecorder.state === 'inactive') return;
             mediaRecorder.stop(); log('MediaRecorder stopped');
@@ -820,7 +841,8 @@
                 try {
                     audioBlob = new Blob(audioChunks, { type: 'audio/webm' }); log(`Recording complete. Size: ${Math.round(audioBlob.size / 1024)} KB`);
                     audioURL = URL.createObjectURL(audioBlob); createAudioElement(audioURL); downloadButton.disabled = false;
-                    await transcribeAudio(audioBlob);
+                    startProcessingTimer();
+                    try { await transcribeAudio(audioBlob); } finally { stopProcessingTimer(); }
                 } catch (error) { log(`Error processing: ${error.message}`); statusElement.textContent = 'Error: ' + error.message; statusElement.className = 'status error'; resubmitButton.disabled = false; }
             });
         } catch (error) { log(`Error stopping: ${error.message}`); statusElement.textContent = 'Error: ' + error.message; statusElement.className = 'status error'; }
@@ -1062,7 +1084,8 @@
             log('Resubmitting audio...'); statusElement.textContent = 'Resubmitting audio...'; statusElement.className = 'status processing';
             resubmitButton.disabled = true; resaveButton.disabled = true; copyTranscriptionButton.disabled = true; copyFormattedButton.disabled = true; reformatButton.disabled = true;
             isFirstRecordingInSession = true;
-            try { await transcribeAudio(audioBlob); } catch (error) { log(`Resubmission error: ${error.message}`); statusElement.textContent = 'Resubmission error: ' + error.message; statusElement.className = 'status error'; resubmitButton.disabled = false; }
+            startProcessingTimer();
+            try { await transcribeAudio(audioBlob); } catch (error) { log(`Resubmission error: ${error.message}`); statusElement.textContent = 'Resubmission error: ' + error.message; statusElement.className = 'status error'; resubmitButton.disabled = false; } finally { stopProcessingTimer(); }
         } else { log('No audio to resubmit'); statusElement.textContent = 'No audio to resubmit'; statusElement.className = 'status error'; }
     }
 
