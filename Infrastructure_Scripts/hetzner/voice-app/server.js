@@ -24,6 +24,10 @@ const PROCESS_WEBHOOK_URL = process.env.PROCESS_WEBHOOK_URL;
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
 const SESSION_SECRET = process.env.SESSION_SECRET || 'voice-transcription-secret';
+// Free Whisper microservice (isolated faster-whisper container) — reachable
+// by compose service name on the shared internal docker network. Same
+// pattern as OPENAI_API_BASE_URL: http://hermes:8642/v1 used elsewhere.
+const FREE_WHISPER_URL = process.env.FREE_WHISPER_URL || 'http://free-whisper:8000';
 
 // Middleware
 app.use(express.json({ limit: '50mb' }));
@@ -382,6 +386,39 @@ app.get('/api/assemblyai/transcript/:id', isAuthenticated, async (req, res) => {
     res.status(result.status).set('Content-Type', 'application/json').send(result.body);
   } catch (err) {
     res.status(502).json({ error: 'Transcript status proxy failed: ' + err.message });
+  }
+});
+
+// Free Whisper — proxies raw recorded/uploaded audio to the isolated
+// free-whisper-svc container (faster-whisper, self-hosted, no API key,
+// no per-request cost). Mirrors the AssemblyAI upload route above but is
+// a single request/response — no async job polling needed.
+app.post('/api/whisper/transcribe', isAuthenticated, async (req, res) => {
+  try {
+    const chunks = [];
+    req.on('data', (chunk) => chunks.push(chunk));
+    req.on('end', async () => {
+      try {
+        const audioBuffer = Buffer.concat(chunks);
+        const language = (req.query.language || '').toString();
+        const result = await proxyRequest(
+          `${FREE_WHISPER_URL}/transcribe`,
+          'POST',
+          {
+            'Content-Type': req.headers['content-type'] || 'application/octet-stream',
+            'Content-Length': audioBuffer.length,
+            'X-Hermes-User-Email': req.user.email || 'unknown',
+            'X-Whisper-Language': language,
+          },
+          audioBuffer
+        );
+        res.status(result.status).set('Content-Type', 'application/json').send(result.body);
+      } catch (err) {
+        res.status(502).json({ success: false, error: 'Free Whisper proxy failed: ' + err.message });
+      }
+    });
+  } catch (err) {
+    res.status(502).json({ success: false, error: 'Free Whisper proxy failed: ' + err.message });
   }
 });
 

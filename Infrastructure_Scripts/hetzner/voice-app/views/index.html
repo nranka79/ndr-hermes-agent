@@ -21,9 +21,9 @@
     --box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
     --transition: all 0.3s ease;
     }
-    
+
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    
+
     body {
     font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
     background-color: #f0f2f5;
@@ -31,7 +31,7 @@
     line-height: 1.6;
     padding: 20px;
     }
-    
+
     .container {
     max-width: 800px;
     margin: 0 auto;
@@ -109,7 +109,7 @@
         font-size: 0.9rem; transition: var(--transition); text-align: center;
     }
     .dropdown-logout:hover { opacity: 0.9; }
-    
+
     header { text-align: center; margin-bottom: 30px; }
     h1 { color: var(--primary); font-size: 2.2rem; margin-bottom: 10px; }
     h2 { color: var(--secondary); font-size: 1.5rem; margin: 25px 0 15px 0; display: flex; align-items: center; }
@@ -259,7 +259,7 @@
     <h1><i class="fas fa-microphone-alt"></i> Voice Transcription Tool</h1>
     <p>Record, transcribe, and format your voice for different platforms</p>
     </header>
-    
+
     <div id="micAccessContainer" class="mic-access">
     <i class="fas fa-microphone-slash fa-3x" style="color: var(--danger); margin-bottom: 15px;"></i>
     <p>Microphone access is required to use this tool</p>
@@ -267,18 +267,19 @@
     <i class="fas fa-microphone"></i> Grant Microphone Access
     </button>
     </div>
-    
+
     <div id="mainContent" style="display: none;">
     <div class="format-toggle">
     <button id="whatsappButton" class="format-button"><i class="fab fa-whatsapp"></i> WhatsApp</button>
     <button id="emailButton" class="format-button"><i class="fas fa-envelope"></i> Email</button>
     <button id="promptEnhancerButton" class="format-button"><i class="fas fa-magic"></i> Prompt Enhancer</button>
     </div>
-    
+
     <div class="model-toggle">
     <button id="nanoModelButton" class="format-button active"><i class="fas fa-bolt"></i> Universal-2</button>
     <button id="standardModelButton" class="format-button"><i class="fas fa-brain"></i> Universal-3 Pro</button>
     <button id="webApiButton" class="format-button"><i class="fas fa-globe"></i> Web API</button>
+    <button id="whisperModelButton" class="format-button"><i class="fas fa-server"></i> Free Whisper</button>
     </div>
 
     <div class="options-row">
@@ -401,7 +402,7 @@
             </label>
         </div>
     </div>
-    
+
     <div class="record-button-container">
         <button id="recordButton" class="record-button"><i class="fas fa-microphone"></i> Start Recording</button>
         <button id="uploadButton" class="record-button" style="background-color: var(--info);"><i class="fas fa-upload"></i> Upload Audio</button>
@@ -409,26 +410,26 @@
         <button id="continueRecordButton" class="record-button" style="display: none;"><i class="fas fa-play-circle"></i> Continue Recording</button>
         <span id="timer" class="timer" style="display: none;">00:00</span>
     </div>
-    
+
     <div class="status-container">
         <div id="status" class="status">Ready to record</div>
     </div>
     </div>
-    
+
     <div id="audioContainer" class="audio-container"></div>
-    
+
     <h2><i class="fas fa-file-alt"></i> Transcription Result</h2>
     <div class="result-container">
     <div id="transcriptionResult" class="result-box" contenteditable="true">Your transcribed text will appear here...</div>
     <button id="copyTranscriptionButton" class="copy-button" title="Copy to clipboard"><i class="fas fa-copy"></i></button>
     </div>
-    
+
     <h2 id="formattedResultHeader"><i class="fab fa-whatsapp"></i> WhatsApp Format</h2>
     <div class="result-container">
     <div id="formattedResult" class="result-box" contenteditable="true">Your formatted text will appear here...</div>
     <button id="copyFormattedButton" class="copy-button" disabled title="Copy to clipboard"><i class="fas fa-copy"></i></button>
     </div>
-    
+
     <div class="action-buttons">
         <button id="resubmitButton" class="action-button warning" disabled><i class="fas fa-redo-alt"></i> Resubmit Audio</button>
         <button id="resaveButton" class="action-button success" disabled><i class="fas fa-save"></i> Resave Transcription & Audio</button>
@@ -436,7 +437,7 @@
         <button id="reformatButton" class="action-button primary" disabled><i class="fas fa-sync-alt"></i> Reformat Text</button>
     </div>
     </div>
-    
+
     <div class="debug-container">
     <div style="display: flex; align-items: center; gap: 10px;">
         <button id="debugToggle" class="debug-toggle"><i class="fas fa-chevron-right"></i> Debug Information</button>
@@ -446,16 +447,18 @@
     <div id="debug" class="debug-content">Debug information will appear here...</div>
     </div>
     </div>
-    
+
     <script type="module">
     // ===== ALL API CALLS GO THROUGH SERVER PROXY =====
     const UPLOAD_URL = '/api/assemblyai/upload';
     const TRANSCRIPT_URL = '/api/assemblyai/transcript';
+    const WHISPER_TRANSCRIBE_URL = '/api/whisper/transcribe';
     const SAVE_WEBHOOK_URL = '/api/webhook-form/save';
     const WHATSAPP_WEBHOOK_URL = '/api/webhook/whatsapp';
     const CLEANTEXT_WEBHOOK_URL = '/api/webhook/cleantext';
     const PROCESS_WEBHOOK_URL = '/api/webhook/process';
     const INITIAL_TIMEOUT = 30000;
+    const WHISPER_INITIAL_TIMEOUT = 120000; // CPU-only local transcription can be slower than cloud APIs
     const MAX_RETRIES = 2;
     const RETRY_MULTIPLIER = 5;
 
@@ -492,6 +495,7 @@
     const autoCopyToggle = document.getElementById('autoCopyToggle');
     const standardModelButton = document.getElementById('standardModelButton');
     const nanoModelButton = document.getElementById('nanoModelButton');
+    const whisperModelButton = document.getElementById('whisperModelButton');
     const copyDebugButton = document.getElementById('copyDebugButton');
     const clearDebugButton = document.getElementById('clearDebugButton');
     const userProfileTrigger = document.getElementById('userProfileTrigger');
@@ -510,7 +514,7 @@
     const apiKeyStatus = document.getElementById('apiKeyStatus');
     const uploadButton = document.getElementById('uploadButton');
     const audioFileInput = document.getElementById('audioFileInput');
-    
+
     let selectedFormat = null;
     let selectedModel = 'universal2';
     let mediaRecorder;
@@ -522,7 +526,7 @@
     let audioURL;
     let transcribedText = '';
     let isRecording = false;
-    let isFirstRecordingInSession = true; 
+    let isFirstRecordingInSession = true;
     let lastSaveSuccessful = false;
     let webSpeechRecognition = null;
     let webSpeechFinalTranscript = '';
@@ -531,7 +535,7 @@
     let webSpeechShouldBeRunning = false;
     let webSpeechRestartTimer = null;
     let uploadedFileName = null;
-    
+
     function log(message) {
         const timestamp = new Date().toLocaleTimeString();
         debugElement.innerHTML += `[${timestamp}] ${message}<br>`;
@@ -628,7 +632,7 @@
             if (error.name === 'AbortError' && retries > 0) {
                 log(`Request timed out. Retrying in a moment...`);
                 statusElement.textContent = `Request timed out. Retrying with longer wait time...`;
-                await new Promise(resolve => setTimeout(resolve, 1000)); 
+                await new Promise(resolve => setTimeout(resolve, 1000));
                 return fetchWithRetries(url, options, retries - 1, timeout * RETRY_MULTIPLIER);
             } else { log(`Fetch failed: ${error.message}`); throw error; }
         }
@@ -638,7 +642,7 @@
         try { await navigator.clipboard.writeText(text); log(`Auto-copied ${label} to clipboard`); statusElement.textContent = `Auto-copied ${label} to clipboard!`; statusElement.className = 'status success'; }
         catch (error) { log(`Auto-copy failed: ${error.message}`); }
     }
-    
+
     permissionButton.addEventListener('click', requestMicrophoneAccess);
     recordButton.addEventListener('click', toggleRecording);
     uploadButton.addEventListener('click', () => audioFileInput.click());
@@ -660,17 +664,18 @@
     nanoModelButton.addEventListener('click', () => setModel('universal2'));
     standardModelButton.addEventListener('click', () => setModel('universal3pro'));
     webApiButton.addEventListener('click', () => setModel('webapi'));
+    whisperModelButton.addEventListener('click', () => setModel('whisper'));
     continueRecordButton.addEventListener('click', startContinueRecording);
     resaveButton.addEventListener('click', saveTranscriptionAndAudio);
     transcriptionResultElement.addEventListener('input', checkTranscriptionContent);
-    
+
     function checkTranscriptionContent() {
         const content = transcriptionResultElement.textContent.trim();
         if (content && content !== 'Your transcribed text will appear here...') { transcribedText = content; reformatButton.disabled = false; copyTranscriptionButton.disabled = false; }
         else { reformatButton.disabled = true; copyTranscriptionButton.disabled = true; transcribedText = ''; }
     }
     function toggleDebug() { debugElement.classList.toggle('open'); debugToggle.classList.toggle('open'); }
-    
+
     function setFormat(format) {
         if (selectedFormat === format) { selectedFormat = null; whatsappButton.classList.remove('active'); emailButton.classList.remove('active'); promptEnhancerButton.classList.remove('active'); formattedResultHeader.innerHTML = '<i class="fas fa-file-alt"></i> Transcription Only'; formattedResultElement.textContent = 'No formatting will be applied (transcription only)'; copyFormattedButton.disabled = true; return; }
         selectedFormat = format; whatsappButton.classList.remove('active'); emailButton.classList.remove('active'); promptEnhancerButton.classList.remove('active');
@@ -681,18 +686,20 @@
     }
 
     function setModel(model) {
-        selectedModel = model; nanoModelButton.classList.remove('active'); standardModelButton.classList.remove('active'); webApiButton.classList.remove('active');
+        selectedModel = model;
+        nanoModelButton.classList.remove('active'); standardModelButton.classList.remove('active'); webApiButton.classList.remove('active'); whisperModelButton.classList.remove('active');
         if (model === 'universal2') { nanoModelButton.classList.add('active'); uploadButton.style.display = 'inline-flex'; }
         else if (model === 'universal3pro') { standardModelButton.classList.add('active'); uploadButton.style.display = 'inline-flex'; }
         else if (model === 'webapi') { webApiButton.classList.add('active'); uploadButton.style.display = 'none'; }
+        else if (model === 'whisper') { whisperModelButton.classList.add('active'); uploadButton.style.display = 'inline-flex'; }
         log(`Transcription model set to: ${model}`);
     }
-    
+
     async function checkMicrophonePermission() {
         try { log('Checking Microphone Permission'); const ps = await navigator.permissions.query({ name: 'microphone' }); if (ps.state === 'granted') { showMainContent(); log('Microphone permission already granted'); } ps.addEventListener('change', (e) => { if (e.target.state === 'granted') showMainContent(); }); }
         catch (error) { log(`Error checking microphone permission: ${error.message}`); }
     }
-    
+
     function showMainContent() {
         micAccessContainer.style.display = 'none'; mainContent.style.display = 'block'; statusElement.textContent = 'Ready to record';
         formattedResultHeader.innerHTML = '<i class="fas fa-file-alt"></i> Transcription Only'; formattedResultElement.textContent = 'No formatting will be applied (transcription only)';
@@ -705,17 +712,17 @@
         try { log('Requesting microphone access...'); statusElement.textContent = 'Requesting microphone access...'; const p = await navigator.mediaDevices.getUserMedia({ audio: true }); p.getTracks().forEach(t => t.stop()); log('Microphone access granted!'); showMainContent(); }
         catch (error) { log(`Error accessing microphone: ${error.message}`); statusElement.textContent = `Error: ${error.message}. Please check your browser permissions.`; statusElement.classList.add('error'); }
     }
-    
+
     function updateTimer() { const e = new Date(Date.now() - startTime); timerElement.textContent = `${e.getUTCMinutes().toString().padStart(2,'0')}:${e.getUTCSeconds().toString().padStart(2,'0')}`; }
     async function toggleRecording() { if (!isRecording) startNewRecording(); else stopRecording(); }
-    
+
     function startNewRecording() {
         log('Starting a new recording session.'); isFirstRecordingInSession = true;
         transcriptionResultElement.textContent = 'Your transcribed text will appear here...'; formattedResultElement.textContent = 'Your formatted text will appear here...';
         audioContainer.innerHTML = ''; transcribedText = ''; audioBlob = null; lastSaveSuccessful = false; startRecording();
     }
     function startContinueRecording() { log('Continuing recording session.'); isFirstRecordingInSession = false; startRecording(); }
-    
+
     async function startRecording() {
         try {
             log('Starting recording...'); statusElement.textContent = 'Recording... Speak now'; statusElement.className = 'status processing';
@@ -794,7 +801,7 @@
         if (webSpeechRestartTimer) { clearTimeout(webSpeechRestartTimer); webSpeechRestartTimer = null; }
         if (webSpeechRecognition) { try { webSpeechRecognition.onend = null; webSpeechRecognition.onerror = null; webSpeechRecognition.stop(); log('Web Speech API stopped'); } catch (e) { log(`Error stopping: ${e.message}`); } webSpeechRecognition = null; }
     }
-    
+
     function stopRecording() {
         try {
             log('Stopping recording...'); clearInterval(timerInterval); isRecording = false;
@@ -830,9 +837,9 @@
         copyTranscriptionButton.disabled = false; reformatButton.disabled = false; await reformatText();
         if (autoCopyToggle.checked && !selectedFormat) await autoCopy(transcribedText, 'transcription');
     }
-    
+
     function createAudioElement(url) { audioContainer.innerHTML = ''; const a = document.createElement('audio'); a.src = url; a.controls = true; audioContainer.appendChild(a); }
-    
+
     function handleAudioFileSelect(event) {
         const file = event.target.files[0];
         if (!file) return;
@@ -841,7 +848,7 @@
         uploadAudioFile(file);
         audioFileInput.value = '';
     }
-    
+
     async function uploadAudioFile(file) {
         try {
             log('Uploading audio file...');
@@ -855,12 +862,12 @@
             resaveButton.disabled = true;
             downloadButton.disabled = true;
             reformatButton.disabled = true;
-            
+
             const fileUrl = URL.createObjectURL(file);
             audioBlob = file;
             audioURL = fileUrl;
             createAudioElement(fileUrl);
-            
+
             isFirstRecordingInSession = true;
             transcriptionResultElement.textContent = 'Transcribing uploaded audio...';
             formattedResultElement.textContent = 'Waiting for transcription...';
@@ -873,8 +880,10 @@
             recordButton.disabled = false;
         }
     }
-    
-    // Map dropdown language codes to AssemblyAI ISO 639-1 format
+
+    // Map dropdown language codes to AssemblyAI ISO 639-1 format (also reused
+    // as the language hint for the Free Whisper endpoint below — both APIs
+    // expect the same 2-letter ISO 639-1 codes).
     function getAssemblyAILanguageCode(dropdownValue) {
         const mapping = {
             'en_us': 'en', 'en_uk': 'en', 'en_au': 'en', 'en': 'en',
@@ -897,13 +906,14 @@
     }
 
     async function transcribeAudio(blobToTranscribe) {
+        if (selectedModel === 'whisper') { await transcribeWithFreeWhisper(blobToTranscribe); return; }
         try {
             log('Uploading audio via server proxy...'); statusElement.textContent = 'Uploading audio...';
             const uploadResponse = await fetchWithRetries(UPLOAD_URL, { method: 'POST', body: blobToTranscribe });
             if (!uploadResponse.ok) throw new Error(`Upload failed: ${uploadResponse.status}`);
             const uploadResult = await uploadResponse.json(); const audioUrl = uploadResult.upload_url;
             log(`Audio uploaded. URL: ${audioUrl}`);
-            
+
             log(`Submitting for transcription (${selectedModel})...`); statusElement.textContent = 'Submitting for transcription...';
             const transcriptOptions = { audio_url: audioUrl };
             if (selectedModel === 'universal2') transcriptOptions.speech_models = ['universal-2'];
@@ -911,17 +921,56 @@
             const assemblyaiLanguageCode = getAssemblyAILanguageCode(languageSelect.value);
             transcriptOptions.language_code = assemblyaiLanguageCode;
             log(`Language: ${languageSelect.value} -> AssemblyAI code: ${assemblyaiLanguageCode}`);
-            
+
             const transcriptResponse = await fetchWithRetries(TRANSCRIPT_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(transcriptOptions) });
             if (!transcriptResponse.ok) throw new Error(`Transcription request failed: ${transcriptResponse.status}`);
             const transcriptResult = await transcriptResponse.json(); const transcriptId = transcriptResult.id;
             log(`Transcription submitted. ID: ${transcriptId}`);
-            
+
             log('Polling for completion...'); statusElement.textContent = 'Transcribing audio...';
             await pollTranscriptionStatus(transcriptId);
         } catch (error) { log(`Transcription error: ${error.message}`); statusElement.textContent = 'Transcription error: ' + error.message; statusElement.className = 'status error'; resubmitButton.disabled = false; }
     }
-    
+
+    // Free Whisper — self-hosted faster-whisper, single request/response
+    // (no upload-then-poll job model needed, unlike AssemblyAI).
+    async function transcribeWithFreeWhisper(blobToTranscribe) {
+        try {
+            log('Submitting audio to Free Whisper (self-hosted)...');
+            statusElement.textContent = 'Transcribing with Free Whisper (self-hosted, may take a bit on CPU)...';
+            statusElement.className = 'status processing';
+            const languageCode = getAssemblyAILanguageCode(languageSelect.value);
+            const contentType = (blobToTranscribe && blobToTranscribe.type) ? blobToTranscribe.type : 'application/octet-stream';
+            const url = `${WHISPER_TRANSCRIBE_URL}?language=${encodeURIComponent(languageCode)}`;
+            log(`Language: ${languageSelect.value} -> Free Whisper code: ${languageCode}`);
+
+            const response = await fetchWithRetries(
+                url,
+                { method: 'POST', headers: { 'Content-Type': contentType }, body: blobToTranscribe },
+                MAX_RETRIES,
+                WHISPER_INITIAL_TIMEOUT
+            );
+            const result = await response.json().catch(() => ({}));
+            if (!response.ok || !result.success) {
+                throw new Error(result.error || `Free Whisper request failed: ${response.status}`);
+            }
+
+            log(`Free Whisper complete: audio=${result.audio_duration_sec}s, processing=${result.processing_sec}s, detected lang=${result.language}`);
+            statusElement.textContent = 'Transcription complete!'; statusElement.className = 'status success';
+            const newText = result.text || 'No text detected';
+            if (isFirstRecordingInSession) { transcribedText = newText; } else { const existing = transcriptionResultElement.textContent.replace('Recording in progress...','').trim(); transcribedText = (existing ? existing + '\n\n' : '') + newText; }
+            transcriptionResultElement.textContent = transcribedText;
+            await saveTranscriptionAndAudio();
+            copyTranscriptionButton.disabled = false; resubmitButton.disabled = false; reformatButton.disabled = false; await reformatText();
+            if (autoCopyToggle.checked && !selectedFormat) await autoCopy(transcribedText, 'transcription');
+        } catch (error) {
+            log(`Free Whisper transcription error: ${error.message}`);
+            statusElement.textContent = 'Free Whisper error: ' + error.message;
+            statusElement.className = 'status error';
+            resubmitButton.disabled = false;
+        }
+    }
+
     async function pollTranscriptionStatus(transcriptId) {
         let completed = false; let attempts = 0;
         while (!completed && attempts < 60) {
@@ -957,7 +1006,7 @@
             statusElement.textContent = 'Transcription saved!'; statusElement.className = 'status success'; lastSaveSuccessful = true; resaveButton.disabled = true;
         } catch (error) { log(`Save error: ${error.message}`); statusElement.textContent = `Error saving: ${error.message}`; statusElement.className = 'status error'; lastSaveSuccessful = false; resaveButton.disabled = false; }
     }
-    
+
     async function reformatText() {
         transcribedText = transcriptionResultElement.textContent.trim();
         if (!transcribedText || transcribedText === 'No text detected' || transcribedText === 'Your transcribed text will appear here...' || transcribedText === 'Recording in progress...') { log('No transcription to format'); statusElement.textContent = 'No transcription to format'; statusElement.className = 'status error'; return; }
@@ -996,7 +1045,7 @@
             else if (error.message === 'Failed to fetch') formattedResultElement.textContent = `Network error connecting to ${selectedFormat} service.`;
         }
     }
-    
+
     async function copyToClipboard(element, button) {
         try {
             let content = (selectedFormat === 'email' && element === formattedResultElement) ? element.innerHTML : element.textContent;
@@ -1006,9 +1055,9 @@
             statusElement.textContent = 'Copied to clipboard!'; statusElement.className = 'status success';
         } catch (error) { log(`Copy error: ${error.message}`); statusElement.textContent = 'Failed to copy: ' + error.message; statusElement.className = 'status error'; }
     }
-    
+
     async function resubmitAudio() {
-        if (selectedModel === 'webapi') { log('Cannot resubmit with Web API.'); statusElement.textContent = 'Web API cannot resubmit. Switch to Universal-2/Universal-3 Pro or record again.'; statusElement.className = 'status error'; return; }
+        if (selectedModel === 'webapi') { log('Cannot resubmit with Web API.'); statusElement.textContent = 'Web API cannot resubmit. Switch to Universal-2/Universal-3 Pro/Free Whisper or record again.'; statusElement.className = 'status error'; return; }
         if (audioBlob) {
             log('Resubmitting audio...'); statusElement.textContent = 'Resubmitting audio...'; statusElement.className = 'status processing';
             resubmitButton.disabled = true; resaveButton.disabled = true; copyTranscriptionButton.disabled = true; copyFormattedButton.disabled = true; reformatButton.disabled = true;
@@ -1016,7 +1065,7 @@
             try { await transcribeAudio(audioBlob); } catch (error) { log(`Resubmission error: ${error.message}`); statusElement.textContent = 'Resubmission error: ' + error.message; statusElement.className = 'status error'; resubmitButton.disabled = false; }
         } else { log('No audio to resubmit'); statusElement.textContent = 'No audio to resubmit'; statusElement.className = 'status error'; }
     }
-    
+
     function downloadAudio() {
         if (selectedModel === 'webapi') { log('Download not available in Web API mode.'); statusElement.textContent = 'Audio download not available in Web API mode.'; statusElement.className = 'status error'; return; }
         if (audioBlob) {
@@ -1026,7 +1075,7 @@
             log('Download initiated'); statusElement.textContent = 'Audio download started'; statusElement.className = 'status success';
         } else { log('No audio to download'); statusElement.textContent = 'No audio to download'; statusElement.className = 'status error'; }
     }
-    
+
     // ===== Initialize =====
     log('Page loaded. Loading user info and checking microphone...');
     loadUserInfo();
