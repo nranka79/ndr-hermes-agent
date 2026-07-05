@@ -177,8 +177,30 @@ services:
       SAVE_WEBHOOK_URL: ${SAVE_WEBHOOK_URL}
       WHATSAPP_WEBHOOK_URL: ${WHATSAPP_WEBHOOK_URL}
       AUTH_FILE: /data/.auth
+      # Free Whisper microservice — reachable by compose service name on
+      # the shared default network (same pattern as OPENAI_API_BASE_URL:
+      # http://hermes:8642/v1 below).
+      FREE_WHISPER_URL: http://free-whisper:8000
     volumes:
       - ./voice-data:/data
+    depends_on:
+      - free-whisper
+
+  # Free Whisper — isolated faster-whisper transcription microservice.
+  # Pilot (Phase 1): plain transcription only, called by the `voice` app's
+  # new "Free Whisper" button. No vault/vocab wiring yet (Phase 2).
+  free-whisper:
+    build:
+      context: ./free-whisper-svc
+      dockerfile: Dockerfile
+    restart: always
+    environment:
+      WHISPER_MODEL: small
+    volumes:
+      # Reuse the faster-whisper model cache already downloaded for the
+      # `hermes` container's own local STT (same "small" model) so this
+      # service doesn't re-download ~500MB on first start.
+      - ./hermes-data/home/.cache/huggingface:/root/.cache/huggingface
 
   loki:
     image: grafana/loki:2.9.4
