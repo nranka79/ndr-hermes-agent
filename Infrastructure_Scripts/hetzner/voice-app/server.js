@@ -427,6 +427,127 @@ app.post('/api/webhook-form/save', isAuthenticated, (req, res) => {
   });
 });
 
+// OpenAI-compatible STT endpoint used by Open WebUI (/v1/audio/transcriptions).
+// Accepts multipart/form-data with 'file' (audio binary) + optional 'model' field.
+// No auth required -- bound to the internal docker network (open-webui container).
+app.post('/v1/audio/transcriptions', async (req, res) => {
+  const ctype = req.headers['content-type'] || '';
+  const bm = ctype.match(/boundary=(?:"([^"]+)"|([^;]+))/i);
+  if (!bm) {
+    return res.status(400).json({ error: { message: 'multipart/form-data with boundary required' } });
+  }
+  const boundary = '--' + (bm[1] || bm[2]).trim();
+
+  const chunks = [];
+  req.on('data', (c) => chunks.push(c));
+  req.on('end', async () => {
+    const t0 = Date.now();
+    try {
+      const body = Buffer.concat(chunks);
+      const parts = splitMultipart(body, boundary);
+      const filePart = parts.find((p) => p.name === 'file');
+      if (!filePart || !filePart.data || filePart.data.length === 0) {
+        return res.status(400).json({ error: { message: "missing or empty 'file' field" } });
+      }
+      const audioBuffer = filePart.data;
+      console.log(`[STT-BRIDGE] received ${audioBuffer.length} bytes, uploading to AssemblyAI`);
+
+      const uploadResp = await proxyRequest(
+        'https://api.assemblyai.com/v2/upload',
+        'POST',
+        {
+          Authorization: ASSEMBLYAI_API_KEY_FALLBACK,
+          'Content-Type': 'application/octet-stream',
+          'Content-Length': audioBuffer.length,
+        },
+        audioBuffer
+      );
+      if (uploadResp.status !== 200) {
+        return res.status(502).json({
+          error: { message: `assemblyai upload failed (${uploadResp.status}): ${uploadResp.body.toString().slice(0, 500)}` },
+        });
+      }
+      const { upload_url } = JSON.parse(uploadResp.body.toString());
+
+      const tReqBody = JSON.stringify({
+        audio_url: upload_url,
+        speech_models: ['universal-2'],
+        language_code: 'en',
+      });
+      const tResp = await proxyRequest(
+        'https://api.assemblyai.com/v2/transcript',
+        'POST',
+        {
+          Authorization: ASSEMBLYAI_API_KEY_FALLBACK,
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(tReqBody),
+        },
+        tReqBody
+      );
+      if (tResp.status !== 200) {
+        return res.status(502).json({
+          error: { message: `assemblyai transcript submit failed (${tResp.status}): ${tResp.body.toString().slice(0, 500)}` },
+        });
+      }
+      const { id } = JSON.parse(tResp.body.toString());
+      console.log(`[STT-BRIDGE] submitted transcript id=${id}, polling...`);
+
+      const deadline = Date.now() + 120000;
+      let text = null;
+      while (Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 1500));
+        const pResp = await proxyRequest(
+          `https://api.assemblyai.com/v2/transcript/${id}`,
+          'GET',
+          { Authorization: ASSEMBLYAI_API_KEY_FALLBACK },
+          null
+        );
+        if (pResp.status !== 200) continue;
+        const job = JSON.parse(pResp.body.toString());
+        if (job.status === 'completed') { text = job.text; break; }
+        if (job.status === 'error') {
+          return res.status(502).json({ error: { message: `transcript failed: ${job.error || 'unknown'}` } });
+        }
+      }
+      if (text === null) {
+        return res.status(504).json({ error: { message: 'transcript timed out after 120s' } });
+      }
+      console.log(`[STT-BRIDGE] done in ${Date.now() - t0}ms, ${text.length} chars`);
+      res.json({ text });
+    } catch (err) {
+      console.error(`[STT-BRIDGE] error: ${err.message}`);
+      res.status(500).json({ error: { message: err.message } });
+    }
+  });
+  req.on('error', (err) => res.status(500).json({ error: { message: err.message } }));
+});
+
+// Minimal multipart/form-data parser. Returns array of {name, data} (Buffer).
+function splitMultipart(body, boundary) {
+  const boundaryBuf = Buffer.from(boundary);
+  const parts = [];
+  let pos = 0;
+  while (pos < body.length) {
+    const start = body.indexOf(boundaryBuf, pos);
+    if (start === -1) break;
+    pos = start + boundaryBuf.length;
+    if (body.slice(pos, pos + 2).toString() === '--') break; // closing boundary
+    if (body.slice(pos, pos + 2).toString() === '\r\n') pos += 2;
+    const headerEnd = body.indexOf('\r\n\r\n', pos);
+    if (headerEnd === -1) break;
+    const headerText = body.slice(pos, headerEnd).toString();
+    pos = headerEnd + 4;
+    const next = body.indexOf(boundaryBuf, pos);
+    let dataEnd = next === -1 ? body.length : next - 2;
+    if (dataEnd < pos) dataEnd = pos;
+    const data = body.slice(pos, dataEnd);
+    const cdMatch = headerText.match(/name="([^"]+)"/i);
+    parts.push({ name: cdMatch ? cdMatch[1] : '', data });
+    pos = next === -1 ? body.length : next;
+  }
+  return parts;
+}
+
 // Serve the main HTML page - PROTECTED (must be BEFORE static middleware)
 app.get('/', isAuthenticated, (req, res) => {
   res.sendFile(path.join(__dirname, 'views', 'index.html'));
