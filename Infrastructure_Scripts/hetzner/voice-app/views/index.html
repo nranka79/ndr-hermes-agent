@@ -276,8 +276,8 @@
     </div>
     
     <div class="model-toggle">
-    <button id="nanoModelButton" class="format-button active"><i class="fas fa-bolt"></i> Nano Model</button>
-    <button id="standardModelButton" class="format-button"><i class="fas fa-brain"></i> Standard Model</button>
+    <button id="nanoModelButton" class="format-button active"><i class="fas fa-bolt"></i> Universal-2</button>
+    <button id="standardModelButton" class="format-button"><i class="fas fa-brain"></i> Universal-3 Pro</button>
     <button id="webApiButton" class="format-button"><i class="fas fa-globe"></i> Web API</button>
     </div>
 
@@ -512,7 +512,7 @@
     const audioFileInput = document.getElementById('audioFileInput');
     
     let selectedFormat = null;
-    let selectedModel = 'nano';
+    let selectedModel = 'universal2';
     let mediaRecorder;
     let audioChunks = [];
     let startTime;
@@ -657,8 +657,8 @@
         catch (e) { const range = document.createRange(); range.selectNodeContents(debugElement); const sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(range); document.execCommand('copy'); sel.removeAllRanges(); copyDebugButton.innerHTML = '<i class="fas fa-check"></i> Copied!'; setTimeout(() => { copyDebugButton.innerHTML = '<i class="fas fa-copy"></i> Copy Logs'; }, 2000); }
     });
     clearDebugButton.addEventListener('click', () => { debugElement.innerHTML = 'Debug cleared.'; });
-    nanoModelButton.addEventListener('click', () => setModel('nano'));
-    standardModelButton.addEventListener('click', () => setModel('standard'));
+    nanoModelButton.addEventListener('click', () => setModel('universal2'));
+    standardModelButton.addEventListener('click', () => setModel('universal3pro'));
     webApiButton.addEventListener('click', () => setModel('webapi'));
     continueRecordButton.addEventListener('click', startContinueRecording);
     resaveButton.addEventListener('click', saveTranscriptionAndAudio);
@@ -682,8 +682,8 @@
 
     function setModel(model) {
         selectedModel = model; nanoModelButton.classList.remove('active'); standardModelButton.classList.remove('active'); webApiButton.classList.remove('active');
-        if (model === 'nano') { nanoModelButton.classList.add('active'); uploadButton.style.display = 'inline-flex'; }
-        else if (model === 'standard') { standardModelButton.classList.add('active'); uploadButton.style.display = 'inline-flex'; }
+        if (model === 'universal2') { nanoModelButton.classList.add('active'); uploadButton.style.display = 'inline-flex'; }
+        else if (model === 'universal3pro') { standardModelButton.classList.add('active'); uploadButton.style.display = 'inline-flex'; }
         else if (model === 'webapi') { webApiButton.classList.add('active'); uploadButton.style.display = 'none'; }
         log(`Transcription model set to: ${model}`);
     }
@@ -906,7 +906,8 @@
             
             log(`Submitting for transcription (${selectedModel})...`); statusElement.textContent = 'Submitting for transcription...';
             const transcriptOptions = { audio_url: audioUrl };
-            if (selectedModel === 'nano') transcriptOptions.speech_model = 'nano';
+            if (selectedModel === 'universal2') transcriptOptions.speech_models = ['universal-2'];
+            else if (selectedModel === 'universal3pro') transcriptOptions.speech_models = ['universal-3-pro'];
             const assemblyaiLanguageCode = getAssemblyAILanguageCode(languageSelect.value);
             transcriptOptions.language_code = assemblyaiLanguageCode;
             log(`Language: ${languageSelect.value} -> AssemblyAI code: ${assemblyaiLanguageCode}`);
@@ -1007,7 +1008,7 @@
     }
     
     async function resubmitAudio() {
-        if (selectedModel === 'webapi') { log('Cannot resubmit with Web API.'); statusElement.textContent = 'Web API cannot resubmit. Switch to Nano/Standard or record again.'; statusElement.className = 'status error'; return; }
+        if (selectedModel === 'webapi') { log('Cannot resubmit with Web API.'); statusElement.textContent = 'Web API cannot resubmit. Switch to Universal-2/Universal-3 Pro or record again.'; statusElement.className = 'status error'; return; }
         if (audioBlob) {
             log('Resubmitting audio...'); statusElement.textContent = 'Resubmitting audio...'; statusElement.className = 'status processing';
             resubmitButton.disabled = true; resaveButton.disabled = true; copyTranscriptionButton.disabled = true; copyFormattedButton.disabled = true; reformatButton.disabled = true;
