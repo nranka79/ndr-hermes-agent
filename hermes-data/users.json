@@ -1,14 +1,106 @@
 {
-  "7449813913": {
-    "name": "Nishant Ranka",
-    "email": "ndr@draas.com",
-    "role": "admin",
-    "gbrain_home": "/data/hermes/users/7449813913"
-  },
-  "8717455402": {
+  "sales1.blr@draas.com": {
     "name": "Bharat Hawaldar",
     "email": "sales1.blr@draas.com",
     "role": "employee",
-    "gbrain_home": "/data/hermes/users/8717455402"
+    "phone": "+919900029200",
+    "gbrain_home": "/data/hermes/users/sales1.blr",
+    "identities": {
+      "telegram": [
+        "8717455402"
+      ],
+      "email": [
+        "sales1.blr@draas.com"
+      ]
+    },
+    "draas_user_id": "sales1.blr"
+  },
+  "vkdas@draas.com": {
+    "name": "Vinod Kumar Das",
+    "email": "vkdas@draas.com",
+    "role": "employee",
+    "gbrain_home": "/data/hermes/users/vkdas",
+    "identities": {
+      "telegram": [
+        "8654428154"
+      ],
+      "email": [
+        "vkdas@draas.com"
+      ]
+    },
+    "draas_user_id": "vkdas"
+  },
+  "pm2.blr@draas.com": {
+    "name": "Anbarasan Murugaperumal",
+    "email": "pm2.blr@draas.com",
+    "role": "employee",
+    "phone": "+918150029900",
+    "gbrain_home": "/data/hermes/users/pm2.blr",
+    "identities": {
+      "telegram": [
+        "7281906252"
+      ],
+      "email": [
+        "pm2.blr@draas.com"
+      ]
+    },
+    "draas_user_id": "pm2.blr"
+  },
+  "rnr@draas.com": {
+    "name": "Roshini Ranka",
+    "email": "rnr@draas.com",
+    "role": "admin",
+    "phone": "+919845026390",
+    "gbrain_home": "/data/hermes/users/rnr",
+    "identities": {
+      "telegram": [
+        "7245204091"
+      ],
+      "email": [
+        "rnr@draas.com"
+      ]
+    },
+    "draas_user_id": "rnr",
+    "permissions": {
+      "multi_google": true,
+      "manage_users": true
+    }
+  },
+  "ndr@draas.com": {
+    "name": "Nishant Ranka",
+    "email": "ndr@draas.com",
+    "role": "admin",
+    "phone": "+919880055634",
+    "gbrain_home": "/data/hermes/users/ndr",
+    "identities": {
+      "telegram": [
+        "7449813913"
+      ],
+      "email": [
+        "ndr@draas.com",
+        "ndr@ahfl.in"
+      ]
+    },
+    "draas_user_id": "ndr",
+    "permissions": {
+      "multi_google": true,
+      "manage_users": true
+    }
+  },
+  "psingh@draas.com": {
+    "name": "Prakash Singh",
+    "email": "psingh@draas.com",
+    "role": "employee",
+    "phone": "+919900093816",
+    "gbrain_home": "/data/hermes/users/psingh",
+    "identities": {
+      "telegram": [
+        "8502281203"
+      ],
+      "email": [
+        "psingh@draas.com"
+      ]
+    },
+    "draas_user_id": "psingh"
   }
 }
