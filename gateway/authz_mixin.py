@@ -90,7 +90,7 @@ class GatewayAuthorizationMixin:
     def _is_user_authorized(self, source: SessionSource) -> bool:
         """
         Check if a user is authorized to use the bot.
-        
+
         Checks in order:
         1. Per-platform allow-all flag (e.g., DISCORD_ALLOW_ALL_USERS=true)
         2. Environment variable allowlists (TELEGRAM_ALLOWED_USERS, etc.)
@@ -220,10 +220,16 @@ class GatewayAuthorizationMixin:
         # Users registered in users.json are always authorized (Telegram only).
         # This allows add-user to take effect immediately without restarting the
         # gateway or updating TELEGRAM_ALLOWED_USERS in the environment.
+        # users.json is keyed by primary email, not by Telegram ID -- the
+        # Telegram ID lives under each record's identities.telegram list, so
+        # membership must be resolved via find_user_by_identity() rather than
+        # a raw top-level-key check (the old check here never matched anyone,
+        # since no top-level key is ever a Telegram ID).
         if source.platform == Platform.TELEGRAM and user_id:
             try:
-                from tools._user_registry import load_user_registry
-                if str(user_id).strip() in load_user_registry():
+                from tools._user_registry import find_user_by_identity
+                _, _rec = find_user_by_identity("telegram", user_id)
+                if _rec:
                     return True
             except Exception:
                 pass
