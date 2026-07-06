@@ -2001,6 +2001,7 @@ class SessionDB:
         tool_name: str = None,
         tool_calls: Any = None,
         tool_call_id: str = None,
+        timestamp: float = None,
         token_count: int = None,
         finish_reason: str = None,
         reasoning: str = None,
@@ -2010,6 +2011,7 @@ class SessionDB:
         codex_message_items: Any = None,
         platform_message_id: str = None,
         observed: bool = False,
+        **kwargs,
     ) -> int:
         """
         Append a message to a session. Returns the message row ID.
@@ -2022,6 +2024,9 @@ class SessionDB:
         independent of the SQLite autoincrement primary key and is used by
         platform-specific flows like yuanbao's recall guard to redact a
         message by its platform-side identifier.
+
+        ``**kwargs`` swallows forward-compat fields that callers may pass
+        (e.g. ``message_id``, ``ts``, ``id``) without breaking the call.
         """
         # Serialize structured fields to JSON before entering the write txn
         reasoning_details_json = (
@@ -2040,6 +2045,20 @@ class SessionDB:
         # Multimodal content (list of parts) must be JSON-encoded: sqlite3
         # cannot bind list/dict parameters directly.
         stored_content = self._encode_content(content)
+        # Use explicit timestamp if the caller supplied one, else time.time().
+        # Some call sites (e.g. gateway/run.py) pass an ISO timestamp string
+        # from the inbound message; coerce to float so sqlite stores it cleanly.
+        if timestamp is None:
+            row_timestamp = time.time()
+        elif isinstance(timestamp, (int, float)):
+            row_timestamp = float(timestamp)
+        else:
+            # ISO string from datetime.now().isoformat() — try to parse.
+            try:
+                from datetime import datetime as _dt
+                row_timestamp = _dt.fromisoformat(str(timestamp).replace("Z", "+00:00")).timestamp()
+            except Exception:
+                row_timestamp = time.time()
 
         # Pre-compute tool call count
         num_tool_calls = 0
@@ -2060,7 +2079,7 @@ class SessionDB:
                     tool_call_id,
                     tool_calls_json,
                     tool_name,
-                    time.time(),
+                    row_timestamp,
                     token_count,
                     finish_reason,
                     reasoning,
