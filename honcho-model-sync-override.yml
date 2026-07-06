@@ -1,0 +1,22 @@
+  # Honcho model-sync watcher — polls the agent's config.yaml for
+  # model.default changes and rewrites /opt/hermes-honcho/config.toml +
+  # restarts the deriver so Honcho's chat LLM follows the agent's.
+  # Embedding model is intentionally NOT synced (chat ≠ embedding).
+  honcho-model-sync:
+    image: python:3.12-slim
+    container_name: hermes-honcho-model-sync-1
+    restart: unless-stopped
+    network_mode: host
+    command:
+      - /bin/sh
+      - -c
+      - "pip install --no-cache-dir pyyaml && python /opt/hermes/bin/honcho_model_sync.py"
+    environment:
+      - HERMES_HOME=/data/hermes
+    volumes:
+      - ./hermes-data:/data/hermes:rw
+      - /opt/hermes-honcho/config.toml:/opt/hermes-honcho/config.toml:rw
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /opt/hermes/bin/honcho_model_sync.py:/opt/hermes/bin/honcho_model_sync.py:ro
+      - /usr/bin/docker:/usr/bin/docker:ro
+
