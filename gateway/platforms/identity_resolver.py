@@ -1,13 +1,17 @@
 """
 Resolves the authenticated caller's identity from an inbound API server request.
 
-The Open WebUI Pipe function (scripts/openwebui/hermes_pipe.py) injects
-X-Hermes-User-Email into every request using the SSO-authenticated user's
-email from Open WebUI's session context.  This module reads that header,
-looks the email up in users.json via _user_registry, and returns the full
-user record so the API server can wire up the correct user_id, OAuth vault
-scope, Honcho memory bucket, and system-prompt profile — identically to how
-a Telegram session is handled.
+Open WebUI forwards the SSO-authenticated user's identity to backends when
+ENABLE_FORWARD_USER_INFO_HEADERS=true is set in its environment.  It adds:
+    X-OpenWebUI-User-Email  — the Google SSO email (e.g. ndr@draas.com)
+    X-OpenWebUI-User-Name   — display name
+    X-OpenWebUI-User-Role   — Open WebUI role (admin / user)
+
+This module reads that email header, looks it up in users.json via
+_user_registry, and returns the full user record so the API server can wire
+up the correct user_id (Telegram ID), OAuth vault scope, Honcho memory
+bucket, and system-prompt profile — identically to how a Telegram session
+is handled.
 
 Nothing here is exposed to the LLM.  The resolver runs in Python before the
 AIAgent is constructed, and the results flow into set_session_vars / AIAgent
@@ -19,8 +23,8 @@ from typing import Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-# Header name injected by the Open WebUI Pipe function.
-HEADER_USER_EMAIL = "X-Hermes-User-Email"
+# Header injected by Open WebUI when ENABLE_FORWARD_USER_INFO_HEADERS=true.
+HEADER_USER_EMAIL = "X-OpenWebUI-User-Email"
 
 
 def resolve_from_request(request) -> Optional[dict]:
