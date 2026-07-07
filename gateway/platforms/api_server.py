@@ -4118,11 +4118,14 @@ class APIServerAdapter(BasePlatformAdapter):
     async def _handle_gws_auth_callback(self, request: "web.Request") -> "web.Response":
         """GET /gws/auth/callback — receives OAuth code from Google, stores token.
 
-        State parameter (from Google's redirect) encodes the telegram_id and
-        optionally the vault service name:
+        The state parameter carries only the telegram_id (not a service name).
+        ``exchange_and_store`` auto-detects which Google account was authorized
+        by decoding the ``id_token`` JWT returned in the token exchange, looks
+        up the email in ``EMAIL_TO_SERVICE``, and stores under the correct
+        vault service key automatically.
 
-            ``7449813913``                  -> telegram_id=7449813913, service="google" (default)
-            ``7449813913:google-ahfl``      -> telegram_id=7449813913, service="google-ahfl"
+        Unknown accounts are stored under a fallback key so the user never
+        needs to re-authorize — they just tell Hermes what service name to use.
         """
         code = request.rel_url.query.get("code", "")
         raw_state = request.rel_url.query.get("state", "")
@@ -4136,13 +4139,31 @@ class APIServerAdapter(BasePlatformAdapter):
                 text=f"<h1>Authorization failed</h1><p>{reason}</p><p>Please try again from Telegram.</p>",
             )
 
-        # Parse telegram_id and optional service_name from state.
-        from tools.gws_auth import _parse_state, exchange_and_store as _exchange_and_store
-        telegram_id, service_name = _parse_state(raw_state)
+        telegram_id = raw_state.strip()
 
         try:
-            _exchange_and_store(telegram_id, code, service_name)
-            logger.info("GWS token stored for telegram_id=%s service=%s", telegram_id, service_name)
+            from tools.gws_auth import exchange_and_store as _exchange_and_store
+
+            result = _exchange_and_store(telegram_id, code)
+
+            if result.startswith("UNKNOWN:"):
+                # result = "UNKNOWN:{email}:{fallback_service}"
+                parts = result.split(":", 2)
+                email = parts[1] if len(parts) > 1 else "unknown"
+                logger.info("GWS token stored under fallback key for %s (email=%s)", telegram_id, email)
+                asyncio.create_task(self._notify_telegram_user(
+                    telegram_id,
+                    f"I received authorization for {email}, but I don't know what "
+                    "to call this account yet.  Tell me what vault service name "
+                    f"to use (e.g. google-{email.split('@')[0]}).",
+                ))
+                return web.Response(
+                    content_type="text/html",
+                    text=f"<h1>Authorization received</h1><p>Connected {email}.</p><p>Tell Hermes what service name to use for this account.</p>",
+                )
+
+            # Known account — success
+            logger.info("GWS token stored for telegram_id=%s service=%s", telegram_id, result)
             try:
                 from tools._user_registry import get_user_config
                 uconf = get_user_config(telegram_id)
