@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 
 # ── Sheet config ───────────────────────────────────────────────────────────────
 
-SHEET_ID = "1XbSRAXxPLY4cXMTm2rmvKh11Nx3x0aKUxxuWualoV9g"
+_SHEET_ID_FALLBACK = ""  # must come from user config; no global default
 
 # Contacts sheet column indices (0-based)
 COL_FIRST_NAME        = 0   # A
@@ -129,9 +129,58 @@ def _normalize(text: str) -> str:
     return re.sub(r"\s+", " ", ascii_str).strip().lower()
 
 
-def _build_service(subject_email: str = "7449813913"):
-    from tools.gws_auth import build_service as _gws_build
-    return _gws_build("sheets", "v4", telegram_id=subject_email)
+def _get_session_user_cfg() -> dict:
+    """Return the user config dict for the current session user, or {} if unknown."""
+    try:
+        from gateway.session_context import get_session_env
+        from tools._user_registry import get_user_config
+        session_uid = get_session_env("HERMES_SESSION_USER_ID", "")
+        return get_user_config(session_uid) or {}
+    except Exception:
+        return {}
+
+
+def _get_sheet_id() -> str:
+    """Return the contacts spreadsheet ID for the current session user."""
+    cfg = _get_session_user_cfg()
+    sheet_id = cfg.get("contacts_sheet_id", "")
+    if not sheet_id:
+        uid = cfg.get("draas_user_id", "unknown")
+        raise RuntimeError(
+            f"User {uid!r} has no contacts_sheet_id configured in users.json"
+        )
+    return sheet_id
+
+
+def _build_service():
+    """Return a Google Sheets API service for the current session user.
+
+    Gets draas_user_id and gws_service from user config, then requests an
+    access token from the vault. No credentials are stored or passed through
+    the LLM — the tool fetches them directly.
+    """
+    from tools import gws_vault_client as vault
+    from google.oauth2.credentials import Credentials
+    from googleapiclient.discovery import build
+
+    cfg = _get_session_user_cfg()
+    draas_user_id = cfg.get("draas_user_id", "")
+    gws_service = cfg.get("gws_service", "")
+
+    if not draas_user_id:
+        raise RuntimeError(
+            "Cannot identify session user for Google Sheets access. "
+            "HERMES_SESSION_USER_ID not set or user not in users.json."
+        )
+    if not gws_service:
+        raise RuntimeError(
+            f"User {draas_user_id!r} has no gws_service configured in users.json. "
+            "An admin must add the 'gws_service' field and ensure the user has authorized."
+        )
+
+    token_info = vault.get_access_token(draas_user_id, gws_service)
+    creds = Credentials(token=token_info["access_token"])
+    return build("sheets", "v4", credentials=creds)
 
 
 def _fuzzy_score(query: str, candidate: str) -> float:
@@ -242,7 +291,7 @@ class NounResolver:
             for sheet_name, cfg in SHEET_CONFIGS.items():
                 try:
                     resp = svc.spreadsheets().values().get(
-                        spreadsheetId=SHEET_ID,
+                        spreadsheetId=_get_sheet_id(),
                         range=cfg["range"],
                     ).execute()
                     rows = resp.get("values", [])
@@ -351,7 +400,7 @@ class NounResolver:
         try:
             svc = _build_service()
             resp = svc.spreadsheets().values().get(
-                spreadsheetId=SHEET_ID,
+                spreadsheetId=_get_sheet_id(),
                 range="NDR DRAAS Google contacts.csv!A:CO",
             ).execute()
             rows = resp.get("values", [])
@@ -677,7 +726,7 @@ class NounResolver:
             svc = _build_service()
             col_end = cfg["range"].split("!")[-1].split(":")[1]
             resp = svc.spreadsheets().values().get(
-                spreadsheetId=SHEET_ID,
+                spreadsheetId=_get_sheet_id(),
                 range=f"'{sheet}'!A{row}:{col_end}{row}",
             ).execute()
             rows = resp.get("values", [])
@@ -693,7 +742,7 @@ class NounResolver:
             svc = _build_service()
             col = "CO"  # contact_score column
             resp = svc.spreadsheets().values().get(
-                spreadsheetId=SHEET_ID,
+                spreadsheetId=_get_sheet_id(),
                 range=f"'NDR DRAAS Google contacts.csv'!{col}{row}",
             ).execute()
             current = 0
@@ -704,7 +753,7 @@ class NounResolver:
                 except ValueError:
                     pass
             svc.spreadsheets().values().update(
-                spreadsheetId=SHEET_ID,
+                spreadsheetId=_get_sheet_id(),
                 range=f"'NDR DRAAS Google contacts.csv'!{col}{row}",
                 valueInputOption="RAW",
                 body={"values": [[str(current + amount)]]},

@@ -334,9 +334,12 @@ def build_session_context_prompt(
             uid = _hash_sender_id(uid)
         lines.append(f"**User ID:** {uid}")
 
-    # Inject per-user profile from users.json (Telegram sessions only)
+    # Inject per-user profile from users.json.
+    # Works for any platform where user_id is a Telegram numeric ID — which
+    # includes Telegram natively and API server sessions after identity
+    # resolution injects the Telegram ID via set_session_vars(user_id=...).
     _user_cfg: dict = {}
-    if context.source.platform.value == "telegram" and context.source.user_id:
+    if context.source.user_id:
         try:
             from tools._user_registry import get_user_config
             _user_cfg = get_user_config(context.source.user_id)
