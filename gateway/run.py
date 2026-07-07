@@ -7139,6 +7139,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if canonical == "subgoal":
             return await self._handle_subgoal_command(event)
 
+        if canonical == "vocab":
+            return await self._handle_vocab_command(event)
+
         if canonical == "voice":
             return await self._handle_voice_command(event)
 

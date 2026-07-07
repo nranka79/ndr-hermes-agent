@@ -1737,6 +1737,63 @@ class GatewaySlashCommandsMixin:
             )
             return t("gateway.voice.help", toggle=toggle_line, channels=channels)
 
+    async def _handle_vocab_command(self, event: MessageEvent) -> str:
+        """Handle /vocab [add|remove|list|clear] [term...] — manage STT vocabulary."""
+        from tools.user_vocab import add_terms, clear_vocab, load_vocab, remove_terms
+
+        user_id = event.source.user_id
+        if not user_id:
+            return "Cannot identify you — user_id is missing."
+
+        args = event.get_command_args().strip()
+        if not args:
+            terms = load_vocab(user_id)
+            if terms:
+                return "**Your STT vocabulary:**\n" + "\n".join(f"  {i+1}. {t}" for i, t in enumerate(terms))
+            return "Your STT vocabulary is empty."
+
+        parts = args.split(maxsplit=1)
+        subcommand = parts[0].lower()
+        remainder = parts[1] if len(parts) > 1 else ""
+
+        if subcommand == "list":
+            terms = load_vocab(user_id)
+            if terms:
+                return "**Your STT vocabulary:**\n" + "\n".join(f"  {i+1}. {t}" for i, t in enumerate(terms))
+            return "Your STT vocabulary is empty."
+
+        if subcommand == "add":
+            if not remainder:
+                return "Usage: /vocab add <term> [term...] — add one or more terms to your vocabulary."
+            new_terms = [t.strip() for t in remainder.split(",") if t.strip()]
+            if not new_terms:
+                return "No valid terms provided."
+            updated = add_terms(user_id, new_terms)
+            added = [t for t in new_terms if t.strip()]
+            return f"Added {len(added)} term(s). You now have {len(updated)} term(s) in your vocabulary."
+
+        if subcommand == "remove":
+            if not remainder:
+                return "Usage: /vocab remove <term> [term...] — remove one or more terms from your vocabulary."
+            to_remove = [t.strip() for t in remainder.split(",") if t.strip()]
+            if not to_remove:
+                return "No valid terms provided."
+            updated = remove_terms(user_id, to_remove)
+            return f"Removed term(s). You now have {len(updated)} term(s) in your vocabulary."
+
+        if subcommand == "clear":
+            if remainder and remainder not in ("--yes", "-y", "yes", "confirm"):
+                return "To clear all vocabulary, use: /vocab clear --yes"
+            if not remainder:
+                return "Are you sure? Run `/vocab clear --yes` to confirm."
+            count = len(load_vocab(user_id))
+            clear_vocab(user_id)
+            return f"Cleared {count} term(s) from your STT vocabulary."
+
+        # Bare term without subcommand — add it
+        updated = add_terms(user_id, [args])
+        return f"Added '{args}' to your STT vocabulary. You now have {len(updated)} term(s)."
+
     async def _handle_rollback_command(self, event: MessageEvent) -> str:
         """Handle /rollback command — list or restore filesystem checkpoints."""
         from gateway.run import _hermes_home

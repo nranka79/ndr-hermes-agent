@@ -1,10 +1,17 @@
 """
 Per-user STT vocabulary for faster-whisper prompt injection.
 
-Vocabulary lists are stored as JSON at:
-  <HERMES_HOME>/vocab/<user_id>.json
+Backed by the GWS Token Vault (``tools/gws_vault_client.py``, service
+name ``"vocab"``) instead of flat JSON files — vocabulary now lives
+alongside OAuth tokens under the same per-user, per-service protection
+(isolated ``gws-vault`` OS user, Unix socket, session-checked reads).
 
-Each file is a list of strings (proper nouns, names, domain terms).
+This keeps the exact same function signatures the rest of the codebase
+already expects (``gateway/slash_commands.py``'s ``/vocab`` command,
+``tools/transcription_tools.py``'s local faster-whisper provider) — only
+the storage backend changed, so no other file needs to change to pick
+this up.
+
 At transcription time, the list is injected via faster-whisper's
 ``initial_prompt`` and ``hotwords`` parameters to improve recognition
 of rare names and domain-specific words.
@@ -14,15 +21,19 @@ from __future__ import annotations
 
 import json
 import logging
-from pathlib import Path
 from typing import List
+
+from tools.gws_vault_client import (
+    VaultError,
+    VaultNoTokenError,
+    delete_token,
+    get_token,
+    set_token,
+)
 
 logger = logging.getLogger(__name__)
 
-
-def _vocab_path(user_id: str) -> Path:
-    from hermes_constants import get_hermes_home
-    return get_hermes_home() / "vocab" / f"{user_id}.json"
+SERVICE = "vocab"
 
 
 def load_vocab(user_id: str) -> List[str]:
@@ -30,11 +41,12 @@ def load_vocab(user_id: str) -> List[str]:
     if not user_id:
         return []
     try:
-        p = _vocab_path(user_id)
-        if p.exists():
-            data = json.loads(p.read_text())
-            if isinstance(data, list):
-                return [str(t) for t in data if str(t).strip()]
+        raw = get_token(user_id, SERVICE, session_uid=user_id)
+        data = json.loads(raw)
+        if isinstance(data, list):
+            return [str(t) for t in data if str(t).strip()]
+    except VaultNoTokenError:
+        pass
     except Exception as exc:
         logger.warning("Failed to load vocab for user %s: %s", user_id, exc)
     return []
@@ -44,10 +56,8 @@ def save_vocab(user_id: str, terms: List[str]) -> None:
     """Persist *terms* as the vocabulary list for *user_id*."""
     if not user_id:
         raise ValueError("user_id required")
-    p = _vocab_path(user_id)
-    p.parent.mkdir(parents=True, exist_ok=True)
     cleaned = sorted({t.strip() for t in terms if t.strip()})
-    p.write_text(json.dumps(cleaned, ensure_ascii=False, indent=2))
+    set_token(user_id, SERVICE, json.dumps(cleaned, ensure_ascii=False))
 
 
 def add_terms(user_id: str, new_terms: List[str]) -> List[str]:
@@ -69,9 +79,10 @@ def remove_terms(user_id: str, remove: List[str]) -> List[str]:
 
 def clear_vocab(user_id: str) -> None:
     """Delete all vocabulary for *user_id*."""
-    p = _vocab_path(user_id)
-    if p.exists():
-        p.unlink()
+    try:
+        delete_token(user_id, SERVICE)
+    except VaultError as exc:
+        logger.warning("Failed to clear vocab for user %s: %s", user_id, exc)
 
 
 def build_initial_prompt(terms: List[str]) -> str:
