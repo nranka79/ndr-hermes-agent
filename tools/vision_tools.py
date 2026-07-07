@@ -341,49 +341,6 @@ _EMBED_MAX_DIMENSION = 7900
 _RESIZE_TARGET_BYTES = 5 * 1024 * 1024
 
 
-
-async def _try_ocr_text(image_path: Path, timeout: float = 30.0) -> Optional[str]:
-    """Run tesseract OCR on an image and return extracted text if meaningful.
-
-    Returns the text string when at least 20 non-whitespace characters are
-    found, None otherwise (image is a photo/diagram with no readable text,
-    tesseract is not installed, or the process fails).
-    """
-    import asyncio
-
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            "tesseract", str(image_path), "stdout", "--psm", "3",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        try:
-            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-        except asyncio.TimeoutError:
-            proc.kill()
-            logger.warning("OCR timed out after %.0fs", timeout)
-            return None
-
-        if proc.returncode != 0:
-            return None
-
-        text = stdout.decode("utf-8", errors="replace").strip()
-        non_ws = "".join(text.split())
-        if len(non_ws) < 20:
-            logger.debug("OCR: insufficient text (%d non-ws chars), will use LLM", len(non_ws))
-            return None
-
-        logger.info("OCR: extracted %d characters, skipping LLM vision call", len(text))
-        return text
-
-    except FileNotFoundError:
-        logger.debug("OCR: tesseract not found")
-        return None
-    except Exception as exc:
-        logger.debug("OCR error: %s", exc)
-        return None
-
-
 def _is_image_size_error(error: Exception) -> bool:
     """Detect if an API error is related to image or payload size."""
     err_str = str(error).lower()
@@ -941,25 +898,7 @@ async def vision_analyze_tool(
         detected_mime_type = _detect_image_mime_type(temp_image_path)
         if not detected_mime_type:
             raise ValueError("Only real image files are supported for vision analysis.")
-
-        # OCR fast path: try tesseract first. For text-heavy images (screenshots,
-        # documents, receipts) this is instant and free — no LLM credits consumed.
-        # Fall through to LLM vision only when OCR yields insufficient text.
-        ocr_text = await _try_ocr_text(temp_image_path)
-        if ocr_text:
-            result = {
-                "success": True,
-                "analysis": f"[Text extracted via OCR]
-
-{ocr_text}",
-                "method": "ocr",
-            }
-            debug_call_data["success"] = True
-            debug_call_data["analysis_length"] = len(ocr_text)
-            _debug.log_call("vision_analyze_tool", debug_call_data)
-            _debug.save()
-            return json.dumps(result, indent=2, ensure_ascii=False)
-
+        
         # Convert image to base64 — send at full resolution first.
         # If the provider rejects it as too large, we auto-resize and retry.
         logger.info("Converting image to base64...")
