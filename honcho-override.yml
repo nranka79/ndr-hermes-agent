@@ -1,0 +1,51 @@
+# Honcho self-hosted memory service — DRAAS
+#
+# Two services: honcho-api (FastAPI on :8000) and honcho-deriver
+# (background LLM worker that builds peer cards / dialectic reasoning).
+# Both share the existing hermes-postgres-1 (pgvector) and hermes-redis-1.
+# Network mode: host, port-bound to 127.0.0.1 only.
+
+  honcho-api:
+    build:
+      context: /opt/hermes-honcho
+      dockerfile: Dockerfile
+    image: hermes-honcho:latest
+    container_name: hermes-honcho-api-1
+    restart: unless-stopped
+    network_mode: host
+    env_file:
+      - /opt/hermes/.env
+    environment:
+      - HONCHO_JWT_SECRET=${HONCHO_JWT_SECRET}
+    volumes:
+      - /opt/hermes-honcho/config.toml:/app/config.toml:ro
+    healthcheck:
+      test:
+        - CMD
+        - /app/.venv/bin/python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2).read()
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  honcho-deriver:
+    build:
+      context: /opt/hermes-honcho
+      dockerfile: Dockerfile
+    image: hermes-honcho:latest
+    container_name: hermes-honcho-deriver-1
+    restart: unless-stopped
+    network_mode: host
+    command: ["/app/.venv/bin/python", "-m", "src.deriver"]
+    env_file:
+      - /opt/hermes/.env
+    environment:
+      - HONCHO_JWT_SECRET=${HONCHO_JWT_SECRET}
+      - HONCHO_API_URL=http://127.0.0.1:8000
+    volumes:
+      - /opt/hermes-honcho/config.toml:/app/config.toml:ro
+    depends_on:
+      honcho-api:
+        condition: service_healthy
