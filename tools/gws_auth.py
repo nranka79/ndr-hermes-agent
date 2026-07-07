@@ -1,8 +1,8 @@
 """
 Per-user OAuth token manager for Google Workspace (Gmail, Calendar, Drive).
 
-Tokens are stored per Telegram user ID at:
-    {HERMES_HOME}/users/{telegram_id}/gws_token.json
+Tokens are stored in the gws-vault daemon (Unix socket), NOT on the filesystem.
+Read/write access goes through gws_vault_client.py.
 
 Usage from skill code (terminal or execute_code):
     from tools.gws_auth import build_service, get_auth_url
@@ -14,9 +14,9 @@ The session telegram_id is read from HERMES_SESSION_USER_ID env var,
 which is injected into every subprocess by the gateway.
 """
 
+import json
 import logging
 import os
-from pathlib import Path
 
 from googleapiclient.discovery import build
 from google.oauth2.credentials import Credentials
@@ -56,11 +56,6 @@ def _client_config() -> dict:
     }
 
 
-def _token_path(telegram_id: str) -> Path:
-    hermes_home = os.environ.get("HERMES_HOME", "/data/hermes")
-    return Path(hermes_home) / "users" / str(telegram_id) / "gws_token.json"
-
-
 def _current_telegram_id() -> str:
     """Get the telegram_id of the active session user."""
     tid = os.environ.get("HERMES_SESSION_USER_ID", "").strip()
@@ -73,25 +68,29 @@ def _current_telegram_id() -> str:
 
 
 def load_credentials(telegram_id: str) -> Credentials:
-    """Load stored OAuth credentials for a user. Raises if not yet authorized."""
-    path = _token_path(telegram_id)
-    if not path.exists():
-        raise FileNotFoundError(
-            f"No GWS token for user {telegram_id}. "
-            f"User must authorize via the link sent by the bot first."
-        )
-    creds = Credentials.from_authorized_user_file(path, HERMES_GWS_SCOPES)
+    """Load stored OAuth credentials for a user from the gws-vault daemon.
+
+    Raises FileNotFoundError if no token exists -- caller should direct
+    the user to authorize via get_auth_url().
+    """
+    from tools import gws_vault_client as vault
+    token_json = vault.get_token(
+        str(telegram_id), "google", session_uid=str(telegram_id)
+    )
+    creds = Credentials.from_authorized_user_info(
+        json.loads(token_json), HERMES_GWS_SCOPES
+    )
     if creds.expired and creds.refresh_token:
         from google.auth.transport.requests import Request
         creds.refresh(Request())
-        path.write_text(creds.to_json())
+        vault.set_token(str(telegram_id), "google", creds.to_json())
     return creds
 
 
 def save_credentials(telegram_id: str, creds: Credentials) -> None:
-    path = _token_path(telegram_id)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(creds.to_json())
+    """Store OAuth credentials in the gws-vault daemon."""
+    from tools import gws_vault_client as vault
+    vault.set_token(str(telegram_id), "google", creds.to_json())
 
 
 def build_service(api: str, version: str, telegram_id: str = None):
@@ -115,8 +114,6 @@ def get_auth_url(telegram_id: str) -> str:
     the server), so PKCE is not needed and is explicitly disabled to avoid
     library-version quirks in the code_verifier exchange.
     """
-    # autogenerate_code_verifier=False: Hermes is a confidential server-side
-    # client; client_secret authenticates the exchange, so PKCE is not needed.
     flow = Flow.from_client_config(
         _client_config(),
         scopes=HERMES_GWS_SCOPES,
@@ -143,7 +140,7 @@ def get_auth_url(telegram_id: str) -> str:
 
 
 def exchange_and_store(telegram_id: str, code: str) -> None:
-    """Exchange an auth code for tokens and store them."""
+    """Exchange an auth code for tokens and store them in the vault."""
     flow = Flow.from_client_config(
         _client_config(),
         scopes=HERMES_GWS_SCOPES,
@@ -156,4 +153,6 @@ def exchange_and_store(telegram_id: str, code: str) -> None:
 
 
 def has_token(telegram_id: str) -> bool:
-    return _token_path(str(telegram_id)).exists()
+    """Check if a token exists for the given user in the vault."""
+    from tools import gws_vault_client as vault
+    return vault.has_token(str(telegram_id), "google", session_uid=str(telegram_id))
