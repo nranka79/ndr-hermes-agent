@@ -1112,7 +1112,7 @@ def _load_local_whisper_model(model_name: str):
         return WhisperModel(model_name, device="cpu", compute_type="int8")
 
 
-def _transcribe_local(file_path: str, model_name: str) -> Dict[str, Any]:
+def _transcribe_local(file_path: str, model_name: str, *, initial_prompt: Optional[str] = None, hotwords: Optional[str] = None) -> Dict[str, Any]:
     """Transcribe using faster-whisper (local, free)."""
     global _local_model, _local_model_name
 
@@ -1136,6 +1136,10 @@ def _transcribe_local(file_path: str, model_name: str) -> Dict[str, Any]:
         transcribe_kwargs = {"beam_size": 5}
         if _forced_lang:
             transcribe_kwargs["language"] = _forced_lang
+        if initial_prompt:
+            transcribe_kwargs["initial_prompt"] = initial_prompt
+        if hotwords:
+            transcribe_kwargs["hotwords"] = hotwords
 
         try:
             segments, info = _local_model.transcribe(file_path, **transcribe_kwargs)
@@ -1274,7 +1278,7 @@ def _transcribe_local_command(file_path: str, model_name: str) -> Dict[str, Any]
 # ---------------------------------------------------------------------------
 
 
-def _transcribe_groq(file_path: str, model_name: str) -> Dict[str, Any]:
+def _transcribe_groq(file_path: str, model_name: str, *, prompt: Optional[str] = None) -> Dict[str, Any]:
     """Transcribe using Groq Whisper API (free tier available)."""
     api_key = get_env_value("GROQ_API_KEY")
     if not api_key:
@@ -1297,6 +1301,7 @@ def _transcribe_groq(file_path: str, model_name: str) -> Dict[str, Any]:
                     model=model_name,
                     file=audio_file,
                     response_format="text",
+                    **({"prompt": prompt} if prompt else {}),
                 )
 
             transcript_text = str(transcription).strip()
@@ -1326,7 +1331,7 @@ def _transcribe_groq(file_path: str, model_name: str) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def _transcribe_openai(file_path: str, model_name: str) -> Dict[str, Any]:
+def _transcribe_openai(file_path: str, model_name: str, *, prompt: Optional[str] = None) -> Dict[str, Any]:
     """Transcribe using OpenAI Whisper API (paid)."""
     try:
         api_key, base_url = _resolve_openai_audio_client_config()
@@ -1354,6 +1359,7 @@ def _transcribe_openai(file_path: str, model_name: str) -> Dict[str, Any]:
                     model=model_name,
                     file=audio_file,
                     response_format="text" if model_name == "whisper-1" else "json",
+                    **({"prompt": prompt} if prompt else {}),
                 )
 
             transcript_text = _extract_transcript_text(transcription)
@@ -1620,7 +1626,7 @@ def _transcribe_elevenlabs(file_path: str, model_name: str) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, Any]:
+def transcribe_audio(file_path: str, model: Optional[str] = None, user_id: Optional[str] = None) -> Dict[str, Any]:
     """
     Transcribe an audio file using the configured STT provider.
 
@@ -1631,6 +1637,10 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
     Args:
         file_path: Absolute path to the audio file to transcribe.
         model:     Override the model. If None, uses config or provider default.
+        user_id:   If provided, load the user's STT vocabulary and inject it as
+                   a recognition hint (initial_prompt for local whisper, prompt
+                   for OpenAI/Groq). No effect on providers that don't support
+                   vocabulary hints (Mistral, xAI, ElevenLabs).
 
     Returns:
         dict with keys:
@@ -1653,6 +1663,19 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
             "error": "STT is disabled in config.yaml (stt.enabled: false).",
         }
 
+    # Build vocab hints from user's STT vocabulary, if available
+    initial_prompt: Optional[str] = None
+    hotwords: Optional[str] = None
+    if user_id:
+        try:
+            from tools.user_vocab import build_hotwords, build_initial_prompt, load_vocab
+            terms = load_vocab(user_id)
+            if terms:
+                initial_prompt = build_initial_prompt(terms)
+                hotwords = build_hotwords(terms)
+        except Exception as exc:
+            logger.debug("Failed to load vocab for user %s: %s", user_id, exc)
+
     provider = _get_provider(stt_config)
 
     if provider == "local":
@@ -1660,7 +1683,7 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
         model_name = _normalize_local_model(
             model or local_cfg.get("model", DEFAULT_LOCAL_MODEL)
         )
-        return _transcribe_local(file_path, model_name)
+        return _transcribe_local(file_path, model_name, initial_prompt=initial_prompt, hotwords=hotwords)
 
     if provider == "local_command":
         local_cfg = stt_config.get("local", {})
@@ -1671,12 +1694,12 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
 
     if provider == "groq":
         model_name = model or DEFAULT_GROQ_STT_MODEL
-        return _transcribe_groq(file_path, model_name)
+        return _transcribe_groq(file_path, model_name, prompt=initial_prompt)
 
     if provider == "openai":
         openai_cfg = stt_config.get("openai", {})
         model_name = model or openai_cfg.get("model", DEFAULT_STT_MODEL)
-        return _transcribe_openai(file_path, model_name)
+        return _transcribe_openai(file_path, model_name, prompt=initial_prompt)
 
     if provider == "mistral":
         mistral_cfg = stt_config.get("mistral", {})

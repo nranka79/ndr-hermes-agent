@@ -7482,6 +7482,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 message_text, _successful_transcripts = await self._enrich_message_with_transcription(
                     message_text,
                     audio_paths,
+                    user_id=source.user_id,
                 )
                 # Echo each successful transcript back to the user immediately,
                 # before the agent loop runs. Lets the user verify STT quality
@@ -11407,6 +11408,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self,
         user_text: str,
         audio_paths: List[str],
+        user_id: Optional[str] = None,
     ) -> tuple[str, List[str]]:
         """
         Auto-transcribe user voice/audio messages using the configured STT provider
@@ -11415,6 +11417,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         Args:
             user_text:   The user's original caption / message text.
             audio_paths: List of local file paths to cached audio files.
+            user_id:     Optional user ID for loading per-user STT vocabulary hints.
 
         Returns:
             A tuple of ``(enriched_text, successful_transcripts)``:
@@ -11453,7 +11456,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         for path in audio_paths:
             try:
                 logger.debug("Transcribing user voice: %s", path)
-                result = await asyncio.to_thread(transcribe_audio, path)
+                result = await asyncio.to_thread(transcribe_audio, path, None, user_id)
                 if result["success"]:
                     transcript = result["transcript"]
                     successful_transcripts.append(transcript)
@@ -11545,7 +11548,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         if audio_paths:
             enriched_text, successful_transcripts = await self._enrich_message_with_transcription(
-                text, audio_paths,
+                text, audio_paths, user_id=source.user_id,
             )
             # Echo raw transcripts back to the user so voice interrupts
             # feel identical to fresh voice messages.
@@ -14515,7 +14518,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 if _audio_paths:
                                     try:
                                         _enriched, _transcripts = await self._enrich_message_with_transcription(
-                                            pending_text, _audio_paths,
+                                            pending_text, _audio_paths, user_id=source.user_id,
                                         )
                                         pending_text = _enriched
                                         if _transcripts:
@@ -14883,7 +14886,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if _audio_paths:
                         try:
                             _enriched, _transcripts = await self._enrich_message_with_transcription(
-                                _pending_text, _audio_paths,
+                                _pending_text, _audio_paths, user_id=source.user_id,
                             )
                             pending = _enriched or None
                             if _transcripts:
