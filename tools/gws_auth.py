@@ -263,30 +263,18 @@ def get_auth_url(telegram_id: str, login_hint: str = None) -> str:
 def exchange_and_store(telegram_id: str, code: str, service_name: str | None = None) -> str:
     """Exchange an auth code for tokens and store them in the vault.
 
-    When ``service_name`` is ``None`` (the normal callback case), the
-    function auto-detects the Google account email from the returned
-    ``id_token`` JWT and looks it up in ``EMAIL_TO_SERVICE``.  The token
-    is ALWAYS saved (under a suitable key) so the user never needs to
-    re-authorize.
+    Tokens are stored under the user's ``draas_user_id`` (resolved from
+    ``telegram_id`` via users.json), NOT the raw Telegram ID.  This keeps the
+    vault key stable regardless of which channel the user connects from.
 
-    Resolution priority:
-      1. If ``service_name`` is given explicitly, use it.
-      2. If the email extracted from the ID token is in
-         ``EMAIL_TO_SERVICE``, use the mapped service name.
-      3. If the email is known but unmapped, use ``google:{email}`` as a
-         fallback key and include the email in the returned value.
-      4. If no email can be extracted, use the default ``"google"``.
+    Service name is taken from the user's ``gws_service`` config field in
+    users.json when not supplied explicitly.  Falls back to auto-detecting
+    from the id_token email via ``EMAIL_TO_SERVICE``, then to ``"google"``.
 
-    Returns the chosen service name.  The caller can inspect the return
-    value to detect unknown accounts and prompt the user for a proper name.
-
-    Args:
-        telegram_id:  Telegram numeric ID of the user.
-        code:         OAuth authorization code from Google's redirect.
-        service_name: Optional override.  When ``None`` (default), the
-                      service is auto-detected from the Google account
-                      email found in the ID token.
+    Returns the chosen service name.
     """
+    from tools._user_registry import get_user_config
+
     flow = Flow.from_client_config(
         _client_config(),
         scopes=HERMES_GWS_SCOPES,
@@ -295,39 +283,48 @@ def exchange_and_store(telegram_id: str, code: str, service_name: str | None = N
     )
     flow.fetch_token(code=code)
 
+    # Resolve telegram_id → draas_user_id; fall back to telegram_id if unknown.
+    user_cfg = get_user_config(str(telegram_id)) or {}
+    vault_uid = user_cfg.get("draas_user_id") or str(telegram_id)
+
     if service_name is not None:
-        save_credentials(telegram_id, flow.credentials, service_name)
-        logger.info("GWS token stored for user %s service %s", telegram_id, service_name)
+        save_credentials(vault_uid, flow.credentials, service_name)
+        logger.info("GWS token stored vault_uid=%s service=%s", vault_uid, service_name)
         return service_name
 
-    # Auto-detect: extract email from id_token JWT
+    # Auto-detect service from user config first, then id_token email.
+    configured_svc = user_cfg.get("gws_service", "")
+
     id_token = getattr(flow.credentials, "id_token", None)
     email = _decode_id_token_email(id_token) if id_token else None
 
     if email:
-        svc = EMAIL_TO_SERVICE.get(email)
+        svc = configured_svc or EMAIL_TO_SERVICE.get(email, "")
         if svc:
-            save_credentials(telegram_id, flow.credentials, svc)
-            logger.info("GWS token stored for user %s service %s (auto-detected from %s)", telegram_id, svc, email)
+            save_credentials(vault_uid, flow.credentials, svc)
+            logger.info(
+                "GWS token stored vault_uid=%s service=%s (email=%s)",
+                vault_uid, svc, email,
+            )
             return svc
 
-        # Unknown email — store under a fallback key so the token is not lost
+        # Unknown email — store under fallback so token is never lost.
         fallback_svc = f"google:{email.replace('@', '_at_')}"
-        save_credentials(telegram_id, flow.credentials, fallback_svc)
+        save_credentials(vault_uid, flow.credentials, fallback_svc)
         logger.info(
-            "GWS token stored for user %s under fallback service %s — "
-            "email %s is not in EMAIL_TO_SERVICE",
-            telegram_id, fallback_svc, email,
+            "GWS token stored vault_uid=%s fallback_service=%s email=%s",
+            vault_uid, fallback_svc, email,
         )
         return f"UNKNOWN:{email}:{fallback_svc}"
 
-    # No id_token — fall back to default
-    save_credentials(telegram_id, flow.credentials, _DEFAULT_SERVICE)
+    # No id_token at all — last resort.
+    svc = configured_svc or _DEFAULT_SERVICE
+    save_credentials(vault_uid, flow.credentials, svc)
     logger.warning(
-        "No id_token in credentials for user %s — stored under default service '%s'",
-        telegram_id, _DEFAULT_SERVICE,
+        "No id_token for telegram_id=%s — stored vault_uid=%s service=%s",
+        telegram_id, vault_uid, svc,
     )
-    return _DEFAULT_SERVICE
+    return svc
 
 
 def has_token(telegram_id: str, service_name: str = _DEFAULT_SERVICE) -> bool:
