@@ -154,6 +154,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("indicator", "Pick the TUI busy-indicator style", "Configuration",
                cli_only=True, args_hint="[kaomoji|emoji|unicode|ascii]",
                subcommands=("kaomoji", "emoji", "unicode", "ascii")),
+    CommandDef("vocab", "Manage STT vocabulary (add/remove/list/clear terms for transcription accuracy)", "Configuration",
+               args_hint="[add|remove|list|clear] [term...]", subcommands=("add", "remove", "list", "clear")),
     CommandDef("voice", "Toggle voice mode", "Configuration",
                args_hint="[on|off|tts|status]", subcommands=("on", "off", "tts", "status")),
     CommandDef("busy", "Control what Enter does while Hermes is working", "Configuration",
