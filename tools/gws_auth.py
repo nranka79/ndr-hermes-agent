@@ -55,16 +55,22 @@ HERMES_GWS_SCOPES = [
 
 _REDIRECT_URI = "https://transcribe.ahfl.in/gws/auth/callback"
 
-# Default service name for backward compatibility.
-_DEFAULT_SERVICE = "google"
+# Default service name — matches the draas.com Google Workspace account.
+# Convention: gws_{domain} where domain uses underscores instead of dots.
+_DEFAULT_SERVICE = "gws_draas.com"
 
-# Map well-known emails to their vault service names so the agent
-# can look up the right token by email address, and so the OAuth
-# callback can auto-detect the service name from the id_token email.
+# Map well-known emails to their vault service names.
+# Pattern: gws_{domain}  (e.g. gws_draas.com, gws_ahfl.in, gws_gmail.com)
+# This is also the value stored in users.json under "gws_service".
 EMAIL_TO_SERVICE = {
-    "ndr@draas.com":          "google-draas",
-    "ndr@ahfl.in":            "google-ahfl",
-    "nishantranka@gmail.com": "google-gmail",
+    "ndr@draas.com":          "gws_draas.com",
+    "psingh@draas.com":       "gws_draas.com",
+    "rnr@draas.com":          "gws_draas.com",
+    "vkdas@draas.com":        "gws_draas.com",
+    "pm2.blr@draas.com":      "gws_draas.com",
+    "sales1.blr@draas.com":   "gws_draas.com",
+    "ndr@ahfl.in":            "gws_ahfl.in",
+    "nishantranka@gmail.com": "gws_gmail.com",
 }
 
 
