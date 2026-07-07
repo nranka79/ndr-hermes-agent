@@ -90,7 +90,8 @@ def _field_score(query_norm: str, field_norm: str, base: float) -> float:
 
 
 # Static per-account credential files written at startup by
-# setup_oauth_credentials.py from Railway env vars. Same pattern as
+# setup_oauth_credentials.py from Docker Compose env vars (Hetzner host,
+# NOT Railway). Same pattern as
 # noun_learner_tool.py._build_service() -- these are pre-authorized
 # accounts (refresh token already granted), not accounts a user
 # authorizes live via tools.gws_auth.get_auth_url(). Do NOT route this
