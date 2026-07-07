@@ -89,9 +89,42 @@ def _field_score(query_norm: str, field_norm: str, base: float) -> float:
     return base * f if f >= 0.75 else 0.0
 
 
+# Static per-account credential files written at startup by
+# setup_oauth_credentials.py from Railway env vars. Same pattern as
+# noun_learner_tool.py._build_service() -- these are pre-authorized
+# accounts (refresh token already granted), not accounts a user
+# authorizes live via tools.gws_auth.get_auth_url(). Do NOT route this
+# through the vault/live-OAuth flow -- that uses a different OAuth
+# client (HERMES_OAUTH_CLIENT_ID/SECRET) than the one these accounts
+# were actually authorized under (DRAAS_/AHFL_/GMAIL_OAUTH_CLIENT_ID),
+# and will fail with a client-ID mismatch on Google's side.
+_ACCOUNT_CRED_FILES = {
+    "ndr@draas.com":          ("DRAAS_CRED_FILE", "/data/hermes/oauth-draas.json"),
+    "ndr@ahfl.in":            ("AHFL_CRED_FILE", "/data/hermes/oauth-ahfl.json"),
+    "nishantranka@gmail.com": ("GMAIL_CRED_FILE", "/data/hermes/oauth-gmail.json"),
+}
+
+
 def _build_svc(account_email: str = "ndr@draas.com"):
-    from tools.gws._shared import build_service
-    return build_service("sheets", "v4", account_email)
+    from google.oauth2.credentials import Credentials
+    from google.auth.transport.requests import Request as GoogleRequest
+    from googleapiclient.discovery import build
+
+    env_key, default_path = _ACCOUNT_CRED_FILES.get(
+        account_email, _ACCOUNT_CRED_FILES["ndr@draas.com"]
+    )
+    cred_file = os.environ.get(env_key, default_path)
+    with open(cred_file) as f:
+        data = json.load(f)
+    creds = Credentials(
+        token=None,
+        refresh_token=data["refresh_token"],
+        client_id=data["client_id"],
+        client_secret=data["client_secret"],
+        token_uri="https://oauth2.googleapis.com/token",
+    )
+    creds.refresh(GoogleRequest())
+    return build("sheets", "v4", credentials=creds)
 
 
 def _read_range(svc, range_str: str) -> list:
