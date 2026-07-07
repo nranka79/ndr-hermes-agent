@@ -1,13 +1,11 @@
 #!/usr/bin/env python3
 """Standalone smoke test for tools/gws_vault_client.py — no pytest required.
 
-Exercises the same logic the pytest suite covers (Unix-socket transport,
-HTTP fallback, auth header, error mapping, CRUD), using only the stdlib.
-Run: python3 scripts/smoke_test_gws_vault_client.py
+Exercises the custom JSON-line Unix-socket protocol the gws-vault-server
+implements. Run: python3 scripts/smoke_test_gws_vault_client.py
 """
 from __future__ import annotations
 
-import http.server
 import json
 import os
 import socket
@@ -18,7 +16,6 @@ import threading
 import time
 from unittest.mock import patch
 
-# Ensure repo root is on path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from tools import gws_vault_client as vault
@@ -40,45 +37,108 @@ def check(label: str, cond: bool, detail: str = ""):
         ERRORS.append(msg)
 
 
-# ── Stub server (shared between socket and HTTP tests) ──────────────────────
+# ── Stub vault server (mirrors gws-vault-server semantics) ──────────────────
 
-class StubHandler(http.server.BaseHTTPRequestHandler):
-    requests: list = []
-    response_status: int = 200
-    response_body: bytes = b"{}"
+class StubVaultHandler(socketserver.StreamRequestHandler):
+    """Minimal gws-vault-server stub. Reads one JSON line, dispatches by `op`,
+    writes one JSON line back."""
 
-    def log_message(self, *_a, **_k):
-        return
+    # Server-side state (configured per test via class attributes).
+    stored_tokens: dict = {}  # (uid, svc) -> token_json str
+    valid_secret: str = "test-secret"
 
-    def do_POST(self):
-        length = int(self.headers.get("Content-Length", "0"))
-        body = self.rfile.read(length) if length else b""
-        self.requests.append({"method": "POST", "path": self.path,
-                              "headers": dict(self.headers), "body": body})
-        self._send()
+    def handle(self):
+        try:
+            line = self.rfile.readline()
+            if not line:
+                return
+            req = json.loads(line.decode("utf-8"))
+            resp = self._dispatch(req)
+            self.wfile.write((json.dumps(resp) + "\n").encode("utf-8"))
+            self.wfile.flush()
+        except Exception as exc:
+            try:
+                self.wfile.write(
+                    (json.dumps({"ok": False, "error": str(exc)}) + "\n").encode()
+                )
+            except Exception:
+                pass
 
-    def do_GET(self):
-        self.requests.append({"method": "GET", "path": self.path,
-                              "headers": dict(self.headers), "body": b""})
-        self._send()
+    def _dispatch(self, req: dict) -> dict:
+        op = req.get("op", "")
+        uid = str(req.get("user_id") or req.get("telegram_id", "")).strip()
+        svc = str(req.get("service", "")).strip().lower()
 
-    def _send(self):
-        self.send_response(self.response_status)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(self.response_body)))
-        self.end_headers()
-        self.wfile.write(self.response_body)
+        if op in ("get", "has_token", "delete", "set", "list_services"):
+            if not uid:
+                return {"ok": False, "error": "Invalid or missing user_id"}
+            if op in ("get", "has_token", "delete", "set"):
+                if not svc or not (svc[0].isalpha() and svc[0].isascii()
+                                   and all(c.isalnum() or c == "-" for c in svc)):
+                    return {"ok": False, "error": f"Invalid service name: {svc!r}"}
+
+        if op == "resolve":
+            # No user_id / service required for resolve — only identity_*.
+            iv = str(req.get("identity_value", "")).strip()
+            if not iv:
+                return {"ok": False, "error": "identity_value is required"}
+            return {"ok": True, "user_id": iv}
+
+        if op == "get":
+            sess = str(req.get("session_uid", "")).strip()
+            if not sess or sess != uid:
+                return {"ok": False, "error": "Unauthorized: session user does not match"}
+            key = (uid, svc)
+            if key not in self.stored_tokens:
+                return {"ok": False, "error": f"No {svc} token for user {uid}. Authorize first.",
+                        "needs_auth": True}
+            return {"ok": True, "token_json": self.stored_tokens[key]}
+
+        if op == "set":
+            if req.get("vault_secret") != self.valid_secret:
+                return {"ok": False, "error": "Unauthorized: invalid vault secret"}
+            tok = req.get("token_json", "")
+            if not tok:
+                return {"ok": False, "error": "token_json is required"}
+            try:
+                json.loads(tok)
+            except json.JSONDecodeError as e:
+                return {"ok": False, "error": f"Invalid token_json: {e}"}
+            self.stored_tokens[(uid, svc)] = tok
+            return {"ok": True}
+
+        if op == "has_token":
+            # accepts session_uid OR vault_secret
+            if req.get("vault_secret") != self.valid_secret:
+                sess = str(req.get("session_uid", "")).strip()
+                if not sess or sess != uid:
+                    return {"ok": False, "error": "Unauthorized"}
+            return {"ok": True, "has_token": (uid, svc) in self.stored_tokens}
+
+        if op == "delete":
+            if req.get("vault_secret") != self.valid_secret:
+                return {"ok": False, "error": "Unauthorized: invalid vault secret"}
+            key = (uid, svc)
+            deleted = self.stored_tokens.pop(key, None) is not None
+            return {"ok": True, "deleted": deleted}
+
+        if op == "list_services":
+            sess = str(req.get("session_uid", "")).strip()
+            if not sess or sess != uid:
+                return {"ok": False, "error": "Unauthorized"}
+            return {"ok": True, "services": sorted({s for (u, s) in self.stored_tokens if u == uid})}
+
+        return {"ok": False, "error": f"Unknown operation: {op!r}"}
 
 
-class UnixVaultServer(socketserver.UnixStreamServer):
+class StubUnixServer(socketserver.UnixStreamServer):
     address_family = socket.AF_UNIX
 
 
-def start_unix_vault(sock_path: str):
-    StubHandler.requests = []
-    StubHandler.response_status = 200
-    StubHandler.response_body = b"{}"
-    server = UnixVaultServer(sock_path, StubHandler)
+def start_stub(sock_path: str):
+    StubVaultHandler.stored_tokens = {}
+    StubVaultHandler.valid_secret = "test-secret"
+    server = StubUnixServer(sock_path, StubVaultHandler)
     t = threading.Thread(target=server.serve_forever, daemon=True)
     t.start()
     deadline = time.time() + 1.0
@@ -89,222 +149,242 @@ def start_unix_vault(sock_path: str):
     return server
 
 
-def start_http_vault():
-    StubHandler.requests = []
-    StubHandler.response_status = 200
-    StubHandler.response_body = b"{}"
-    server = http.server.HTTPServer(("127.0.0.1", 0), StubHandler)
-    port = server.server_address[1]
-    t = threading.Thread(target=server.serve_forever, daemon=True)
-    t.start()
-    return server, port
-
-
 # ── Tests ──────────────────────────────────────────────────────────────────
 
-def test_dispatch_socket():
-    print("\n[d1] socket is used when GWS_VAULT_SOCKET is set + file exists")
+def test_get_token_happy():
+    print("\n[g1] get_token: returns stored JSON when session matches")
     with tempfile.TemporaryDirectory() as d:
-        sock = os.path.join(d, "vault.sock")
-        server = start_unix_vault(sock)
+        sock = os.path.join(d, "v.sock")
+        server = start_stub(sock)
+        try:
+            StubVaultHandler.stored_tokens[("7449813913", "google-gmail")] = json.dumps(
+                {"token": "ya29.x", "refresh_token": "rt-1"}
+            )
+            with patch.object(vault, "VAULT_SOCKET", sock), \
+                 patch.object(vault, "VAULT_SECRET", "test-secret"):
+                out = vault.get_token("7449813913", "google-gmail")
+                parsed = json.loads(out)
+                check("returns refresh_token", parsed["refresh_token"] == "rt-1")
+                check("returns access token", parsed["token"] == "ya29.x")
+        finally:
+            server.shutdown()
+            server.server_close()
+
+
+def test_get_token_no_token_raises_no_token_error():
+    print("\n[g2] get_token: raises VaultNoTokenError when no token stored")
+    with tempfile.TemporaryDirectory() as d:
+        sock = os.path.join(d, "v.sock")
+        server = start_stub(sock)
         try:
             with patch.object(vault, "VAULT_SOCKET", sock), \
-                 patch.object(vault, "VAULT_SECRET", "s"):
-                StubHandler.response_body = json.dumps({"ok": True}).encode()
-                result = vault.get_access_token("u", "svc")
-                check("returns parsed body", result == {"ok": True})
-                check("client hit /v1/token", StubHandler.requests[0]["path"] == "/v1/token")
-                check("client sent auth header",
-                      StubHandler.requests[0]["headers"]["X-Vault-Secret"] == "s")
-        finally:
-            server.shutdown()
-            server.server_close()
-
-
-def test_dispatch_http_fallback():
-    print("\n[d2] HTTP is used when GWS_VAULT_SOCKET is unset")
-    server, port = start_http_vault()
-    try:
-        with patch.object(vault, "VAULT_URL", f"http://127.0.0.1:{port}"), \
-             patch.object(vault, "VAULT_SOCKET", ""), \
-             patch.object(vault, "VAULT_SECRET", "x"):
-            StubHandler.response_body = json.dumps({"ok": True}).encode()
-            result = vault.get_access_token("u", "svc")
-            check("HTTP transport returned parsed body", result == {"ok": True})
-            check("request landed on /v1/token",
-                  StubHandler.requests[0]["path"] == "/v1/token")
-    finally:
-        server.shutdown()
-        server.server_close()
-
-
-def test_dispatch_http_fallback_when_socket_missing():
-    print("\n[d3] HTTP fallback when GWS_VAULT_SOCKET path doesn't exist")
-    server, port = start_http_vault()
-    try:
-        with patch.object(vault, "VAULT_URL", f"http://127.0.0.1:{port}"), \
-             patch.object(vault, "VAULT_SOCKET", "/run/gws-vault/does-not-exist.sock"), \
-             patch.object(vault, "VAULT_SECRET", "x"):
-            StubHandler.response_body = json.dumps({"ok": True}).encode()
-            result = vault.get_access_token("u", "svc")
-            check("fell back to HTTP when socket file missing",
-                  result == {"ok": True} and StubHandler.requests[0]["path"] == "/v1/token")
-    finally:
-        server.shutdown()
-        server.server_close()
-
-
-def test_error_mapping_socket():
-    print("\n[e1] error mapping (socket path)")
-    cases = [
-        (401, vault.VaultUnauthorizedError, b'{"detail":"bad secret"}'),
-        (403, vault.VaultUnauthorizedError, b'{"detail":"forbidden"}'),
-        (404, vault.VaultNoTokenError, b'{"detail":"token not found"}'),
-        (500, vault.VaultError, b'{"detail":"server boom"}'),
-    ]
-    with tempfile.TemporaryDirectory() as d:
-        sock = os.path.join(d, "vault.sock")
-        server = start_unix_vault(sock)
-        try:
-            for status, exc_type, body in cases:
-                with patch.object(vault, "VAULT_SOCKET", sock), \
-                     patch.object(vault, "VAULT_SECRET", "x"):
-                    StubHandler.response_status = status
-                    StubHandler.response_body = body
-                    try:
-                        vault.get_access_token("u", "s")
-                        check(f"status {status} raises {exc_type.__name__}", False, "no exception")
-                    except exc_type:
-                        check(f"status {status} → {exc_type.__name__}", True)
-                    except Exception as e:
-                        check(f"status {status} → {exc_type.__name__}", False,
-                              f"got {type(e).__name__}: {e}")
-        finally:
-            server.shutdown()
-            server.server_close()
-
-
-def test_error_mapping_http():
-    print("\n[e2] error mapping (HTTP path)")
-    cases = [
-        (401, vault.VaultUnauthorizedError),
-        (403, vault.VaultUnauthorizedError),
-        (404, vault.VaultNoTokenError),
-        (500, vault.VaultError),
-    ]
-    server, port = start_http_vault()
-    try:
-        for status, exc_type in cases:
-            with patch.object(vault, "VAULT_URL", f"http://127.0.0.1:{port}"), \
-                 patch.object(vault, "VAULT_SOCKET", ""), \
-                 patch.object(vault, "VAULT_SECRET", "x"):
-                StubHandler.response_status = status
-                StubHandler.response_body = json.dumps({"detail": f"err {status}"}).encode()
+                 patch.object(vault, "VAULT_SECRET", "test-secret"):
                 try:
-                    vault.get_access_token("u", "s")
-                    check(f"HTTP {status} raises {exc_type.__name__}", False, "no exception")
-                except exc_type:
-                    check(f"HTTP {status} → {exc_type.__name__}", True)
-                except Exception as e:
-                    check(f"HTTP {status} → {exc_type.__name__}", False,
-                          f"got {type(e).__name__}: {e}")
-    finally:
-        server.shutdown()
-        server.server_close()
-
-
-def test_end_to_end_crud():
-    print("\n[c1] end-to-end CRUD over Unix socket")
-    with tempfile.TemporaryDirectory() as d:
-        sock = os.path.join(d, "vault.sock")
-        server = start_unix_vault(sock)
-        try:
-            with patch.object(vault, "VAULT_SOCKET", sock), \
-                 patch.object(vault, "VAULT_SECRET", "x"):
-
-                # get_token
-                StubHandler.response_body = json.dumps(
-                    {"refresh_token": "rt-1", "client_id": "cid"}).encode()
-                result = json.loads(vault.get_token("7449813913", "gws:ndr@draas.com"))
-                check("get_token returns refresh_token", result["refresh_token"] == "rt-1")
-                last = StubHandler.requests[-1]
-                body = json.loads(last["body"])
-                check("get_token sent correct vault_user_id",
-                      body["vault_user_id"] == "7449813913")
-                check("get_token sent correct service",
-                      body["service"] == "gws:ndr@draas.com")
-
-                # set_token
-                StubHandler.requests = []
-                StubHandler.response_body = b"{}"
-                vault.set_token("u", "svc", json.dumps({"refresh_token": "rt-2"}))
-                last = StubHandler.requests[-1]
-                check("set_token hit /v1/token/store",
-                      last["path"] == "/v1/token/store")
-                body = json.loads(last["body"])
-                check("set_token wraps body under 'token' key",
-                      body["token"] == {"refresh_token": "rt-2"})
-
-                # has_token True
-                StubHandler.requests = []
-                StubHandler.response_status = 200
-                StubHandler.response_body = b"{}"
-                check("has_token returns True on 200", vault.has_token("u", "s") is True)
-
-                # has_token False
-                StubHandler.response_status = 404
-                StubHandler.response_body = json.dumps({"detail": "no"}).encode()
-                check("has_token returns False on 404", vault.has_token("u", "s") is False)
-
-                # list_services
-                StubHandler.requests = []
-                StubHandler.response_status = 200
-                StubHandler.response_body = json.dumps({
-                    "services": ["s1", "s2"],
-                }).encode()
-                check("list_services returns the service list",
-                      vault.list_services("u") == ["s1", "s2"])
-                check("list_services uses GET", StubHandler.requests[-1]["method"] == "GET")
-                check("list_services path is /v1/users/u/services",
-                      StubHandler.requests[-1]["path"] == "/v1/users/u/services")
-
-                # delete_token True
-                StubHandler.response_status = 200
-                StubHandler.response_body = b"{}"
-                check("delete_token returns True on 200", vault.delete_token("u", "s") is True)
-
-                # delete_token False
-                StubHandler.response_status = 404
-                StubHandler.response_body = json.dumps({"detail": "no"}).encode()
-                check("delete_token returns False on 404", vault.delete_token("u", "s") is False)
+                    vault.get_token("u", "google-gmail")
+                    check("raises VaultNoTokenError", False, "no exception")
+                except vault.VaultNoTokenError as e:
+                    check("raises VaultNoTokenError", True)
+                    check("needs_auth flag set on the exception",
+                          getattr(e, "needs_auth", False))
         finally:
             server.shutdown()
             server.server_close()
 
 
-def test_unreachable_via_socket():
-    print("\n[u1] unreachable socket → clear error (falls back to HTTP)")
-    # VAULT_URL points at a port nothing's listening on
-    with patch.object(vault, "VAULT_URL", "http://127.0.0.1:1"), \
-         patch.object(vault, "VAULT_SOCKET", "/tmp/no-such-vault.sock"), \
+def test_get_token_session_mismatch_raises_unauthorized():
+    print("\n[g3] get_token: cross-user read is rejected with VaultUnauthorizedError")
+    with tempfile.TemporaryDirectory() as d:
+        sock = os.path.join(d, "v.sock")
+        server = start_stub(sock)
+        try:
+            StubVaultHandler.stored_tokens[("u1", "google-gmail")] = "{}"
+            with patch.object(vault, "VAULT_SOCKET", sock), \
+                 patch.object(vault, "VAULT_SECRET", "test-secret"):
+                # session_uid defaults to user_id when not passed — so pass a
+                # mismatched one explicitly to simulate a cross-user attempt.
+                try:
+                    vault.get_token("u1", "google-gmail", session_uid="attacker")
+                    check("raises VaultUnauthorizedError", False, "no exception")
+                except vault.VaultUnauthorizedError:
+                    check("raises VaultUnauthorizedError on session mismatch", True)
+        finally:
+            server.shutdown()
+            server.server_close()
+
+
+def test_set_requires_secret():
+    print("\n[s1] set_token: requires GWS_VAULT_SECRET")
+    with tempfile.TemporaryDirectory() as d:
+        sock = os.path.join(d, "v.sock")
+        server = start_stub(sock)
+        try:
+            with patch.object(vault, "VAULT_SOCKET", sock), \
+                 patch.object(vault, "VAULT_SECRET", ""):
+                try:
+                    vault.set_token("u", "google-gmail", '{"x":1}')
+                    check("set without secret raises VaultUnauthorizedError", False, "no exc")
+                except vault.VaultUnauthorizedError:
+                    check("set without secret raises VaultUnauthorizedError", True)
+        finally:
+            server.shutdown()
+            server.server_close()
+
+
+def test_set_get_roundtrip():
+    print("\n[s2] set + get round-trip with valid secret")
+    with tempfile.TemporaryDirectory() as d:
+        sock = os.path.join(d, "v.sock")
+        server = start_stub(sock)
+        try:
+            with patch.object(vault, "VAULT_SOCKET", sock), \
+                 patch.object(vault, "VAULT_SECRET", "test-secret"):
+                token = json.dumps({"token": "ya29.new", "refresh_token": "rt-new"})
+                vault.set_token("u1", "google-gmail", token)
+                check("set succeeded", ("u1", "google-gmail") in StubVaultHandler.stored_tokens)
+                out = vault.get_token("u1", "google-gmail")
+                check("get returns what was set", json.loads(out)["refresh_token"] == "rt-new")
+        finally:
+            server.shutdown()
+            server.server_close()
+
+
+def test_has_token_self_check():
+    print("\n[h1] has_token: True/False based on storage, self-check default")
+    with tempfile.TemporaryDirectory() as d:
+        sock = os.path.join(d, "v.sock")
+        server = start_stub(sock)
+        try:
+            with patch.object(vault, "VAULT_SOCKET", sock), \
+                 patch.object(vault, "VAULT_SECRET", "test-secret"):
+                check("has_token False for missing", vault.has_token("u", "google-gmail") is False)
+                StubVaultHandler.stored_tokens[("u", "google-gmail")] = "{}"
+                check("has_token True for present", vault.has_token("u", "google-gmail") is True)
+        finally:
+            server.shutdown()
+            server.server_close()
+
+
+def test_has_token_admin_via_secret():
+    print("\n[h2] has_token: GWS_VAULT_SECRET lets the caller check any user")
+    with tempfile.TemporaryDirectory() as d:
+        sock = os.path.join(d, "v.sock")
+        server = start_stub(sock)
+        try:
+            StubVaultHandler.stored_tokens[("u1", "google-gmail")] = "{}"
+            with patch.object(vault, "VAULT_SOCKET", sock), \
+                 patch.object(vault, "VAULT_SECRET", "test-secret"):
+                check("admin can check another user", vault.has_token("u1", "google-gmail") is True)
+        finally:
+            server.shutdown()
+            server.server_close()
+
+
+def test_delete_returns_true_false():
+    print("\n[d1] delete_token: True on present, False on missing")
+    with tempfile.TemporaryDirectory() as d:
+        sock = os.path.join(d, "v.sock")
+        server = start_stub(sock)
+        try:
+            with patch.object(vault, "VAULT_SOCKET", sock), \
+                 patch.object(vault, "VAULT_SECRET", "test-secret"):
+                check("delete returns False when missing",
+                      vault.delete_token("u", "google-gmail") is False)
+                StubVaultHandler.stored_tokens[("u", "google-gmail")] = "{}"
+                check("delete returns True when present",
+                      vault.delete_token("u", "google-gmail") is True)
+                check("delete actually removed it",
+                      vault.has_token("u", "google-gmail") is False)
+        finally:
+            server.shutdown()
+            server.server_close()
+
+
+def test_list_services_self_check():
+    print("\n[l1] list_services: returns sorted service list for the user")
+    with tempfile.TemporaryDirectory() as d:
+        sock = os.path.join(d, "v.sock")
+        server = start_stub(sock)
+        try:
+            StubVaultHandler.stored_tokens.update({
+                ("u1", "google-gmail"): "{}",
+                ("u1", "google-ahfl"): "{}",
+                ("u2", "google-gmail"): "{}",  # different user — should NOT appear
+            })
+            with patch.object(vault, "VAULT_SOCKET", sock), \
+                 patch.object(vault, "VAULT_SECRET", "test-secret"):
+                result = vault.list_services("u1")
+                check("list returns both services for u1",
+                      set(result) == {"google-gmail", "google-ahfl"})
+                check("list excludes other users' services",
+                      "u2" not in result)
+        finally:
+            server.shutdown()
+            server.server_close()
+
+
+def test_resolve():
+    print("\n[r1] resolve: returns the resolved user_id or None")
+    with tempfile.TemporaryDirectory() as d:
+        sock = os.path.join(d, "v.sock")
+        server = start_stub(sock)
+        try:
+            with patch.object(vault, "VAULT_SOCKET", sock), \
+                 patch.object(vault, "VAULT_SECRET", "test-secret"):
+                # stub returns the user_id from the request
+                check("resolve returns user_id when ok",
+                      vault.resolve("telegram", "1234") == "1234")
+        finally:
+            server.shutdown()
+            server.server_close()
+
+
+def test_get_access_token_parses_token_json():
+    print("\n[a1] get_access_token: returns parsed dict from stored token_json")
+    with tempfile.TemporaryDirectory() as d:
+        sock = os.path.join(d, "v.sock")
+        server = start_stub(sock)
+        try:
+            StubVaultHandler.stored_tokens[("7449813913", "google-gmail")] = json.dumps(
+                {"token": "ya29.x", "refresh_token": "rt", "scopes": ["gmail"]}
+            )
+            with patch.object(vault, "VAULT_SOCKET", sock), \
+                 patch.object(vault, "VAULT_SECRET", "test-secret"):
+                out = vault.get_access_token("7449813913", "google-gmail")
+                check("returns dict", isinstance(out, dict))
+                check("dict has token", out.get("token") == "ya29.x")
+                check("dict has refresh_token", out.get("refresh_token") == "rt")
+                check("dict has scopes", out.get("scopes") == ["gmail"])
+        finally:
+            server.shutdown()
+            server.server_close()
+
+
+def test_unreachable_socket_clear_error():
+    print("\n[u1] unreachable socket → clear VaultError")
+    with patch.object(vault, "VAULT_SOCKET", "/tmp/this-socket-does-not-exist.sock"), \
          patch.object(vault, "VAULT_SECRET", "x"):
         try:
-            vault.get_access_token("u", "s")
-            check("unreachable raises VaultError", False, "no exception raised")
+            vault.get_token("u", "google-gmail")
+            check("unreachable raises VaultError", False, "no exception")
         except vault.VaultError as e:
             check("unreachable raises VaultError", True)
-            check("error message mentions vault location",
-                  "127.0.0.1:1" in str(e), detail=str(e))
+            check("error mentions socket path", "this-socket-does-not-exist.sock" in str(e),
+                  detail=str(e))
 
 
 def main():
-    test_dispatch_socket()
-    test_dispatch_http_fallback()
-    test_dispatch_http_fallback_when_socket_missing()
-    test_error_mapping_socket()
-    test_error_mapping_http()
-    test_end_to_end_crud()
-    test_unreachable_via_socket()
+    test_get_token_happy()
+    test_get_token_no_token_raises_no_token_error()
+    test_get_token_session_mismatch_raises_unauthorized()
+    test_set_requires_secret()
+    test_set_get_roundtrip()
+    test_has_token_self_check()
+    test_has_token_admin_via_secret()
+    test_delete_returns_true_false()
+    test_list_services_self_check()
+    test_resolve()
+    test_get_access_token_parses_token_json()
+    test_unreachable_socket_clear_error()
     print(f"\n{'='*50}")
     print(f"  {PASSED} passed, {FAILED} failed")
     if ERRORS:
