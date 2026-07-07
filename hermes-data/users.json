@@ -82,6 +82,8 @@
       ]
     },
     "draas_user_id": "ndr",
+    "gws_service": "google-draas",
+    "contacts_sheet_id": "1XbSRAXxPLY4cXMTm2rmvKh11Nx3x0aKUxxuWualoV9g",
     "permissions": {
       "multi_google": true,
       "manage_users": true

@@ -19,7 +19,6 @@ Forces a noun_resolver index rebuild after every successful write.
 
 import json
 import logging
-import os
 import re
 from datetime import datetime
 
@@ -93,22 +92,49 @@ SHEET_TAB_NAMES = {
 
 # ── Credential helper ─────────────────────────────────────────────────────────
 
+def _get_session_user_cfg() -> dict:
+    try:
+        from gateway.session_context import get_session_env
+        from tools._user_registry import get_user_config
+        session_uid = get_session_env("HERMES_SESSION_USER_ID", "")
+        return get_user_config(session_uid) or {}
+    except Exception:
+        return {}
+
+
+def _get_sheet_id() -> str:
+    cfg = _get_session_user_cfg()
+    sheet_id = cfg.get("contacts_sheet_id", "")
+    if not sheet_id:
+        uid = cfg.get("draas_user_id", "unknown")
+        raise RuntimeError(
+            f"User {uid!r} has no contacts_sheet_id configured in users.json"
+        )
+    return sheet_id
+
+
 def _build_service():
+    """Return a Google Sheets API service for the current session user via vault."""
+    from tools import gws_vault_client as vault
     from google.oauth2.credentials import Credentials
-    from google.auth.transport.requests import Request as GoogleRequest
     from googleapiclient.discovery import build
 
-    cred_file = os.environ.get("DRAAS_CRED_FILE", "/data/hermes/oauth-draas.json")
-    with open(cred_file) as f:
-        data = json.load(f)
-    creds = Credentials(
-        token=None,
-        refresh_token=data["refresh_token"],
-        client_id=data["client_id"],
-        client_secret=data["client_secret"],
-        token_uri="https://oauth2.googleapis.com/token",
-    )
-    creds.refresh(GoogleRequest())
+    cfg = _get_session_user_cfg()
+    draas_user_id = cfg.get("draas_user_id", "")
+    gws_service = cfg.get("gws_service", "")
+
+    if not draas_user_id:
+        raise RuntimeError(
+            "Cannot identify session user for Google Sheets access. "
+            "HERMES_SESSION_USER_ID not set or user not in users.json."
+        )
+    if not gws_service:
+        raise RuntimeError(
+            f"User {draas_user_id!r} has no gws_service configured in users.json."
+        )
+
+    token_info = vault.get_access_token(draas_user_id, gws_service)
+    creds = Credentials(token=token_info["access_token"])
     return build("sheets", "v4", credentials=creds)
 
 
@@ -118,7 +144,7 @@ def _cell(tab: str, col: str, row: int) -> str:
 
 def _read_cell(svc, tab: str, col: str, row: int) -> str:
     resp = svc.spreadsheets().values().get(
-        spreadsheetId=SHEET_ID,
+        spreadsheetId=_get_sheet_id(),
         range=_cell(tab, col, row),
     ).execute()
     vals = resp.get("values", [])
@@ -127,7 +153,7 @@ def _read_cell(svc, tab: str, col: str, row: int) -> str:
 
 def _write_cell(svc, tab: str, col: str, row: int, value: str):
     svc.spreadsheets().values().update(
-        spreadsheetId=SHEET_ID,
+        spreadsheetId=_get_sheet_id(),
         range=_cell(tab, col, row),
         valueInputOption="RAW",
         body={"values": [[value]]},
@@ -153,11 +179,11 @@ def _ensure_vocab_corrections_tab(svc):
     if VOCAB_CORRECTIONS_TAB in existing:
         return
     svc.spreadsheets().batchUpdate(
-        spreadsheetId=SHEET_ID,
+        spreadsheetId=_get_sheet_id(),
         body={"requests": [{"addSheet": {"properties": {"title": VOCAB_CORRECTIONS_TAB}}}]}
     ).execute()
     svc.spreadsheets().values().update(
-        spreadsheetId=SHEET_ID,
+        spreadsheetId=_get_sheet_id(),
         range=f"{VOCAB_CORRECTIONS_TAB}!A1:F1",
         valueInputOption="RAW",
         body={"values": [["misspelt", "correct", "category", "first_seen", "occurrences", "notes"]]},
@@ -171,7 +197,7 @@ def _upsert_vocab_correction(svc, misspelling: str, correct: str, category: str)
     """
     _ensure_vocab_corrections_tab(svc)
     resp = svc.spreadsheets().values().get(
-        spreadsheetId=SHEET_ID,
+        spreadsheetId=_get_sheet_id(),
         range=f"{VOCAB_CORRECTIONS_TAB}!A:F",
     ).execute()
     rows = resp.get("values", [])
@@ -189,7 +215,7 @@ def _upsert_vocab_correction(svc, misspelling: str, correct: str, category: str)
             # Found — increment occurrences (col E = index 4)
             current_count = int(row[4]) if len(row) > 4 and row[4].isdigit() else 0
             svc.spreadsheets().values().update(
-                spreadsheetId=SHEET_ID,
+                spreadsheetId=_get_sheet_id(),
                 range=f"{VOCAB_CORRECTIONS_TAB}!E{i}",
                 valueInputOption="RAW",
                 body={"values": [[str(current_count + 1)]]},
@@ -199,7 +225,7 @@ def _upsert_vocab_correction(svc, misspelling: str, correct: str, category: str)
     # Not found — append new row
     today = datetime.utcnow().strftime("%Y-%m-%d")
     svc.spreadsheets().values().append(
-        spreadsheetId=SHEET_ID,
+        spreadsheetId=_get_sheet_id(),
         range=f"{VOCAB_CORRECTIONS_TAB}!A:F",
         valueInputOption="RAW",
         insertDataOption="INSERT_ROWS",
@@ -444,12 +470,9 @@ def _handle_noun_learner(args: dict, **_) -> str:
 
 
 def _check_available() -> bool:
-    cred_file = os.environ.get("DRAAS_CRED_FILE", "/data/hermes/oauth-draas.json")
-    if not os.path.exists(cred_file):
-        return False
     try:
-        import googleapiclient
-        from google.oauth2.credentials import Credentials
+        import googleapiclient  # noqa: F401
+        from google.oauth2.credentials import Credentials  # noqa: F401
         return True
     except ImportError:
         return False
