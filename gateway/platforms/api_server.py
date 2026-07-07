@@ -4116,12 +4116,19 @@ class APIServerAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
 
     async def _handle_gws_auth_callback(self, request: "web.Request") -> "web.Response":
-        """GET /gws/auth/callback — receives OAuth code from Google, stores token."""
+        """GET /gws/auth/callback — receives OAuth code from Google, stores token.
+
+        State parameter (from Google's redirect) encodes the telegram_id and
+        optionally the vault service name:
+
+            ``7449813913``                  -> telegram_id=7449813913, service="google" (default)
+            ``7449813913:google-ahfl``      -> telegram_id=7449813913, service="google-ahfl"
+        """
         code = request.rel_url.query.get("code", "")
-        state = request.rel_url.query.get("state", "")  # telegram_id
+        raw_state = request.rel_url.query.get("state", "")
         error = request.rel_url.query.get("error", "")
 
-        if error or not code or not state:
+        if error or not code or not raw_state:
             reason = error or "missing code or state"
             logger.warning("GWS auth callback failed: %s", reason)
             return web.Response(
@@ -4129,18 +4136,21 @@ class APIServerAdapter(BasePlatformAdapter):
                 text=f"<h1>Authorization failed</h1><p>{reason}</p><p>Please try again from Telegram.</p>",
             )
 
+        # Parse telegram_id and optional service_name from state.
+        from tools.gws_auth import _parse_state, exchange_and_store as _exchange_and_store
+        telegram_id, service_name = _parse_state(raw_state)
+
         try:
-            from tools.gws_auth import exchange_and_store
-            exchange_and_store(state, code)
-            logger.info("GWS token stored for telegram_id=%s", state)
+            _exchange_and_store(telegram_id, code, service_name)
+            logger.info("GWS token stored for telegram_id=%s service=%s", telegram_id, service_name)
             try:
                 from tools._user_registry import get_user_config
-                uconf = get_user_config(state)
-                display = uconf.get("name") or uconf.get("email") or ("user " + state)
+                uconf = get_user_config(telegram_id)
+                display = uconf.get("name") or uconf.get("email") or ("user " + telegram_id)
             except Exception:
-                display = "user " + state
+                display = "user " + telegram_id
             asyncio.create_task(self._notify_telegram_user(
-                state,
+                telegram_id,
                 "Google Workspace authorized for " + display
                 + ". Gmail, Calendar and Drive are now connected."
                 " Close this tab and return to Telegram."
@@ -4150,12 +4160,11 @@ class APIServerAdapter(BasePlatformAdapter):
                 text="<h1>Authorization successful!</h1><p>Google Workspace is now connected to your Hermes account.</p><p>You can close this tab and return to Telegram.</p>",
             )
         except Exception as exc:
-            logger.exception("GWS auth callback error for state=%s: %s", state, exc)
+            logger.exception("GWS auth callback error for state=%s: %s", raw_state, exc)
             return web.Response(
                 content_type="text/html",
                 text=f"<h1>Error</h1><p>Authorization failed: {exc}</p>",
             )
-
     async def _notify_telegram_user(self, telegram_id: str, text: str) -> None:
         bot_token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
         if not bot_token:
