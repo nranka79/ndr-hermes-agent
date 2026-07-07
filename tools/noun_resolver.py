@@ -129,9 +129,9 @@ def _normalize(text: str) -> str:
     return re.sub(r"\s+", " ", ascii_str).strip().lower()
 
 
-def _build_service(subject_email: str = "ndr@draas.com"):
-    from tools.gws_sa import build_service as _gws_build
-    return _gws_build("sheets", "v4", subject_email)
+def _build_service(subject_email: str = "7449813913"):
+    from tools.gws_auth import build_service as _gws_build
+    return _gws_build("sheets", "v4", telegram_id=subject_email)
 
 
 def _fuzzy_score(query: str, candidate: str) -> float:
