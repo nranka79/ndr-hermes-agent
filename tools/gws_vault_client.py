@@ -1,26 +1,34 @@
 """
-Token vault client — file-based backend.
+Token vault client — HTTP backend (gws-vault at 127.0.0.1:8000).
 
-Tokens are stored at:
-    {HERMES_HOME}/users/{user_id}/{service}.json
+Tokens are stored exclusively inside the vault container at
+  /data/private-tokens/{user_id}/{service}.json
+which maps to the host path /opt/hermes-gws-vault-data/private-tokens/
+and is NOT mounted into the hermes container.
 
-The vault container (hermes-gws-vault-1) mounts this same directory
-read-only at /data/tokens, so it can still serve access-token refreshes
-for the gws-service. All writes go directly via this client.
+All reads and writes go through the vault HTTP API so the hermes process
+(and any LLM-generated code it spawns) never touches token files directly.
 
 Environment variables:
-  HERMES_HOME        Root data dir (default: /data/hermes)
-  GWS_VAULT_SECRET   Kept for API compatibility; unused in file backend
+  VAULT_URL          Base URL of gws-vault (default: http://127.0.0.1:8000)
+  GWS_VAULT_SECRET   Shared secret (X-Vault-Secret header)
+  VAULT_SECRET       Fallback name for the same secret
 """
 
 from __future__ import annotations
 
+import json
 import os
-from pathlib import Path
+import urllib.error
+import urllib.request
 from typing import Any, Dict, List, Optional
 
-VAULT_SECRET = os.environ.get("GWS_VAULT_SECRET", "")
-_HERMES_HOME = os.environ.get("HERMES_HOME", "/data/hermes")
+VAULT_URL = os.environ.get("VAULT_URL", "http://127.0.0.1:8000")
+VAULT_SECRET = (
+    os.environ.get("GWS_VAULT_SECRET")
+    or os.environ.get("VAULT_SECRET")
+    or ""
+)
 
 
 class VaultError(RuntimeError):
@@ -28,7 +36,7 @@ class VaultError(RuntimeError):
 
 
 class VaultUnauthorizedError(VaultError):
-    """Raised when access is denied."""
+    """Raised when access is denied (bad vault secret)."""
 
 
 class VaultNoTokenError(VaultError):
@@ -36,94 +44,133 @@ class VaultNoTokenError(VaultError):
     needs_auth: bool = True
 
 
-def _users_dir() -> Path:
-    return Path(os.environ.get("HERMES_HOME", _HERMES_HOME)) / "users"
-
-
-def _token_path(user_id: str, service: str) -> Path:
-    """Resolve the on-disk token path for a user+service pair.
-
-    Legacy: bare "gws" or "google" service uses gws_token.json if it exists.
-    Named services (e.g. "google-draas") use {service}.json.
-    """
-    safe_uid = str(user_id).strip()
-    safe_svc = str(service).strip()
-    user_dir = _users_dir() / safe_uid
-    if safe_svc in ("gws", "google"):
-        legacy = user_dir / "gws_token.json"
-        if legacy.exists():
-            return legacy
-    return user_dir / f"{safe_svc}.json"
-
-
-def _current_session_uid() -> str:
+def _post(endpoint: str, body: dict) -> dict:
+    data = json.dumps(body).encode()
+    req = urllib.request.Request(
+        f"{VAULT_URL}{endpoint}",
+        data=data,
+        headers={
+            "Content-Type": "application/json",
+            "X-Vault-Secret": VAULT_SECRET,
+        },
+        method="POST",
+    )
     try:
-        from gateway.session_context import get_session_env
-        uid = get_session_env("HERMES_SESSION_USER_ID", "")
-    except Exception:
-        uid = os.environ.get("HERMES_SESSION_USER_ID", "")
-    return uid.strip()
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        body_bytes = e.read()
+        try:
+            detail = json.loads(body_bytes).get("detail", body_bytes.decode())
+        except Exception:
+            detail = body_bytes.decode()
+        if e.code == 401 or e.code == 403:
+            raise VaultUnauthorizedError(f"Vault auth failed: {detail}")
+        if e.code == 404:
+            raise VaultNoTokenError(detail)
+        raise VaultError(f"Vault HTTP {e.code}: {detail}")
+    except Exception as exc:
+        raise VaultError(f"Vault unreachable at {VAULT_URL}: {exc}") from exc
+
+
+def _get(path: str) -> dict:
+    req = urllib.request.Request(
+        f"{VAULT_URL}{path}",
+        headers={"X-Vault-Secret": VAULT_SECRET},
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        body_bytes = e.read()
+        try:
+            detail = json.loads(body_bytes).get("detail", body_bytes.decode())
+        except Exception:
+            detail = body_bytes.decode()
+        if e.code == 404:
+            raise VaultNoTokenError(detail)
+        raise VaultError(f"Vault HTTP {e.code}: {detail}")
+    except Exception as exc:
+        raise VaultError(f"Vault unreachable at {VAULT_URL}: {exc}") from exc
 
 
 def get_token(user_id: str, service: str, *, session_uid: Optional[str] = None) -> str:
-    """Return the raw stored JSON string for ``user_id``/``service``."""
-    del session_uid  # kept for API compatibility with the old socket-based client
-    path = _token_path(user_id, service)
-    if not path.exists():
-        raise VaultNoTokenError(f"No token for user_id={user_id!r} service={service!r}")
-    return path.read_text()
+    """Return the full stored token JSON string for user_id/service.
+
+    Uses POST /v1/token/raw which returns the complete authorized_user JSON
+    (including refresh_token) needed to rebuild google.oauth2.credentials.Credentials.
+    """
+    del session_uid  # API compat
+    result = _post("/v1/token/raw", {
+        "vault_user_id": str(user_id).strip(),
+        "service": str(service).strip(),
+    })
+    return json.dumps(result)
+
+
+def get_access_token(user_id: str, service: str) -> dict:
+    """Return a fresh access token dict from vault.
+
+    Vault refreshes the token internally if expired.
+    Returns: {"access_token": "ya29...", "expires_at": "...", "scopes": [...]}
+    """
+    return _post("/v1/token", {
+        "vault_user_id": str(user_id).strip(),
+        "service": str(service).strip(),
+    })
 
 
 def set_token(user_id: str, service: str, token_json: str) -> None:
-    """Store ``token_json`` for ``user_id``/``service``."""
-    safe_uid = str(user_id).strip()
-    safe_svc = str(service).strip()
-    user_dir = _users_dir() / safe_uid
-    if safe_svc in ("gws", "google"):
-        path = user_dir / "gws_token.json"
-    else:
-        path = user_dir / f"{safe_svc}.json"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(token_json)
-    try:
-        path.chmod(0o600)
-    except OSError:
-        pass
+    """Store token_json in the vault for user_id/service.
+
+    Uses POST /v1/token/store. The vault writes to its own private
+    storage, not to the hermes-data filesystem.
+    """
+    _post("/v1/token/store", {
+        "vault_user_id": str(user_id).strip(),
+        "service": str(service).strip(),
+        "token": json.loads(token_json),
+    })
 
 
 def delete_token(user_id: str, service: str) -> bool:
     """Delete stored token. Returns True if something was deleted."""
-    path = _token_path(user_id, service)
-    if path.exists():
-        path.unlink()
+    try:
+        _post("/v1/token/delete", {
+            "vault_user_id": str(user_id).strip(),
+            "service": str(service).strip(),
+        })
         return True
-    return False
+    except VaultNoTokenError:
+        return False
 
 
 def has_token(user_id: str, service: str, *, session_uid: Optional[str] = None) -> bool:
-    """Return True if a token file exists for ``user_id``/``service``."""
+    """Return True if a token exists for user_id/service."""
     del session_uid
-    return _token_path(user_id, service).exists()
+    try:
+        _post("/v1/token/raw", {
+            "vault_user_id": str(user_id).strip(),
+            "service": str(service).strip(),
+        })
+        return True
+    except VaultNoTokenError:
+        return False
 
 
 def list_services(user_id: str, *, session_uid: Optional[str] = None) -> List[str]:
-    """Return service names with stored tokens for ``user_id``."""
+    """Return service names with stored tokens for user_id."""
     del session_uid
-    user_dir = _users_dir() / str(user_id).strip()
-    if not user_dir.exists():
+    try:
+        result = _get(f"/v1/users/{str(user_id).strip()}/services")
+        return result.get("services", [])
+    except Exception:
         return []
-    services = []
-    for f in user_dir.glob("*.json"):
-        name = f.stem
-        if name == "gws_token":
-            services.append("gws")
-        elif name not in ("identity",):
-            services.append(name)
-    return sorted(services)
 
 
 def resolve(_identity_type: str, _identity_value: str) -> Optional[str]:
-    """Stub — identity resolution not supported in file backend."""
+    """Stub — use vault identity API directly for identity resolution."""
     return None
 
 
@@ -136,12 +183,12 @@ def add_identity(
     role: Optional[str] = None,
     permissions: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Stub — identity provisioning not supported in file backend."""
+    """Stub — identity provisioning not implemented in this client."""
     del name, role, permissions
-    raise VaultError("add_identity not supported in file-based vault backend")
+    raise VaultError("add_identity not implemented in vault HTTP client")
 
 
 def get_identity(_user_id: str, *, session_uid: Optional[str] = None) -> Optional[Dict[str, Any]]:
-    """Stub — identity lookup not supported in file backend."""
+    """Stub — identity lookup not implemented in this client."""
     del session_uid
     return None
