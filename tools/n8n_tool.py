@@ -49,7 +49,7 @@ _SERVICE_PATHS: Dict[str, str] = {
     # drive is intentionally absent — all Drive operations (read AND write)
     # go through google_workspace_manager which handles binary uploads correctly.
     # n8n hermes-drive can only handle JSON metadata; it cannot receive binary
-    # file bytes from Railway's local filesystem, so uploads always end up 0 bytes.
+    # file bytes from the Hermes container's local filesystem, so uploads always end up 0 bytes.
     "calendar": "hermes-calendar",
     "docs":     "hermes-docs",
     "tasks":    "hermes-tasks",

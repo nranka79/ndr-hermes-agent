@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """
-Setup script to create OAuth credential files from Railway environment variables.
+Setup script to create OAuth credential files from Docker Compose environment variables.
 This script runs at Hermes startup and creates the necessary credential files in /data/hermes/
 
-It reads the OAuth tokens from Railway environment variables and writes them to JSON files
+It reads the OAuth tokens from the container environment (set via the Hetzner host's
+docker-compose.yml / .env -- this script is orchestrator-agnostic, historically named
+for Railway but no longer tied to it) and writes them to JSON files
 that Hermes can use to access multiple Google Workspace accounts.
 """
 
@@ -39,21 +41,21 @@ def init_submodules():
     print("\n" + "="*80)
     print("INITIALIZING GIT SUBMODULES")
     print("="*80)
-    
+
     try:
         import subprocess
         # Check if we are in a git repo
         if not os.path.exists(".git"):
             print("⚠ Warning: Not in a git repository. Skipping submodule update.")
             return True
-            
+
         print("→ Updating submodules (recursive)...")
         result = subprocess.run(
             ["git", "submodule", "update", "--init", "--recursive"],
             capture_output=True,
             text=True
         )
-        
+
         if result.returncode == 0:
             print("✓ Submodules initialized successfully")
             return True
@@ -61,7 +63,7 @@ def init_submodules():
             print(f"⚠ Warning: Submodule update returned code {result.returncode}")
             print(f"  Error: {result.stderr}")
             # Don't fail the whole setup, maybe some files are there
-            return True 
+            return True
     except Exception as e:
         print(f"✗ Error during submodule initialization: {e}")
         return True
@@ -132,7 +134,7 @@ def setup_credentials():
     # Write .env file so gws CLI can locate credentials without per-invocation setup
     env_path = os.path.join(hermes_home, ".env")
     env_lines = [
-        "# Auto-generated at startup from Railway environment variables.",
+        "# Auto-generated at startup from container environment variables.",
         "# Source: setup_oauth_credentials.py — do not edit manually.",
         "",
     ]
@@ -178,7 +180,7 @@ def setup_credentials():
         print(f"\n✗ Failed to create credentials for {len(missing_accounts)} account(s):")
         for account in missing_accounts:
             print(f"  • {account}")
-        print("\nMake sure the following environment variables are set in Railway:")
+        print("\nMake sure the following environment variables are set in the Hetzner docker-compose.yml / .env:")
         for account, config in ACCOUNTS.items():
             if account in missing_accounts:
                 print(f"\n  {account}:")
@@ -263,7 +265,7 @@ def cleanup_stale_skills():
     # All possible roots where skills may have been seeded
     skill_roots = [
         os.path.join(home, ".hermes", "skills"),
-        "/app/skills",                             # Railway container app dir
+        "/app/skills",                             # legacy container app dir
         os.path.join(os.getcwd(), "skills"),       # Local dev / working dir
     ]
 
@@ -409,7 +411,7 @@ if __name__ == "__main__":
     primary_ok = os.path.exists(primary_cred)
     if not primary_ok:
         print("\n✗ FATAL: Primary account credentials (ndr@draas.com) not created.")
-        print("  Set DRAAS_OAUTH_REFRESH_TOKEN, DRAAS_OAUTH_CLIENT_ID, DRAAS_OAUTH_CLIENT_SECRET in Railway.")
+        print("  Set DRAAS_OAUTH_REFRESH_TOKEN, DRAAS_OAUTH_CLIENT_ID, DRAAS_OAUTH_CLIENT_SECRET in the Hetzner docker-compose.yml / .env.")
         sys.exit(1)
 
     sys.exit(0)

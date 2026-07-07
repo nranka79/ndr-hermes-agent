@@ -1,6 +1,6 @@
 # Hermes Project — Claude Code Context
 
-Project: Hermes AI Agent (Telegram bot, Railway deployment)
+Project: Hermes AI Agent (Telegram bot, Hetzner VPS deployment)
 Repo: github.com/nranka79/ndr-hermes-agent (private fork)
 Python: /c/Python314/python.exe (NOT `python3` — Windows Store alias intercepts it)
 
@@ -71,21 +71,46 @@ Range example: `'NDR DRAAS Google contacts.csv'!A:CN`
 
 ---
 
-## Railway
+## Hetzner (production host — NOT Railway)
 
-### Hermes Bot Service
-- Project ID: 112e98ba-305d-45ea-87ae-1e3915176567
-- Service ID: 42cde9f1-5f74-4f01-b236-f78f3479abcd
-- Env ID: 91a2dcb8-6ed4-4009-9bed-19a979ced590
-- Bot: @NDRHermes_bot (Telegram)
+Hermes is NOT on Railway. The Railway account is disabled/dead. Everything
+(hermes bot, n8n, postgres, redis, voice app, monitoring, Open WebUI) runs
+as Docker Compose services on a single Hetzner VPS. Canonical, more-detailed
+copy of this section lives in `AGENTS.md` ("Hetzner VPS — Infrastructure
+Briefing") — check there first, keep both in sync.
 
-### N8N Service
-- In project: 07fba0a5-f776-4280-ad74-dbfd53b13136 ("inspiring-creation")
-- Primary service: 627de5d3-53b9-4c09-aca3-9c15f6375d7f
+### SSH
+| Field | Value |
+|---|---|
+| Host | `178.105.35.94` (DNS: `transcribe.ahfl.in`) |
+| User | `root` |
+| App root | `/opt/hermes/` |
+| Compose file | `/opt/hermes/docker-compose.yml` (local mirror: `Infrastructure_Scripts/hetzner/docker-compose.yml`) |
 
-### Railway API access
-- The ndr@ahfl.in token has READ access to all projects but WRITE only to hermes-telegram project.
-- For Railway write operations on other projects, use CLI: `railway link` with temp config in `/tmp/`.
+Connect: `ssh root@178.105.35.94` (key: `~/.ssh/hetzner_new` or check `~/.ssh/config`).
+
+### Services (docker compose)
+postgres, redis, n8n, n8n-worker, hermes, smart-browser, voice, free-whisper,
+loki, promtail, grafana, oauth2-proxy, open-webui, oauth2-proxy-chat.
+
+Bot: @NDRHermes_bot (Telegram). Chat UI: https://chat.ahfl.in (Open WebUI,
+behind Google-SSO oauth2-proxy-chat).
+
+### Hermes container
+- Startup: `python3 setup_oauth_credentials.py && exec hermes gateway run -v`
+- `HERMES_HOME=/data/hermes`, mounted from host `/opt/hermes/hermes-data`
+- GWS token vault: separate `gws-vault` daemon, Unix socket at
+  `/run/gws-vault/vault.sock` (bind-mounted into the hermes container),
+  gated by `GWS_VAULT_SECRET`. Hermes never reads token files directly.
+
+### Useful commands (run on the server)
+```bash
+cd /opt/hermes
+docker compose logs -f hermes
+docker compose restart hermes
+docker compose up -d --build hermes
+docker compose exec hermes bash
+```
 
 ---
 
@@ -98,15 +123,22 @@ Range example: `'NDR DRAAS Google contacts.csv'!A:CN`
 | `tools/entity_resolver_tool.py` | Agent tool: search contacts/projects/entities/land by name |
 | `tools/contact_resolver_tool.py` | Agent tool: ranked contact lookup (3-signal: name+context+compound) |
 | `tools/noun_learner_tool.py` | Writes corrections/associations back to sheets |
-| `tools/gws/_shared.py` | OAuth2 credential loading for direct Google API calls |
+| `tools/gws_auth.py` | Per-user OAuth2 token management (vault-backed): `build_service()`, `get_auth_url()` |
 | `model_tools.py` | Tool discovery/registration list |
 | `toolsets.py` | Tool groupings by capability |
 
+Note: `tools/gws/_shared.py` does NOT exist — do not reference it. It was a
+dead import in `contact_resolver_tool.py` (fixed 2026-07-07) that caused
+draas contact lookups to fail and the agent to wrongly generate an OAuth
+re-auth link.
+
 ---
 
-## Credential Files (Railway runtime)
-- `/data/hermes/oauth-draas.json` — ndr@draas.com OAuth2 refresh token (for direct API calls)
+## Credential Files (Hetzner container runtime)
+- `/data/hermes/oauth-draas.json` — ndr@draas.com OAuth2 refresh token (for direct API calls, shared company resource — NOT per-Telegram-user)
 - `DRAAS_CRED_FILE` env var points to this file
+- Same pattern exists for ahfl.in / gmail: `AHFL_CRED_FILE` / `GMAIL_CRED_FILE`, defaulting to `/data/hermes/oauth-ahfl.json` / `/data/hermes/oauth-gmail.json`
+- These files are (re)written at every container start by `setup_oauth_credentials.py` from `DRAAS_OAUTH_CLIENT_ID/_SECRET/_REFRESH_TOKEN` (and `AHFL_*` / `GMAIL_*`) env vars — this is separate from the per-Telegram-user `HERMES_OAUTH_CLIENT_ID`/`gws_auth.py`/vault flow used for personal Gmail/Calendar/Drive access.
 
 ---
 
