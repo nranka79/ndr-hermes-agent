@@ -378,3 +378,17 @@ class TestRegistry:
         from toolsets import TOOLSETS
         assert "oauth" in TOOLSETS["messaging"].get("includes", [])
         assert "send_oauth_url" in TOOLSETS["oauth"]["tools"]
+
+    def test_send_oauth_url_in_hermes_core_tools(self):
+        """Each platform's toolset (hermes-telegram, hermes-discord, etc.) is
+        built from _HERMES_CORE_TOOLS, so the tool must be in that list to
+        actually reach the LLM via any platform adapter."""
+        from toolsets import TOOLSETS, resolve_toolset
+        # The hermes-telegram platform toolset is the canonical "personal assistant
+        # on Telegram" — if send_oauth_url is reachable from there, every other
+        # platform toolset (which also derives from _HERMES_CORE_TOOLS) has it too.
+        resolved = resolve_toolset("hermes-telegram")
+        assert "send_oauth_url" in resolved, (
+            f"send_oauth_url not in hermes-telegram toolset ({len(resolved)} tools) — "
+            "make sure it is in _HERMES_CORE_TOOLS in toolsets.py"
+        )
