@@ -55,22 +55,30 @@ HERMES_GWS_SCOPES = [
 
 _REDIRECT_URI = "https://transcribe.ahfl.in/gws/auth/callback"
 
-# Default service name — matches the draas.com Google Workspace account.
-# Convention: gws_{domain} where domain uses underscores instead of dots.
-_DEFAULT_SERVICE = "gws_draas.com"
+# Default service name — backward-compatible fallback when the OAuth state
+# does not include a service name.  In practice the auto-detect path in
+# exchange_and_store() uses EMAIL_TO_SERVICE (below) to pick the right key
+# from the id_token email, so _DEFAULT_SERVICE is only hit when no id_token
+# email is available and the user has no gws_service field in users.json.
+_DEFAULT_SERVICE = "google"
 
-# Map well-known emails to their vault service names.
-# Pattern: gws_{domain}  (e.g. gws_draas.com, gws_ahfl.in, gws_gmail.com)
+# Map well-known emails to their vault service names so the agent
+# can look up the right token by email address, and so the OAuth
+# callback can auto-detect the service name from the id_token email.
+#
+# Service-name format is enforced by the vault server at
+# tools/gws_vault_client.py:42 — must match ``^[a-z][a-z0-9-]{0,49}$``
+# (lowercase, alphanumeric + hyphens only — NO dots, NO underscores).
 # This is also the value stored in users.json under "gws_service".
 EMAIL_TO_SERVICE = {
-    "ndr@draas.com":          "gws_draas.com",
-    "psingh@draas.com":       "gws_draas.com",
-    "rnr@draas.com":          "gws_draas.com",
-    "vkdas@draas.com":        "gws_draas.com",
-    "pm2.blr@draas.com":      "gws_draas.com",
-    "sales1.blr@draas.com":   "gws_draas.com",
-    "ndr@ahfl.in":            "gws_ahfl.in",
-    "nishantranka@gmail.com": "gws_gmail.com",
+    "ndr@draas.com":          "google-draas",
+    "psingh@draas.com":       "google-draas",
+    "rnr@draas.com":          "google-draas",
+    "vkdas@draas.com":        "google-draas",
+    "pm2.blr@draas.com":      "google-draas",
+    "sales1.blr@draas.com":   "google-draas",
+    "ndr@ahfl.in":            "google-ahfl",
+    "nishantranka@gmail.com": "google-gmail",
 }
 
 
