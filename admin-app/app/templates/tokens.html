@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Tokens</h2>
+
+<table class="table table-striped mt-3">
+    <thead>
+        <tr>
+            <th>User</th>
+            <th>Service</th>
+            <th>Actions</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for t in user_tokens %}
+        <tr>
+            <td><a href="/users/{{ t.user_id }}">{{ t.name }}</a></td>
+            <td>{{ t.service }}</td>
+            <td>
+                <form method="post" action="/tokens/{{ t.user_id }}/{{ t.service }}/delete" style="display:inline">
+                    <button type="submit" class="btn btn-sm btn-outline-danger" onclick="return confirm('Revoke this token?')">Revoke</button>
+                </form>
+            </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="3" class="text-muted">No tokens found</td></tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endblock %}

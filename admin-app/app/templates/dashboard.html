@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Dashboard</h2>
+<div class="row mt-4">
+    <div class="col-md-4">
+        <div class="card text-bg-primary mb-3">
+            <div class="card-body">
+                <h5 class="card-title">Identity Provider</h5>
+                <p class="card-text">GWS Vault daemon — central identity + token store.</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-4">
+        <div class="card text-bg-success mb-3">
+            <div class="card-body">
+                <a href="/users" class="text-white text-decoration-none">
+                    <h5 class="card-title">User Management</h5>
+                    <p class="card-text">Add, view, and manage user identities.</p>
+                </a>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-4">
+        <div class="card text-bg-info mb-3">
+            <div class="card-body">
+                <a href="/tokens" class="text-white text-decoration-none">
+                    <h5 class="card-title">Token Management</h5>
+                    <p class="card-text">View and revoke GWS OAuth tokens.</p>
+                </a>
+            </div>
+        </div>
+    </div>
+</div>
+<hr>
+<h5>Welcome, {{ user.name }}</h5>
+<p class="text-muted">Signed in as {{ user.email }}. Use the sidebar to navigate.</p>
+{% endblock %}
