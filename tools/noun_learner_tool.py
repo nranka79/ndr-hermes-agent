@@ -108,7 +108,7 @@ def _get_sheet_id() -> str:
     if not sheet_id:
         uid = cfg.get("draas_user_id", "unknown")
         raise RuntimeError(
-            f"User {uid!r} has no contacts_sheet_id configured in users.json"
+            f"User {uid!r} has no contacts_sheet_id configured in their profile"
         )
     return sheet_id
 
@@ -126,11 +126,11 @@ def _build_service():
     if not draas_user_id:
         raise RuntimeError(
             "Cannot identify session user for Google Sheets access. "
-            "HERMES_SESSION_USER_ID not set or user not in users.json."
+            "HERMES_SESSION_USER_ID not set or user not found in registry."
         )
     if not gws_service:
         raise RuntimeError(
-            f"User {draas_user_id!r} has no gws_service configured in users.json."
+            f"User {draas_user_id!r} has no gws_service configured in their profile."
         )
 
     token_info = vault.get_access_token(draas_user_id, gws_service)

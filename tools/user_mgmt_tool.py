@@ -1,16 +1,14 @@
 """
 manage_user tool — admin-only user provisioning for Hermes.
 
-Adds, updates, deletes, or lists users in $HERMES_HOME/users.json. Because the
-gateway's _is_user_authorized checks users.json live (mtime-cached), a newly
-added user can message the bot immediately -- no .env update or restart needed.
+Adds, updates, deletes, or lists users. Identity records are stored in the
+gws-vault daemon (primary); app-specific fields (gbrain_home, phone,
+contacts_sheet_id) are kept in $HERMES_HOME/users.json (the file registry).
 
-users.json is keyed by each user's *primary email*. The actual identifiers
-(Telegram IDs, any linked email addresses) live under each record's
-``identities`` dict -- see tools/_user_registry.py for the resolution helper
-this tool shares with the gateway's authorization check.
+The gateway's _is_user_authorized checks the vault-backed _user_registry, so a
+newly added user can message the bot immediately.
 
-Access control: restricted to whichever user's own users.json record has
+Access control: restricted to whichever user's own record has
 ``permissions.manage_users == true``. The caller is resolved from the
 trusted session context (HERMES_SESSION_CHAT_ID, injected by the gateway
 from the real inbound Telegram sender) -- never from an argument the LLM
@@ -28,7 +26,7 @@ logger = logging.getLogger(__name__)
 MANAGE_USER_SCHEMA = {
     "name": "manage_user",
     "description": (
-        "Admin-only: add, update, delete, or list Hermes users in users.json. "
+        "Admin-only: add, update, delete, or list Hermes users. "
         "Restricted to the user whose own record has permissions.manage_users=true "
         "-- the caller's identity is resolved server-side from the session, never "
         "from a tool argument."
@@ -74,7 +72,7 @@ MANAGE_USER_SCHEMA = {
             },
             "manage_users": {
                 "type": "boolean",
-                "description": "'update' only: grant/revoke permission to manage users.json.",
+                "description": "'update' only: grant/revoke permission to manage users.",
             },
             "multi_google": {
                 "type": "boolean",
@@ -153,7 +151,7 @@ def manage_user_tool(args, **kw):
         return json.dumps({
             "error": (
                 "Permission denied. manage_user is restricted to the user whose "
-                "own users.json record has permissions.manage_users=true."
+                "own record has permissions.manage_users=true."
             )
         })
 
@@ -224,6 +222,24 @@ def manage_user_tool(args, **kw):
 
         home_dir = Path(os.environ.get("HERMES_HOME", "")) / "users" / slug
         home_dir.mkdir(parents=True, exist_ok=True)
+
+        # Sync identity to vault
+        try:
+            from tools import gws_vault_client as vault
+
+            vault.add_identity(
+                user_id=email,
+                identity_type="email",
+                identity_value=email,
+                name=name,
+                role=role,
+                permissions=entry.get("permissions", {}),
+            )
+            vault.add_identity(user_id=email, identity_type="telegram", identity_value=telegram_id)
+            if slug and slug != email:
+                vault.add_identity(user_id=email, identity_type="draas_user_id", identity_value=slug)
+        except Exception as _vault_err:
+            logger.warning("manage_user: vault sync for add %s: %s", email, _vault_err)
 
         logger.info("manage_user: ADD user=%s telegram=%s actor=%s", email, telegram_id, actor_email)
         return json.dumps({
@@ -305,6 +321,26 @@ def manage_user_tool(args, **kw):
         data[target_email] = rec
         _save(data)
 
+        # Sync identity changes to vault
+        try:
+            from tools import gws_vault_client as vault
+
+            if any(f in changed for f in ("name", "role", "permissions.manage_users", "permissions.multi_google")):
+                vault.add_identity(
+                    user_id=target_email,
+                    identity_type="email",
+                    identity_value=target_email,
+                    name=rec.get("name"),
+                    role=rec.get("role"),
+                    permissions=rec.get("permissions", {}),
+                )
+            if add_tid:
+                vault.add_identity(user_id=target_email, identity_type="telegram", identity_value=add_tid)
+            if add_email:
+                vault.add_identity(user_id=target_email, identity_type="email", identity_value=add_email)
+        except Exception as _vault_err:
+            logger.warning("manage_user: vault sync for update %s: %s", target_email, _vault_err)
+
         logger.info("manage_user: UPDATE user=%s fields=%s actor=%s", target_email, changed, actor_email)
         return json.dumps({
             "success": True,
@@ -339,9 +375,9 @@ def manage_user_tool(args, **kw):
             return json.dumps({
                 "success": True,
                 "message": (
-                    f"Deleted user '{target_email}' from users.json. "
-                    f"Note: any vault tokens they previously authorized are NOT "
-                    f"auto-revoked -- revoke those separately if needed."
+                    f"Deleted user '{target_email}' from the registry. "
+                    f"Note: their vault identity record and any OAuth tokens are "
+                    f"NOT auto-revoked -- revoke those separately if needed."
                 ),
             }, indent=2)
 
@@ -358,6 +394,11 @@ def manage_user_tool(args, **kw):
                 return json.dumps({"error": f"Telegram ID {telegram_id} not found on user {target_email}."})
             tids.remove(telegram_id)
             _save(data)
+            try:
+                from tools import gws_vault_client as vault
+                vault.remove_identity(target_email, "telegram", telegram_id)
+            except Exception as _vault_err:
+                logger.warning("manage_user: vault remove_identity %s: %s", target_email, _vault_err)
             logger.info("manage_user: UNLINK telegram_id=%s user=%s actor=%s", telegram_id, target_email, actor_email)
             return json.dumps({
                 "success": True,
@@ -384,6 +425,11 @@ def manage_user_tool(args, **kw):
                 return json.dumps({"error": f"{email_arg} not found on user {target_email}."})
             emails.remove(email_arg)
             _save(data)
+            try:
+                from tools import gws_vault_client as vault
+                vault.remove_identity(target_email, "email", email_arg)
+            except Exception as _vault_err:
+                logger.warning("manage_user: vault remove_identity %s: %s", target_email, _vault_err)
             logger.info("manage_user: UNLINK email=%s user=%s actor=%s", email_arg, target_email, actor_email)
             return json.dumps({
                 "success": True,

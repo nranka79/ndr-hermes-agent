@@ -1,4 +1,4 @@
-services:
+﻿services:
   postgres:
     image: pgvector/pgvector:pg16
     restart: always
@@ -129,7 +129,7 @@ services:
       TAVILY_API_KEY: ${TAVILY_API_KEY}
       FIRECRAWL_API_KEY: ${FIRECRAWL_API_KEY}
       APIFY_API_KEY: ${APIFY_API_KEY}
-      # GWS Token Vault — access tokens stored outside container
+      # GWS Token Vault ÔÇö access tokens stored outside container
       GWS_VAULT_SECRET: ${GWS_VAULT_SECRET}
       GWS_VAULT_SOCKET: /run/gws-vault/vault.sock
     volumes:
@@ -138,7 +138,7 @@ services:
       - ./hermes-agent/skills:/opt/hermes/skills
       - ./hermes-agent/gateway/authz_mixin.py:/opt/hermes/gateway/authz_mixin.py
       - "/opt/hermes/hermes-agent/gateway/run.py:/opt/hermes/gateway/run.py:ro"
-      # Pilot: subagent-polling fix (Jun 2026) — bind-mount the edited source
+      # Pilot: subagent-polling fix (Jun 2026) ÔÇö bind-mount the edited source
       # files so they survive container recreations. Remove these lines
       # once the fix is baked into the Docker image and the image is rebuilt.
       - ./hermes-agent/hermes_state.py:/opt/hermes/hermes_state.py:ro
@@ -179,7 +179,7 @@ services:
       SAVE_WEBHOOK_URL: ${SAVE_WEBHOOK_URL}
       WHATSAPP_WEBHOOK_URL: ${WHATSAPP_WEBHOOK_URL}
       AUTH_FILE: /data/.auth
-      # Free Whisper microservice — reachable by compose service name on
+      # Free Whisper microservice ÔÇö reachable by compose service name on
       # the shared default network (same pattern as OPENAI_API_BASE_URL:
       # http://hermes:8642/v1 below).
       FREE_WHISPER_URL: http://free-whisper:8000
@@ -188,7 +188,7 @@ services:
     depends_on:
       - free-whisper
 
-  # Free Whisper — isolated faster-whisper transcription microservice.
+  # Free Whisper ÔÇö isolated faster-whisper transcription microservice.
   # Pilot (Phase 1): plain transcription only, called by the `voice` app's
   # new "Free Whisper" button. No vault/vocab wiring yet (Phase 2).
   free-whisper:
@@ -313,3 +313,21 @@ services:
       - ./secrets/chat-emails.txt:/etc/oauth2-proxy/emails.txt:ro
     depends_on:
       - open-webui
+
+  admin-app:
+    build:
+      context: ./admin-app
+      dockerfile: Dockerfile
+    restart: always
+    ports:
+      - "127.0.0.1:8081:8000"
+    environment:
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET}
+      GOOGLE_REDIRECT_URI: https://admin.ahfl.in/auth/callback
+      SESSION_SECRET: ${ADMIN_APP_SESSION_SECRET}
+      ADMIN_EMAILS: ${ADMIN_EMAILS}
+      GWS_VAULT_SOCKET: /run/gws-vault/vault.sock
+      GWS_VAULT_SECRET: ${GWS_VAULT_SECRET}
+    volumes:
+      - /run/gws-vault/vault.sock:/run/gws-vault/vault.sock

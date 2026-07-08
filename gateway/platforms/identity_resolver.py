@@ -51,7 +51,7 @@ def resolve_from_request(request) -> Optional[dict]:
             )
         else:
             logger.warning(
-                "API server: %s=%s not found in users.json — session runs anonymous",
+                "API server: %s=%s not found in registry — session runs anonymous",
                 HEADER_USER_EMAIL, email,
             )
         return record
