@@ -7,10 +7,11 @@ Usage:
                --telegram-id 123456789 --phone "+91..." [--role employee]
 
 What it does (all on the VPS via SSH):
-  1. Adds telegram_id to TELEGRAM_ALLOWED_USERS in /opt/hermes/.env
-  2. Adds full profile + cross_message_allowed:true to users.json
-  3. Creates the user's gbrain home directory
-  4. Restarts the hermes container so the new .env takes effect
+   1. Adds telegram_id to TELEGRAM_ALLOWED_USERS in /opt/hermes/.env
+   2. Adds full profile + cross_message_allowed:true to users.json
+   3. Syncs identity records to the gws-vault daemon (canonical identity source)
+   4. Creates the user's gbrain home directory
+   5. Restarts the hermes container so the new .env takes effect
 
 No Docker image rebuild is needed — users.json is volume-mounted and
 hot-reloaded; the .env change only requires a container restart.
@@ -87,18 +88,38 @@ def update_users_json(telegram_id: str, name: str, email: str, phone: str, role:
     print(f"      Saved profile for {name} ({telegram_id})")
 
 
+def sync_identity_to_vault(telegram_id: str, name: str, email: str, role: str):
+    print(f"[3/5] Syncing identity to gws-vault...")
+    slug = "".join(c for c in email.split("@")[0] if c.isalnum() or c in "._-") or telegram_id
+    # Build a Python snippet that reads vault_secret from the env file, then calls add_identity.
+    script = (
+        "import os, json; "
+        "env = dict(l.split('=', 1) for l in open('/etc/gws-vault.env') if '=' in l); "
+        "os.environ['GWS_VAULT_SOCKET'] = env.get('GWS_VAULT_SOCKET', '/run/gws-vault/vault.sock').strip(); "
+        "os.environ['GWS_VAULT_SECRET'] = env['GWS_VAULT_SECRET'].strip() if 'GWS_VAULT_SECRET' in env else ''; "
+        f"import sys; sys.path.insert(0, '/opt/hermes/hermes-agent'); "
+        f"from tools import gws_vault_client as v; "
+        f"v.add_identity(user_id='{email}', identity_type='email', identity_value='{email}', name='{name}', role='{role}'); "
+        f"v.add_identity(user_id='{email}', identity_type='telegram', identity_value='{telegram_id}'); "
+        f"v.add_identity(user_id='{email}', identity_type='draas_user_id', identity_value='{slug}'); "
+        f"print('Vault identity synced for {email}')"
+    )
+    result = ssh(f"cd /opt/hermes/hermes-agent && /usr/bin/python3 -c \"{script}\"")
+    print(f"      {result}")
+
+
 def create_home_dir(telegram_id: str):
     home = f"{USERS_HOME_BASE}/{telegram_id}"
-    print(f"[3/4] Creating gbrain home: {home}")
+    print(f"[4/5] Creating gbrain home: {home}")
     ssh(f"mkdir -p {home}")
     print(f"      Done.")
 
 
 def restart_container(dry_run: bool):
     if dry_run:
-        print("[4/4] Skipping restart (--no-restart)")
+        print("[5/5] Skipping restart (--no-restart)")
         return
-    print(f"[4/4] Restarting {HERMES_SERVICE} container...")
+    print(f"[5/5] Restarting {HERMES_SERVICE} container...")
     ssh(f"docker compose -f {COMPOSE_FILE} restart {HERMES_SERVICE}", capture=False)
     print("      Restarted.")
 
@@ -111,6 +132,7 @@ def main():
 
     update_env(tid, args.no_restart)
     update_users_json(tid, args.name, args.email, args.phone, args.role)
+    sync_identity_to_vault(tid, args.name, args.email, args.role)
     create_home_dir(tid)
     restart_container(args.no_restart)
 

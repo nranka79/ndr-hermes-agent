@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Users <a href="/users/new" class="btn btn-primary btn-sm">+ New</a></h2>
+
+<table class="table table-striped mt-3">
+    <thead>
+        <tr>
+            <th>User ID</th>
+            <th>Name</th>
+            <th>Email</th>
+            <th>Role</th>
+            <th>Telegram</th>
+            <th>Actions</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for u in users %}
+        <tr>
+            <td><a href="/users/{{ u.user_id }}">{{ u.user_id }}</a></td>
+            <td>{{ u.name or "-" }}</td>
+            <td>{{ u.email or "-" }}</td>
+            <td>{{ u.role or "employee" }}</td>
+            <td>{{ u.telegram or "-" }}</td>
+            <td><a href="/users/{{ u.user_id }}" class="btn btn-sm btn-outline-secondary">View</a></td>
+        </tr>
+        {% else %}
+        <tr><td colspan="6" class="text-muted">No users found</td></tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endblock %}
