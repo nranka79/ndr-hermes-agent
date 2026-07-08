@@ -329,3 +329,27 @@ def get_identity(user_id: str, *, session_uid: Optional[str] = None) -> Optional
             return None
         _raise_for_response(resp)
     return resp.get("identity")
+
+
+def remove_identity(
+    user_id: str,
+    identity_type: str,
+    identity_value: str,
+) -> dict:
+    """Remove one (identity_type, identity_value) pair from the user's identity record.
+
+    Requires GWS_VAULT_SECRET. Returns the updated identity record.
+    Returns None if the record doesn't exist.
+    """
+    resp = _send_recv({
+        "op": "remove_identity",
+        "user_id": str(user_id).strip(),
+        "identity_type": str(identity_type).strip(),
+        "identity_value": str(identity_value).strip(),
+        "vault_secret": VAULT_SECRET,
+    })
+    if not resp.get("ok"):
+        if resp.get("not_found"):
+            return None
+        _raise_for_response(resp)
+    return resp.get("identity")
