@@ -155,32 +155,29 @@ def _get_sheet_id() -> str:
 def _build_service():
     """Return a Google Sheets API service for the current session user.
 
-    Gets draas_user_id and gws_service from user config, then requests an
-    access token from the vault. No credentials are stored or passed through
-    the LLM — the tool fetches them directly.
+    Delegates to ``gws_auth.build_service`` so the token is keyed by the
+    canonical vault user_id (resolved from the session id) and loaded as a
+    refresh-capable Credentials object.  No credentials pass through the LLM.
     """
-    from tools import gws_vault_client as vault
-    from google.oauth2.credentials import Credentials
-    from googleapiclient.discovery import build
+    from tools import gws_auth
+    from gateway.session_context import get_session_env
 
     cfg = _get_session_user_cfg()
-    draas_user_id = cfg.get("draas_user_id", "")
     gws_service = cfg.get("gws_service", "")
+    session_uid = get_session_env("HERMES_SESSION_USER_ID", "")
 
-    if not draas_user_id:
+    if not session_uid:
         raise RuntimeError(
             "Cannot identify session user for Google Sheets access. "
-                "HERMES_SESSION_USER_ID not set or user not found in registry."
+            "HERMES_SESSION_USER_ID not set or user not found in registry."
         )
     if not gws_service:
         raise RuntimeError(
-            f"User {draas_user_id!r} has no gws_service configured in their profile. "
+            f"User {session_uid!r} has no gws_service configured in their profile. "
             "An admin must add the 'gws_service' field and ensure the user has authorized."
         )
 
-    token_info = vault.get_access_token(draas_user_id, gws_service)
-    creds = Credentials(token=token_info["access_token"])
-    return build("sheets", "v4", credentials=creds)
+    return gws_auth.build_service("sheets", "v4", telegram_id=session_uid, service_name=gws_service)
 
 
 def _fuzzy_score(query: str, candidate: str) -> float:
