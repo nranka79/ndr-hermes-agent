@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>User: {{ user_data.get('name') or user_data.get('user_id') }}</h2>
+
+<div class="row mt-3">
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header">Identity</div>
+            <div class="card-body">
+                <dl class="row">
+                    <dt class="col-sm-4">User ID</dt>
+                    <dd class="col-sm-8">{{ user_data.user_id }}</dd>
+
+                    <dt class="col-sm-4">Name</dt>
+                    <dd class="col-sm-8">{{ user_data.get('name', '-') }}</dd>
+
+                    <dt class="col-sm-4">Role</dt>
+                    <dd class="col-sm-8">{{ user_data.get('role', 'employee') }}</dd>
+
+                    <dt class="col-sm-4">Email</dt>
+                    <dd class="col-sm-8">{{ user_data.get('email', '-') }}</dd>
+
+                    <dt class="col-sm-4">Telegram</dt>
+                    <dd class="col-sm-8">{{ user_data.get('telegram', '-') }}</dd>
+
+                    <dt class="col-sm-4">Permissions</dt>
+                    <dd class="col-sm-8"><code>{{ user_data.get('permissions', {}) }}</code></dd>
+                </dl>
+            </div>
+        </div>
+
+        <div class="card mt-3">
+            <div class="card-header">Identities</div>
+            <div class="card-body">
+                {% set types = ['email', 'telegram', 'slug'] %}
+                {% for t in types %}
+                    {% set val = user_data.get(t) %}
+                    {% if val %}
+                    <form method="post" action="/users/{{ user_data.user_id }}/delete-identity" style="display:inline">
+                        <input type="hidden" name="identity_type" value="{{ t }}">
+                        <input type="hidden" name="identity_value" value="{{ val }}">
+                        <span class="badge bg-secondary">{{ t }}</span> {{ val }}
+                        <button type="submit" class="btn btn-sm btn-outline-danger" onclick="return confirm('Remove this identity?')">Remove</button>
+                        <br>
+                    </form>
+                    {% endif %}
+                {% endfor %}
+            </div>
+        </div>
+    </div>
+
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header">Stored Tokens</div>
+            <div class="card-body">
+                <ul class="list-group list-group-flush">
+                    {% for svc in services %}
+                    <li class="list-group-item d-flex justify-content-between align-items-center">
+                        {{ VAULT_SERVICE_NAMES.get(svc, svc) }}
+                        <span class="text-muted small">{{ svc }}</span>
+                    </li>
+                    {% else %}
+                    <li class="list-group-item text-muted">No tokens stored</li>
+                    {% endfor %}
+                </ul>
+            </div>
+        </div>
+    </div>
+</div>
+
+<a href="/users" class="btn btn-secondary mt-3">Back to Users</a>
+{% endblock %}

@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="row justify-content-center mt-5">
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-body text-center">
+                <h3 class="card-title mb-4">Hermes Admin Panel</h3>
+                {% if error %}
+                <div class="alert alert-danger">{{ error }}</div>
+                {% endif %}
+                {% if google_configured or not error %}
+                <p class="text-muted">Sign in with your Google Workspace account to manage Hermes users and tokens.</p>
+                <a href="/auth/login" class="btn btn-primary btn-lg">Sign in with Google</a>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

@@ -35,31 +35,10 @@ def load_user_registry() -> dict:
         return {}
 
 
-def find_user_by_identity(identity_type: str, identity_value: str) -> Tuple[Optional[str], Optional[dict]]:
-    """Resolve a raw identifier (a Telegram ID, an email, ...) to its owning
-    user record in users.json.
-
-    users.json is keyed by each user's *primary email*; the actual identifiers
-    (Telegram IDs, any linked email addresses) live under each record's
-    ``identities`` dict, e.g. ``identities["telegram"] == ["7449813913"]``.
-    A flat ``identity_value in load_user_registry()`` membership check only
-    ever matches a primary-email key -- it can never match a Telegram ID.
-    This scans ``identities`` properly instead.
-
-    Args:
-        identity_type: "telegram" or "email" (matches an ``identities`` key).
-        identity_value: the raw identifier to resolve.
-
-    Returns:
-        (primary_email_key, record) for the owning user, or (None, None)
-        if no user has this identifier.
-    """
-    value = str(identity_value).strip()
-    if not value:
-        return None, None
+def _find_in_file_registry(value: str, identity_type: str) -> Tuple[Optional[str], Optional[dict]]:
+    """Scan users.json to resolve an identifier. Returns (email_key, record)."""
     registry = load_user_registry()
 
-    # Fast path: value IS itself a primary-email key.
     direct = registry.get(value)
     if isinstance(direct, dict):
         return value, direct
@@ -67,14 +46,55 @@ def find_user_by_identity(identity_type: str, identity_value: str) -> Tuple[Opti
     for email_key, rec in registry.items():
         if not isinstance(rec, dict):
             continue
-        identities = rec.get("identities")
-        if not isinstance(identities, dict):
+        ids = rec.get("identities")
+        if not isinstance(ids, dict):
             continue
-        values = identities.get(identity_type) or []
+        values = ids.get(identity_type) or []
         if value in [str(v) for v in values]:
             return email_key, rec
 
     return None, None
+
+
+def find_user_by_identity(identity_type: str, identity_value: str) -> Tuple[Optional[str], Optional[dict]]:
+    """Resolve a raw identifier to the canonical user record.
+
+    Resolution order:
+      1. Vault (``gws_vault_client.resolve``) — canonical identity source.
+      2. File registry (``users.json``) — fallback, also provides app-specific
+         fields (gbrain_home, phone, etc.) that aren't in the vault yet.
+
+    Args:
+        identity_type: ``"telegram"``, ``"email"``, or ``"draas_user_id"``.
+        identity_value: the raw identifier to resolve.
+
+    Returns:
+        ``(canonical_email, record)`` or ``(None, None)``.
+    """
+    value = str(identity_value).strip()
+    if not value:
+        return None, None
+
+    try:
+        from tools import gws_vault_client as vault
+
+        user_id = vault.resolve(identity_type, value)
+        if user_id:
+            vault_rec = vault.get_identity(user_id, session_uid=user_id)
+            file_rec = load_user_registry().get(user_id) if vault_rec else None
+            if vault_rec and file_rec:
+                merged = {**file_rec}
+                merged.setdefault("identities", vault_rec.get("identities", {}))
+                merged.setdefault("permissions", vault_rec.get("permissions", {}))
+                return user_id, merged
+            if file_rec:
+                return user_id, file_rec
+            if vault_rec:
+                return user_id, vault_rec
+    except Exception:
+        logger.debug("Vault resolve failed for %s=%s, falling back to file", identity_type, value)
+
+    return _find_in_file_registry(value, identity_type)
 
 
 def get_user_config(telegram_user_id: str | int) -> dict:
