@@ -203,6 +203,16 @@ TOOLSETS = {
     "messaging": {
         "description": "Cross-platform messaging: send messages to Telegram, Discord, Slack, SMS, etc.",
         "tools": ["send_message"],
+        "includes": ["oauth"]
+    },
+
+    "oauth": {
+        "description": "OAuth-related tools (e.g. send authorization links as Telegram buttons, "
+                       "CLI prints, or pre-formatted markdown links). Source-of-truth URLs are "
+                       "computed inside the tool — the LLM never sees them, which prevents the "
+                       "class of failures where small chat models silently truncate substrings "
+                       "like 'google.' from OAuth client_ids.",
+        "tools": ["send_oauth_url"],
         "includes": []
     },
 
