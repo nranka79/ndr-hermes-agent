@@ -6,6 +6,13 @@ NOT on the filesystem.  Each Google account (email) automatically maps to a
 distinct service name so multiple accounts per Telegram user never overwrite
 each other.
 
+Tokens are keyed by the **canonical** vault user_id — a channel-agnostic
+surrogate (e.g. ``ndr-7449813913``) resolved from the session's raw channel
+identifier (Telegram numeric id, SSO email, slug) via the vault ``resolve``
+op.  This means a token authorized from any channel is readable from every
+channel, and a user with only a phone/Telegram/Slack id (no email) is handled
+identically to one with an email.
+
 Service naming convention (``EMAIL_TO_SERVICE``):
     google              — default / legacy / primary
     google-draas        — ndr@draas.com
@@ -35,6 +42,7 @@ import base64
 import json
 import logging
 import os
+import re
 
 from googleapiclient.discovery import build
 from google.oauth2.credentials import Credentials
@@ -123,6 +131,38 @@ def _current_telegram_id() -> str:
     return tid
 
 
+def canonical_uid(channel_id) -> str:
+    """Resolve a raw channel identifier to the canonical vault user_id.
+
+    The canonical user_id is a channel-agnostic surrogate (e.g.
+    ``ndr-7449813913``) stored in the vault identity records.  Every raw
+    identifier — Telegram numeric id, SSO email, slug — resolves to it via the
+    vault ``resolve`` op, so a token written after one channel's OAuth is
+    readable from every channel, and the read path can satisfy the vault's
+    ``session_uid == user_id`` check by passing the same canonical id as both.
+
+    Falls back to the raw id when the vault can't resolve it, so single-key /
+    unmigrated users keep working unchanged.
+    """
+    cid = str(channel_id or "").strip()
+    if not cid:
+        return cid
+    try:
+        from tools import gws_vault_client as vault
+
+        if cid.isdigit():
+            uid = vault.resolve("telegram", cid)
+        elif "@" in cid:
+            uid = vault.resolve("email", cid)
+        else:
+            uid = vault.resolve("slug", cid) or vault.resolve("draas_user_id", cid)
+        if uid:
+            return uid
+    except Exception:
+        logger.debug("canonical_uid: vault resolve failed for %r", cid, exc_info=True)
+    return cid
+
+
 def _parse_state(state: str) -> tuple[str, str]:
     """Parse the OAuth state parameter.
 
@@ -192,27 +232,31 @@ def load_credentials(telegram_id: str, service_name: str = _DEFAULT_SERVICE) -> 
     direct the user to authorize via :func:`get_auth_url`.
 
     Args:
-        telegram_id:  Telegram numeric ID for the user.
+        telegram_id:  Session's raw channel id (Telegram numeric id, etc.).
+                      Resolved to the canonical vault user_id internally.
         service_name: Vault service key (e.g. ``"google-draas"``).
     """
     from tools import gws_vault_client as vault
-    token_json = vault.get_token(
-        str(telegram_id), service_name, session_uid=str(telegram_id)
-    )
+    uid = canonical_uid(telegram_id)
+    token_json = vault.get_token(uid, service_name, session_uid=uid)
     creds = Credentials.from_authorized_user_info(
         json.loads(token_json), HERMES_GWS_SCOPES
     )
     if creds.expired and creds.refresh_token:
         from google.auth.transport.requests import Request
         creds.refresh(Request())
-        vault.set_token(str(telegram_id), service_name, creds.to_json())
+        vault.set_token(uid, service_name, creds.to_json())
     return creds
 
 
-def save_credentials(telegram_id: str, creds: Credentials, service_name: str = _DEFAULT_SERVICE) -> None:
-    """Store OAuth credentials in the gws-vault daemon under the given service key."""
+def save_credentials(user_id: str, creds: Credentials, service_name: str = _DEFAULT_SERVICE) -> None:
+    """Store OAuth credentials in the gws-vault daemon under the given service key.
+
+    ``user_id`` must already be the canonical vault user_id (callers resolve it
+    via :func:`canonical_uid` before storing).
+    """
     from tools import gws_vault_client as vault
-    vault.set_token(str(telegram_id), service_name, creds.to_json())
+    vault.set_token(str(user_id), service_name, creds.to_json())
 
 
 def build_service(api: str, version: str, telegram_id: str = None, service_name: str = _DEFAULT_SERVICE):
@@ -277,18 +321,19 @@ def get_auth_url(telegram_id: str, login_hint: str = None) -> str:
 def exchange_and_store(telegram_id: str, code: str, service_name: str | None = None) -> str:
     """Exchange an auth code for tokens and store them in the vault.
 
-    Tokens are stored under the user's ``draas_user_id`` (resolved from
-    the vault-backed user registry), NOT the raw Telegram ID.  This keeps the
-    vault key stable regardless of which channel the user connects from.
+    Tokens are keyed by the **canonical** vault user_id (resolved from the
+    session's raw channel id via :func:`canonical_uid`), so a token authorized
+    from any channel (Telegram, Open WebUI) is readable from every channel and
+    the read path can satisfy the vault's ``session_uid == user_id`` check.
 
-    Service name is taken from the user's ``gws_service`` config field in
-    their profile when not supplied explicitly.  Falls back to auto-detecting
-    from the id_token email via ``EMAIL_TO_SERVICE``, then to ``"google"``.
+    The vault service key is chosen from the *authorized* Google account's
+    email (decoded from the id_token) via ``EMAIL_TO_SERVICE`` — NOT from any
+    profile default — so authorizing a second account never overwrites the
+    first.
 
-    Returns the chosen service name.
+    Returns the chosen service name (or ``UNKNOWN:{email}:{svc}`` for accounts
+    not yet mapped in ``EMAIL_TO_SERVICE``).
     """
-    from tools._user_registry import get_user_config
-
     flow = Flow.from_client_config(
         _client_config(),
         scopes=HERMES_GWS_SCOPES,
@@ -297,54 +342,53 @@ def exchange_and_store(telegram_id: str, code: str, service_name: str | None = N
     )
     flow.fetch_token(code=code)
 
-    # Resolve telegram_id → draas_user_id; fall back to telegram_id if unknown.
-    user_cfg = get_user_config(str(telegram_id)) or {}
-    vault_uid = user_cfg.get("draas_user_id") or str(telegram_id)
+    # Resolve the session's raw channel id → canonical vault user_id.
+    uid = canonical_uid(telegram_id)
 
     if service_name is not None:
-        save_credentials(vault_uid, flow.credentials, service_name)
-        logger.info("GWS token stored vault_uid=%s service=%s", vault_uid, service_name)
+        save_credentials(uid, flow.credentials, service_name)
+        logger.info("GWS token stored user_id=%s service=%s", uid, service_name)
         return service_name
 
-    # Auto-detect service from user config first, then id_token email.
-    configured_svc = user_cfg.get("gws_service", "")
-
+    # Service is chosen from the AUTHORIZED account's email so a second
+    # account never clobbers the first.
     id_token = getattr(flow.credentials, "id_token", None)
     email = _decode_id_token_email(id_token) if id_token else None
 
     if email:
-        svc = configured_svc or EMAIL_TO_SERVICE.get(email, "")
+        svc = EMAIL_TO_SERVICE.get(email)
         if svc:
-            save_credentials(vault_uid, flow.credentials, svc)
+            save_credentials(uid, flow.credentials, svc)
             logger.info(
-                "GWS token stored vault_uid=%s service=%s (email=%s)",
-                vault_uid, svc, email,
+                "GWS token stored user_id=%s service=%s (email=%s)", uid, svc, email
             )
             return svc
 
-        # Unknown email — store under fallback so token is never lost.
-        fallback_svc = f"google:{email.replace('@', '_at_')}"
-        save_credentials(vault_uid, flow.credentials, fallback_svc)
+        # Unknown email — store under a vault-valid fallback key so the token
+        # is never lost.  Service names must match ^[a-z][a-z0-9-]{0,49}$.
+        local = re.sub(r"[^a-z0-9-]+", "-", email.split("@")[0].lower()).strip("-") or "acct"
+        fallback_svc = f"google-{local}"
+        save_credentials(uid, flow.credentials, fallback_svc)
         logger.info(
-            "GWS token stored vault_uid=%s fallback_service=%s email=%s",
-            vault_uid, fallback_svc, email,
+            "GWS token stored user_id=%s fallback_service=%s email=%s",
+            uid, fallback_svc, email,
         )
         return f"UNKNOWN:{email}:{fallback_svc}"
 
-    # No id_token at all — last resort.
-    svc = configured_svc or _DEFAULT_SERVICE
-    save_credentials(vault_uid, flow.credentials, svc)
+    # No id_token at all — last resort default key.
+    save_credentials(uid, flow.credentials, _DEFAULT_SERVICE)
     logger.warning(
-        "No id_token for telegram_id=%s — stored vault_uid=%s service=%s",
-        telegram_id, vault_uid, svc,
+        "No id_token for telegram_id=%s — stored user_id=%s service=%s",
+        telegram_id, uid, _DEFAULT_SERVICE,
     )
-    return svc
+    return _DEFAULT_SERVICE
 
 
 def has_token(telegram_id: str, service_name: str = _DEFAULT_SERVICE) -> bool:
     """Check if a token exists for the given user and service in the vault."""
     from tools import gws_vault_client as vault
-    return vault.has_token(str(telegram_id), service_name, session_uid=str(telegram_id))
+    uid = canonical_uid(telegram_id)
+    return vault.has_token(uid, service_name, session_uid=uid)
 
 
 def register_email_service(email: str, service_name: str, telegram_id: str) -> str:
@@ -354,7 +398,7 @@ def register_email_service(email: str, service_name: str, telegram_id: str) -> s
     account that was authorized under a fallback key (``UNKNOWN:...`` result).
 
     1. Adds ``email -> service_name``  to ``EMAIL_TO_SERVICE``.
-    2. If a fallback key ``google:{email_sanitized}`` exists, moves the token
+    2. If a fallback key ``google-{local}`` exists, moves the token
        to the new service name and deletes the fallback.
 
     Returns a status message.
@@ -366,13 +410,16 @@ def register_email_service(email: str, service_name: str, telegram_id: str) -> s
 
     EMAIL_TO_SERVICE[email] = service_name
 
-    # Check for a fallback key
-    fallback_svc = f"google:{email.replace('@', '_at_')}"
+    uid = canonical_uid(telegram_id)
+
+    # Check for a fallback key (must match the vault-valid form used above).
+    local = re.sub(r"[^a-z0-9-]+", "-", email.split("@")[0].lower()).strip("-") or "acct"
+    fallback_svc = f"google-{local}"
     try:
-        if vault.has_token(str(telegram_id), fallback_svc, session_uid=str(telegram_id)):
-            raw = vault.get_token(str(telegram_id), fallback_svc, session_uid=str(telegram_id))
-            vault.set_token(str(telegram_id), service_name, raw)
-            vault.delete_token(str(telegram_id), fallback_svc)
+        if vault.has_token(uid, fallback_svc, session_uid=uid):
+            raw = vault.get_token(uid, fallback_svc, session_uid=uid)
+            vault.set_token(uid, service_name, raw)
+            vault.delete_token(uid, fallback_svc)
             return f"Registered {email} -> {service_name} and moved fallback token."
         else:
             return f"Registered {email} -> {service_name} (no fallback token to rename)."
