@@ -270,11 +270,11 @@ def exchange_and_store(telegram_id: str, code: str, service_name: str | None = N
     """Exchange an auth code for tokens and store them in the vault.
 
     Tokens are stored under the user's ``draas_user_id`` (resolved from
-    ``telegram_id`` via users.json), NOT the raw Telegram ID.  This keeps the
+    the vault-backed user registry), NOT the raw Telegram ID.  This keeps the
     vault key stable regardless of which channel the user connects from.
 
     Service name is taken from the user's ``gws_service`` config field in
-    users.json when not supplied explicitly.  Falls back to auto-detecting
+    their profile when not supplied explicitly.  Falls back to auto-detecting
     from the id_token email via ``EMAIL_TO_SERVICE``, then to ``"google"``.
 
     Returns the chosen service name.
