@@ -8,7 +8,7 @@ Instructions for AI coding assistants and developers working on the hermes-agent
 
 > **This section is canonical memory for the production Hermes deployment on Hetzner. Read it FIRST for any work involving the VPS, Docker, Telegram, N8N, GWS, Google Sheets, or service infrastructure. The same content also lives in `hermes-data/connections/hetzner.md` (under the Hermes project checkout) for editing — keep both in sync.**
 
-**Last updated:** 2026-06-29
+**Last updated:** 2026-07-08
 **Owner:** Nishant Ranka (admin)
 
 ### SSH Access
@@ -51,6 +51,7 @@ From Git Bash: `ssh root@178.105.35.94`. If non-default key, check `~/.ssh/confi
 | hermes | `./hermes-agent/Dockerfile` | internal | Telegram @NDRHermes_bot |
 | smart-browser | `./smart-browser/Dockerfile` | internal | — |
 | voice | `./voice-app/Dockerfile` | `127.0.0.1:3000` | https://voice.ahfl.in |
+| admin-app | `./admin-app/Dockerfile` | `127.0.0.1:8081` | https://admin.ahfl.in |
 | loki | `grafana/loki:2.9.4` | `127.0.0.1:3100` | — |
 | promtail | `grafana/promtail:2.9.4` | internal | — |
 | grafana | `grafana/grafana:10.4.2` | `127.0.0.1:3001` | https://monitor.ahfl.in |
@@ -83,9 +84,7 @@ python3 setup_oauth_credentials.py && exec hermes gateway run -v
 | `GOOGLE_AI_STUDIO_API_KEY` | also passed as `GEMINI_API_KEY`; secret |
 | `MINIMAX_API_KEY` | secret |
 | `GITHUB_TOKEN`, `GITHUB_REPO` | secret |
-| `DRAAS_OAUTH_CLIENT_ID` / `_SECRET` / `_REFRESH_TOKEN` | per-user GWS auth |
-| `AHFL_OAUTH_CLIENT_ID` / `_SECRET` / `_REFRESH_TOKEN` | per-user GWS auth |
-| `GMAIL_OAUTH_CLIENT_ID` / `_SECRET` / `_REFRESH_TOKEN` | per-user GWS auth |
+| `HERMES_OAUTH_CLIENT_ID` / `_SECRET` | SSO for the hermes GWS OAuth flow (see Google Workspace Auth below) |
 | `HERMES_FORCE_SKILL_SYNC` | optional flag |
 
 > **Note:** `GOOGLE_SA_KEY` appears in the compose file but is **DEAD** — the service-account approach was dropped 2026-05-08. All Google Workspace access now uses per-user OAuth (see GWS Auth below).
@@ -123,6 +122,34 @@ python3 setup_oauth_credentials.py && exec hermes gateway run -v
 - **Token storage (host):** `/opt/hermes/hermes-data/users/{telegram_id}/gws_token.json`
 - **Client env vars:** `HERMES_OAUTH_CLIENT_ID` + `HERMES_OAUTH_CLIENT_SECRET`
 - **Auth callback:** `https://transcribe.ahfl.in/gws/auth/callback`
+
+### Google OAuth — App-level SSO clients
+
+Three apps do Google sign-in without using Google APIs; each needs only the
+`openid email profile` scopes. Two Google Cloud projects / OAuth clients
+are in play — they are **deliberately split** because the hermes-gateway
+client (GCP `353166898892`) requests sensitive GWS scopes (Gmail/Calendar/
+Drive/etc.) and apps that don't need those scopes use a separate client
+(GCP `302891526695`) to avoid pulling the GWS client into a fresh
+auth-flow surface.
+
+| App | OAuth env var | GCP project | OAuth client ID | Redirect URI |
+|---|---|---|---|---|
+| `tools/gws_auth.py` (hermes gateway) | `HERMES_OAUTH_CLIENT_ID` | 353166898892 | `353166898892-1i1vl4p3uakjahefg11jpvrhnclei5l3…` | `https://transcribe.ahfl.in/gws/auth/callback` |
+| `oauth2-proxy` (monitor.ahfl.in, chat.ahfl.in) | `OAUTH2_PROXY_CLIENT_ID` | 353166898892 *(same client as hermes)* | `353166898892-1i1vl4p3uakjahefg11jpvrhnclei5l3…` | `https://monitor.ahfl.in/oauth2/callback`, `https://chat.ahfl.in/oauth2/callback` |
+| `voice-app` (voice.ahfl.in) | `GOOGLE_CLIENT_ID` | 302891526695 | `302891526695-j1fd6kbshrh0i0hdrkn1dv10mgputpo6…` | `https://voice.ahfl.in/auth/google/callback` |
+| `admin-app` (admin.ahfl.in) | `GOOGLE_CLIENT_ID` | 302891526695 *(same client as voice)* | `302891526695-j1fd6kbshrh0i0hdrkn1dv10mgputpo6…` | `https://admin.ahfl.in/auth/callback` |
+
+> **Adding a new redirect URI to an existing OAuth client:** Google Cloud
+> Console → APIs & Services → Credentials → click the OAuth 2.0 Client ID →
+> Authorized redirect URIs → Add URI → Save. Changes propagate in seconds.
+
+> **Note:** `voice.ahfl.in` and `admin.ahfl.in` share the same OAuth
+> client because the author of `admin-app` wired it to the same env var
+> the voice-app already used. They are **different GCP projects** from
+> the hermes-gateway / oauth2-proxy client (353166898892). If you need to
+> rotate credentials, rotate per-project; the two clients do not share
+> client_secrets.
 
 ### Data Paths (host)
 
