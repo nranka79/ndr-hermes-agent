@@ -145,6 +145,10 @@
       - ./hermes-agent/gateway/platforms/api_server.py:/opt/hermes/gateway/platforms/api_server.py:ro
       - ./hermes-agent/gateway/platforms/identity_resolver.py:/opt/hermes/gateway/platforms/identity_resolver.py:ro
       - ./hermes-agent/gateway/session.py:/opt/hermes/gateway/session.py:ro
+      # send_oauth_url pilot (Jul 2026): bind-mount toolsets.py so the new
+      # 'oauth' toolset (which includes send_oauth_url) gets pulled in via
+      # the 'messaging' toolset. Remove once the image is rebuilt.
+      - ./hermes-agent/toolsets.py:/opt/hermes/toolsets.py:ro
       - /run/gws-vault:/run/gws-vault
     logging:
       driver: json-file
