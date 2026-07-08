@@ -202,6 +202,27 @@ def _decode_id_token_email(id_token: str) -> str | None:
         return None
 
 
+def _account_email(creds) -> str | None:
+    """Return the authoritative email of the authorized Google account.
+
+    Prefers the ``id_token`` email (present only when the ``openid``/``email``
+    scope is granted).  Falls back to the Gmail profile — which uses the
+    ``gmail.modify`` scope we always request — so the correct account is
+    identified even without the ``openid`` scope, and a token is always filed
+    under the right service key.
+    """
+    id_token = getattr(creds, "id_token", None)
+    email = _decode_id_token_email(id_token) if id_token else None
+    if email:
+        return email
+    try:
+        gm = build("gmail", "v1", credentials=creds)
+        return gm.users().getProfile(userId="me").execute().get("emailAddress") or None
+    except Exception:
+        logger.debug("account email: gmail getProfile fallback failed", exc_info=True)
+        return None
+
+
 def _detect_service_from_credentials(creds: Credentials) -> str | None:
     """Try to determine the vault service name from the credentials.
 
@@ -351,9 +372,9 @@ def exchange_and_store(telegram_id: str, code: str, service_name: str | None = N
         return service_name
 
     # Service is chosen from the AUTHORIZED account's email so a second
-    # account never clobbers the first.
-    id_token = getattr(flow.credentials, "id_token", None)
-    email = _decode_id_token_email(id_token) if id_token else None
+    # account never clobbers the first.  Uses id_token when the openid scope
+    # is present, else falls back to the Gmail profile (gmail.modify scope).
+    email = _account_email(flow.credentials)
 
     if email:
         svc = EMAIL_TO_SERVICE.get(email)
