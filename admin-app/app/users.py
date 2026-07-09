@@ -19,6 +19,7 @@ VAULT_SERVICE_NAMES = {
     "tasks": "tasks",
     "contacts": "contacts",
     "drive": "drive",
+    "vocab": "STT vocabulary",
 }
 
 
@@ -90,8 +91,20 @@ async def view_user(request: Request, user_id: str):
         return HTMLResponse(env.get_template("error.html").render(
             user=request.session.get("user"), error=str(e)
         ), status_code=500)
+
+    # get_identity's "identities" field nests every alias as {type: [values]}
+    # (a user_id can have multiple emails/telegram ids). Flatten to a
+    # display string for the summary card; the full nested map still goes
+    # to the template for the per-alias delete list.
+    identities_map = identity.get("identities", {}) or {}
+    emails = identities_map.get("email", [])
+    telegrams = identities_map.get("telegram", [])
+
     return HTMLResponse(env.get_template("user_detail.html").render(
         user=request.session.get("user"), user_data=identity,
+        identities_map=identities_map,
+        email_display=", ".join(emails) if emails else "-",
+        telegram_display=", ".join(telegrams) if telegrams else "-",
         services=services, VAULT_SERVICE_NAMES=VAULT_SERVICE_NAMES,
     ))
 

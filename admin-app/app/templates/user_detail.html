@@ -18,24 +18,24 @@
                     <dd class="col-sm-8">{{ user_data.get('role', 'employee') }}</dd>
 
                     <dt class="col-sm-4">Email</dt>
-                    <dd class="col-sm-8">{{ user_data.get('email', '-') }}</dd>
+                    <dd class="col-sm-8">{{ email_display }}</dd>
 
                     <dt class="col-sm-4">Telegram</dt>
-                    <dd class="col-sm-8">{{ user_data.get('telegram', '-') }}</dd>
+                    <dd class="col-sm-8">{{ telegram_display }}</dd>
 
                     <dt class="col-sm-4">Permissions</dt>
                     <dd class="col-sm-8"><code>{{ user_data.get('permissions', {}) }}</code></dd>
                 </dl>
+                <p class="text-muted small mb-0">Editing role/permissions/app-access isn't wired up yet — coming in a follow-up pilot.</p>
             </div>
         </div>
 
         <div class="card mt-3">
             <div class="card-header">Identities</div>
             <div class="card-body">
-                {% set types = ['email', 'telegram', 'slug'] %}
-                {% for t in types %}
-                    {% set val = user_data.get(t) %}
-                    {% if val %}
+                <p class="text-muted small">All aliases (email/telegram/etc) this user_id resolves from. Each can be individually removed.</p>
+                {% for t, values in identities_map.items() %}
+                    {% for val in values %}
                     <form method="post" action="/users/{{ user_data.user_id }}/delete-identity" style="display:inline">
                         <input type="hidden" name="identity_type" value="{{ t }}">
                         <input type="hidden" name="identity_value" value="{{ val }}">
@@ -43,7 +43,9 @@
                         <button type="submit" class="btn btn-sm btn-outline-danger" onclick="return confirm('Remove this identity?')">Remove</button>
                         <br>
                     </form>
-                    {% endif %}
+                    {% endfor %}
+                {% else %}
+                    <p class="text-muted mb-0">No identities on record.</p>
                 {% endfor %}
             </div>
         </div>

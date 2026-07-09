@@ -2,7 +2,7 @@ import os
 import logging
 
 from fastapi import FastAPI, Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 
@@ -44,7 +44,7 @@ def create_app() -> FastAPI:
     @app.get("/")
     async def root(request: Request):
         user = request.session.get("user")
-        return env.get_template("dashboard.html").render(user=user)
+        return HTMLResponse(env.get_template("dashboard.html").render(user=user))
 
     app.include_router(auth_router, prefix="/auth")
     app.include_router(users_router, prefix="/users")
