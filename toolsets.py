@@ -79,6 +79,10 @@ _HERMES_CORE_TOOLS = [
     "call_openrouter_model",
     # User management (admin-only, gated inside the handler)
     "manage_user",
+    # WhatsApp deep-link generator -- sole sanctioned way to build wa.me URLs
+    "whatsapp_link",
+    # GWS multi-account resolver -- maps account email/label -> vault service_name
+    "gws_resolve_account",
 ]
 
 # Webhook events may originate from untrusted third-party content (for example,
