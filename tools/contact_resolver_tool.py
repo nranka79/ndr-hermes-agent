@@ -16,7 +16,7 @@ Returns ranked candidates with full contact details (phones, emails, org) ready
 for the calling skill to present — no further sheet reads needed by the model.
 
 Registered as: contact_resolver
-Toolset: google_workspace
+Toolset: general
 """
 
 import json
@@ -89,43 +89,51 @@ def _field_score(query_norm: str, field_norm: str, base: float) -> float:
     return base * f if f >= 0.75 else 0.0
 
 
-# Static per-account credential files written at startup by
-# setup_oauth_credentials.py from Docker Compose env vars (Hetzner host,
-# NOT Railway). Same pattern as
-# noun_learner_tool.py._build_service() -- these are pre-authorized
-# accounts (refresh token already granted), not accounts a user
-# authorizes live via tools.gws_auth.get_auth_url(). Do NOT route this
-# through the vault/live-OAuth flow -- that uses a different OAuth
-# client (HERMES_OAUTH_CLIENT_ID/SECRET) than the one these accounts
-# were actually authorized under (DRAAS_/AHFL_/GMAIL_OAUTH_CLIENT_ID),
-# and will fail with a client-ID mismatch on Google's side.
-_ACCOUNT_CRED_FILES = {
-    "ndr@draas.com":          ("DRAAS_CRED_FILE", "/data/hermes/oauth-draas.json"),
-    "ndr@ahfl.in":            ("AHFL_CRED_FILE", "/data/hermes/oauth-ahfl.json"),
-    "nishantranka@gmail.com": ("GMAIL_CRED_FILE", "/data/hermes/oauth-gmail.json"),
-}
+# Per-user OAuth via the gws-vault daemon -- the ONLY Google Workspace auth
+# mechanism in this system (there is no service account / domain-wide
+# delegation anywhere; see hermes-data/SOUL.md, AGENTS.md). Static
+# per-account credential files (DRAAS_CRED_FILE etc.) were a dead,
+# pre-vault-migration path and have been removed -- those files no longer
+# exist on the host.
+def _build_svc(account_email: str | None = None):
+    """Return a Google Sheets API service for the contacts registry.
 
+    account_email: optional override -- an email address (e.g.
+    'ndr@draas.com') or short label ('draas'/'ahfl'/'gmail') identifying
+    which Google account's vault token to use. If omitted, defaults to the
+    current session user's own configured gws_service (from their profile
+    in tools._user_registry), same as noun_resolver.py.
+    """
+    from tools import gws_auth
+    from gateway.session_context import get_session_env
 
-def _build_svc(account_email: str = "ndr@draas.com"):
-    from google.oauth2.credentials import Credentials
-    from google.auth.transport.requests import Request as GoogleRequest
-    from googleapiclient.discovery import build
+    session_uid = get_session_env("HERMES_SESSION_USER_ID", "")
+    if not session_uid:
+        raise RuntimeError(
+            "Cannot identify session user for Google Sheets access "
+            "(HERMES_SESSION_USER_ID not set)."
+        )
 
-    env_key, default_path = _ACCOUNT_CRED_FILES.get(
-        account_email, _ACCOUNT_CRED_FILES["ndr@draas.com"]
+    if account_email:
+        from tools.gws_account_resolver_tool import _resolve_one
+        resolved = _resolve_one(account_email)
+        if "error" in resolved:
+            raise RuntimeError(resolved["error"])
+        service_name = resolved["service_name"]
+    else:
+        from tools._user_registry import get_user_config
+        cfg = get_user_config(session_uid) or {}
+        service_name = cfg.get("gws_service")
+        if not service_name:
+            raise RuntimeError(
+                f"User {session_uid!r} has no gws_service configured in their "
+                "profile. An admin must set 'gws_service', or pass account_email "
+                "explicitly (call gws_resolve_account to see valid accounts)."
+            )
+
+    return gws_auth.build_service(
+        "sheets", "v4", telegram_id=session_uid, service_name=service_name
     )
-    cred_file = os.environ.get(env_key, default_path)
-    with open(cred_file) as f:
-        data = json.load(f)
-    creds = Credentials(
-        token=None,
-        refresh_token=data["refresh_token"],
-        client_id=data["client_id"],
-        client_secret=data["client_secret"],
-        token_uri="https://oauth2.googleapis.com/token",
-    )
-    creds.refresh(GoogleRequest())
-    return build("sheets", "v4", credentials=creds)
 
 
 def _read_range(svc, range_str: str) -> list:
@@ -409,7 +417,7 @@ def _hydrate(svc, row_num: int, cand: dict, header: list) -> dict:
 def _handle_contact_resolver(args: dict, **_) -> str:
     query         = (args.get("query") or "").strip()
     context       = (args.get("context") or "").strip()
-    account_email = (args.get("account_email") or "ndr@draas.com").strip()
+    account_email = (args.get("account_email") or "").strip()
 
     if not query:
         return json.dumps({"error": "query is required"})
@@ -418,7 +426,7 @@ def _handle_contact_resolver(args: dict, **_) -> str:
     ctx_norm    = _normalize(context)
 
     try:
-        svc = _build_svc(account_email)
+        svc = _build_svc(account_email or None)
     except Exception as e:
         return json.dumps({"error": f"Sheets connection failed: {e}"})
 
@@ -532,7 +540,12 @@ _SCHEMA = {
             },
             "account_email": {
                 "type": "string",
-                "description": "Google account to use. Defaults to ndr@draas.com.",
+                "description": (
+                    "Optional: override which Google account's token to use "
+                    "-- an email address (e.g. 'ndr@draas.com') or short label "
+                    "('draas'/'ahfl'/'gmail'). Defaults to the current session "
+                    "user's own configured account."
+                ),
             },
         },
         "required": ["query"],
@@ -543,12 +556,9 @@ _SCHEMA = {
 # ── Availability check ─────────────────────────────────────────────────────────
 
 def _check_available() -> bool:
-    cred_file = os.environ.get("DRAAS_CRED_FILE", "/data/hermes/oauth-draas.json")
-    if not os.path.exists(cred_file):
-        return False
     try:
-        import googleapiclient
-        from google.oauth2.credentials import Credentials
+        import googleapiclient  # noqa: F401
+        from google.oauth2.credentials import Credentials  # noqa: F401
         return True
     except ImportError:
         return False

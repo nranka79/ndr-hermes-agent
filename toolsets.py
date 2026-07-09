@@ -83,6 +83,10 @@ _HERMES_CORE_TOOLS = [
     "whatsapp_link",
     # GWS multi-account resolver -- maps account email/label -> vault service_name
     "gws_resolve_account",
+    # Contacts/entities registry lookup (fuzzy/ranked search across the
+    # Google Sheets registry) -- per-user OAuth via gws_auth, no SA/DWD.
+    "contact_resolver",
+    "entity_resolver",
 ]
 
 # Webhook events may originate from untrusted third-party content (for example,
