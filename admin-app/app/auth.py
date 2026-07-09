@@ -19,6 +19,14 @@ ADMIN_EMAILS = set(e.strip() for e in os.environ.get("ADMIN_EMAILS", "").split("
 
 GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
+GOOGLE_CERTS_URL = "https://www.googleapis.com/oauth2/v3/certs"
+GOOGLE_ISSUERS = {"https://accounts.google.com", "accounts.google.com"}
+JWKS_CACHE_TTL_SECONDS = 3600
+
+# In-memory JWKS cache — module-level so it survives across requests within
+# one worker process. Google rotates these keys infrequently; re-fetching on
+# every login would be wasteful and adds latency to every callback.
+_jwks_cache: dict = {"keys": None, "fetched_at": 0.0}
 
 
 @router.get("/login")
@@ -56,18 +64,22 @@ async def callback(request: Request, code: Optional[str] = None, error: Optional
 
     tokens = resp.json()
     id_token = tokens.get("id_token")
+    access_token = tokens.get("access_token")
     if not id_token:
         return _error_page(request, "No id_token in response")
 
-    from jose import jwt
     try:
-        claims = jwt.get_unverified_claims(id_token)
+        claims = await _verify_google_id_token(id_token, access_token)
     except Exception as e:
-        return _error_page(request, f"Invalid id_token: {e}")
+        logger.warning(f"id_token verification failed: {e}")
+        return _error_page(request, "Login verification failed — invalid or tampered token")
 
     email = claims.get("email", "")
     name = claims.get("name", email)
     picture = claims.get("picture", "")
+
+    if not claims.get("email_verified", False):
+        return _error_page(request, f"Access denied: {email} email is not verified by Google")
 
     if not email:
         return _error_page(request, "No email in Google profile")
@@ -88,6 +100,58 @@ async def callback(request: Request, code: Optional[str] = None, error: Optional
 async def logout(request: Request):
     request.session.clear()
     return RedirectResponse(url="/auth/login")
+
+
+async def _get_google_jwks() -> dict:
+    """Fetch (and cache) Google's current JWK set used to sign id_tokens."""
+    now = time.time()
+    if _jwks_cache["keys"] is None or (now - _jwks_cache["fetched_at"]) > JWKS_CACHE_TTL_SECONDS:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(GOOGLE_CERTS_URL, timeout=10)
+            resp.raise_for_status()
+            _jwks_cache["keys"] = resp.json()
+            _jwks_cache["fetched_at"] = now
+    return _jwks_cache["keys"]
+
+
+async def _verify_google_id_token(id_token: str, access_token: Optional[str] = None) -> dict:
+    """Verify a Google-issued id_token's signature, audience, and issuer.
+
+    Raises on any failure (bad signature, expired, wrong audience/issuer,
+    unknown key id). Only returns claims once cryptographic verification
+    has actually passed — replaces the previous ``get_unverified_claims``
+    call, which accepted any well-formed JWT regardless of who signed it.
+
+    ``access_token`` is passed through so jose can validate the ``at_hash``
+    claim Google embeds in the id_token (a hash of the access_token, proving
+    both were issued in the same response). Without it, jose raises rather
+    than silently skipping the check.
+    """
+    from jose import jwt as jose_jwt
+    from jose.exceptions import JWTError
+
+    decode_kwargs = dict(
+        algorithms=["RS256"],
+        audience=GOOGLE_CLIENT_ID,
+        options={"verify_iss": False},  # validated manually below (jose's iss check is single-value only)
+    )
+    if access_token:
+        decode_kwargs["access_token"] = access_token
+
+    jwks = await _get_google_jwks()
+    try:
+        claims = jose_jwt.decode(id_token, jwks, **decode_kwargs)
+    except JWTError:
+        # Key set may have rotated since our cache was populated — retry once
+        # with a forced refresh before giving up.
+        _jwks_cache["keys"] = None
+        jwks = await _get_google_jwks()
+        claims = jose_jwt.decode(id_token, jwks, **decode_kwargs)
+
+    if claims.get("iss") not in GOOGLE_ISSUERS:
+        raise ValueError(f"Unexpected issuer: {claims.get('iss')!r}")
+
+    return claims
 
 
 def _is_authorized(email: str) -> bool:
