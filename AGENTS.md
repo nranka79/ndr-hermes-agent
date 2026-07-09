@@ -118,8 +118,7 @@ python3 setup_oauth_credentials.py && exec hermes gateway run -v
 
 - **Approach:** per-user OAuth2 refresh tokens (NOT service account / DWD — those are dead)
 - **Module:** `tools/gws_auth.py` → `build_service(telegram_id, service_name)`
-- **Token storage (container):** `/data/hermes/users/{telegram_id}/gws_token.json`
-- **Token storage (host):** `/opt/hermes/hermes-data/users/{telegram_id}/gws_token.json`
+- **Token storage:** gws-vault daemon (Unix socket `/run/gws-vault/vault.sock`), NOT a filesystem path. Keyed by `(canonical_uid, service_name)` — canonical_uid is resolved from the session's raw channel id (Telegram id / email / slug) via the vault's `resolve` op; service_name is a per-Google-account slug (`google-draas`, `google-ahfl`, `google-gmail`, ...). Use the `gws_resolve_account` tool to look up the right service_name instead of guessing. The old filesystem path (`.../users/{telegram_id}/gws_token.json`) was the pre-vault-migration storage and is dead.
 - **Client env vars:** `HERMES_OAUTH_CLIENT_ID` + `HERMES_OAUTH_CLIENT_SECRET`
 - **Auth callback:** `https://transcribe.ahfl.in/gws/auth/callback`
 
