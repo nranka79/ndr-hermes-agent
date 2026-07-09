@@ -8,6 +8,11 @@ Special encoding rule: literal '&' in the message text is encoded as
 standard %26.  This prevents the ampersand from being misinterpreted as a
 query-parameter separator by WhatsApp's URL parser while still surviving
 round-trips through browsers and messaging apps that normalise %26 back to '&'.
+
+This is the ONLY sanctioned way to build a wa.me URL. Do not hand-encode one
+with urllib.parse or any other method — the encoding rule above is easy to
+get wrong (over-encoding '%' or '+' breaks the link on mobile) and this tool
+is the single source of truth for it.
 """
 
 import json
@@ -21,8 +26,12 @@ WHATSAPP_LINK_SCHEMA = {
     "description": (
         "Generate a wa.me deep link that opens WhatsApp with an optional "
         "pre-filled message and/or recipient phone number.\n\n"
-        "IMPORTANT: Use this tool EVERY TIME you need to create a WhatsApp "
-        "link. Never construct wa.me URLs manually."
+        "MANDATORY: This is the ONLY sanctioned way to produce a wa.me URL. "
+        "You MUST call this tool EVERY TIME you need one — never construct, "
+        "hand-encode, or type a wa.me URL manually (including via "
+        "execute_code/urllib.parse or any other tool). Manual encoding is "
+        "known to break on mobile WhatsApp clients. If this tool is "
+        "unavailable, tell the user rather than improvising an encoding."
     ),
     "parameters": {
         "type": "object",
