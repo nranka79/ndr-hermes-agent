@@ -1272,6 +1272,17 @@ def execute_code(
         except Exception:
             pass
 
+        # Pass through the vault socket path so gws_auth.py (imported by
+        # sandbox scripts) can reach gws-vault for token lookups. Only the
+        # socket *path* is non-secret; GWS_VAULT_SECRET stays blocked by the
+        # _SECRET_SUBSTRINGS filter in _scrub_child_env -- read ops
+        # (resolve/get) don't need it, only admin write ops do (see
+        # gws_vault_client.py docstring). Same after-scrub re-injection
+        # pattern as HERMES_SESSION_USER_ID/TZ/HOME above (#gws-vault-sandbox).
+        _vault_sock = os.environ.get("GWS_VAULT_SOCKET", "").strip()
+        if _vault_sock:
+            child_env["GWS_VAULT_SOCKET"] = _vault_sock
+
         # Per-profile HOME isolation: redirect system tool configs into
         # {HERMES_HOME}/home/ when that directory exists.
         from hermes_constants import get_subprocess_home

@@ -452,6 +452,30 @@ class TestSecurityInvariantsAcrossModes(unittest.TestCase):
                        "auth-should-not-leak"):
             self.assertNotIn(leaked, result["output"])
 
+    def test_gws_vault_socket_passed_through_but_secret_blocked(self):
+        """GWS_VAULT_SOCKET (a path, non-secret) must reach the sandbox so
+        gws_auth.py / gws_vault_client.py (imported by sandbox scripts that
+        call build_service()) can find the vault -- see #vault-socket-not-
+        available bug where execute_code silently dropped it. GWS_VAULT_SECRET
+        must stay blocked (matches the SECRET substring filter): read ops
+        (resolve/get) never need it, only admin write ops do."""
+        lines = [
+            "import os",
+            "print('SOCK=' + os.environ.get('GWS_VAULT_SOCKET', 'MISSING'))",
+            "print('SEC=' + os.environ.get('GWS_VAULT_SECRET', 'MISSING'))",
+        ]
+        code = "\n".join(lines) + "\n"
+        for mode in ("strict", "project"):
+            with patch.dict(os.environ, {
+                "GWS_VAULT_SOCKET": "/run/gws-vault/vault.sock",
+                "GWS_VAULT_SECRET": "should-not-leak",
+            }):
+                result = self._run(code, mode=mode)
+            self.assertEqual(result["status"], "success")
+            self.assertIn("SOCK=/run/gws-vault/vault.sock", result["output"])
+            self.assertIn("SEC=MISSING", result["output"])
+            self.assertNotIn("should-not-leak", result["output"])
+
     def test_tool_whitelist_enforced_in_strict_mode(self):
         """A script cannot RPC-call tools outside SANDBOX_ALLOWED_TOOLS."""
         # execute_code is NOT in SANDBOX_ALLOWED_TOOLS (no recursion)
