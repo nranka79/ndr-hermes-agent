@@ -447,9 +447,20 @@ class HonchoMemoryProvider(MemoryProvider):
         try:
             if not session.messages and cfg.session_strategy != "per-session":
                 from hermes_constants import get_hermes_home
-                mem_dir = str(get_hermes_home() / "memories")
+                # Per-user isolation (2026-07-10): migrate from the SAME
+                # per-user bucket the built-in MemoryStore now uses (see
+                # agent/user_identity.py), keyed off the same honcho.json
+                # userPeerAliases this session's peer id already came from --
+                # otherwise this would upload whichever user's shared flat
+                # MEMORY.md/USER.md happened to exist into THIS peer's record.
+                from agent.user_identity import resolve_canonical_user_id
+                _canonical_uid = resolve_canonical_user_id(
+                    kwargs.get("user_id"), kwargs.get("user_id_alt"),
+                    platform=kwargs.get("platform", ""),
+                )
+                mem_dir = str(get_hermes_home() / "memories" / _canonical_uid) if _canonical_uid else str(get_hermes_home() / "memories")
                 self._manager.migrate_memory_files(self._session_key, mem_dir)
-                logger.debug("Honcho memory file migration attempted for new session: %s", self._session_key)
+                logger.debug("Honcho memory file migration attempted for new session: %s (mem_dir=%s)", self._session_key, mem_dir)
             elif cfg.session_strategy == "per-session":
                 logger.debug(
                     "Honcho memory file migration skipped: per-session strategy creates a fresh session per run (%s)",

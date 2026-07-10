@@ -1116,9 +1116,20 @@ def init_agent(
             agent._memory_nudge_interval = int(mem_config.get("nudge_interval", 10))
             if agent._memory_enabled or agent._user_profile_enabled:
                 from tools.memory_tool import MemoryStore
+                from agent.user_identity import resolve_canonical_user_id
+                # Per-user isolation (2026-07-10): resolve the same canonical
+                # identity Honcho uses (honcho.json userPeerAliases) so each
+                # platform user gets their own MEMORY.md/USER.md instead of
+                # one file shared by everyone talking to the bot. Empty
+                # string (no user_id -- CLI/local sessions) keeps the
+                # historical flat memories/ path.
+                _canonical_uid = resolve_canonical_user_id(
+                    agent._user_id, agent._user_id_alt, platform=platform or "cli",
+                )
                 agent._memory_store = MemoryStore(
                     memory_char_limit=mem_config.get("memory_char_limit", 2200),
                     user_char_limit=mem_config.get("user_char_limit", 1375),
+                    canonical_user_id=_canonical_uid,
                 )
                 agent._memory_store.load_from_disk()
         except Exception:
