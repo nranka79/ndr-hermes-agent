@@ -5,7 +5,7 @@ from fastapi import APIRouter, Request, Form
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from .jinja_env import env
-from .vault_client import VaultClient
+from .vault_client import VaultClient, VaultError, MANAGED_APPS
 
 router = APIRouter()
 logger = logging.getLogger("admin-app.users")
@@ -100,13 +100,37 @@ async def view_user(request: Request, user_id: str):
     emails = identities_map.get("email", [])
     telegrams = identities_map.get("telegram", [])
 
+    # App-access flags: absent key => allowed by default (matches the
+    # fail-open enforcement in gateway/identity_resolver + authz_mixin).
+    apps_perms = (identity.get("permissions", {}) or {}).get("apps", {}) or {}
+    app_states = {app: apps_perms.get(app, True) for app in MANAGED_APPS}
+
     return HTMLResponse(env.get_template("user_detail.html").render(
         user=request.session.get("user"), user_data=identity,
         identities_map=identities_map,
         email_display=", ".join(emails) if emails else "-",
         telegram_display=", ".join(telegrams) if telegrams else "-",
         services=services, VAULT_SERVICE_NAMES=VAULT_SERVICE_NAMES,
+        managed_apps=MANAGED_APPS, app_states=app_states,
     ))
+
+
+@router.post("/{user_id}/apps")
+async def update_app_permissions(request: Request, user_id: str):
+    """Set per-app access from the checkbox form. Unchecked boxes don't POST,
+    so we compute the full desired state from MANAGED_APPS: present => True,
+    absent => False. set_app_permissions read-modify-writes, preserving
+    vault_admin/manage_users."""
+    vault: VaultClient = request.app.state.vault
+    form = await request.form()
+    desired = {app: (app in form) for app in MANAGED_APPS}
+    try:
+        vault.set_app_permissions(user_id, desired)
+    except VaultError as e:
+        return HTMLResponse(env.get_template("error.html").render(
+            user=request.session.get("user"), error=str(e)
+        ), status_code=500)
+    return RedirectResponse(url=f"/users/{user_id}", status_code=303)
 
 
 @router.post("/{user_id}/delete-identity")
