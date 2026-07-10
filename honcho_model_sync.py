@@ -4,8 +4,25 @@ Honcho model sync watcher.
 
 Polls the agent's config.yaml for changes to model.default / model.provider.
 When the agent's chat model changes, rewrites Honcho's config.toml to use
-the matching OpenRouter slug for [deriver] and [dialectic.levels.*] chat
-model blocks, then restarts the honcho-deriver container.
+the matching OpenRouter slug for [deriver], [dialectic.levels.*], and
+[dream.*_model_config] chat model blocks, then restarts BOTH the
+honcho-api and honcho-deriver containers. Dialectic is served by
+honcho-api, fact-extraction (deriver) and dream deduction/induction
+specialists by honcho-deriver -- both cache their Settings in memory from
+process start, so both must restart for a config.toml edit to actually
+take effect. Restarting only the deriver silently leaves honcho-api's
+dialectic calls on stale/default model config.
+
+Bug found 2026-07-10: dialectic.levels.low/medium/high/max and
+dream.deduction_model_config/induction_model_config had NO config.toml
+override at all and were silently falling back to Honcho's hardcoded
+"gpt-5.4-mini" default against OpenAI's real endpoint (api.openai.com) --
+fed our OpenRouter-shaped key, which OpenAI's real auth correctly rejects.
+Looked exactly like a bad API key (401 "Incorrect API key provided") but
+wasn't -- the key was fine, it was just being sent to the wrong provider
+for those specific unconfigured blocks. Only [dialectic.levels.minimal]
+and [deriver.model_config] had explicit overrides in the original
+template, so those two were the only paths that ever worked.
 
 Embedding model is NOT touched — chat LLMs and embedding models are not
 interchangeable. deepseek-v4-flash cannot generate embeddings, so the
@@ -13,7 +30,7 @@ embedding block stays pinned to openai/text-embedding-3-small unless you
 manually edit config.toml.
 
 State is tracked in /data/hermes/.honcho_model_sync_state.json so we only
-restart the deriver when something actually changes.
+restart the containers when something actually changes.
 """
 import json
 import os
@@ -114,11 +131,20 @@ def patch_honcho_config(new_slug: str) -> bool:
     """Rewrite every chat-model block in /opt/hermes-honcho/config.toml.
 
     Targets (regex inside the toml):
-      [deriver.model_config]            → model = "..."
-      [dialectic.levels.<name>.model_config]  → model = "..."
+      [deriver.model_config]                       → model = "..."
+      [dialectic.levels.<name>.model_config]        → model = "..."
+      [dream.deduction_model_config]                → model = "..."
+      [dream.induction_model_config]                → model = "..."
 
     Skips:
       [embedding.model_config]  (embedding model is pinned to text-embedding-3-small)
+
+    Only patches blocks that already exist in config.toml. All five
+    dialectic levels (minimal/low/medium/high/max) and both dream
+    specialist blocks must have an explicit [*.model_config] block for
+    this to keep them all in sync — a block that doesn't exist at all
+    silently uses Honcho's built-in default model, not this slug (see
+    module docstring).
 
     Implementation note: we do an in-place write (read+rewrite) rather than
     os.replace(tmp, target) because honcho-deriver holds the target file
@@ -147,6 +173,13 @@ def patch_honcho_config(new_slug: str) -> bool:
         content,
         flags=re.DOTALL,
     )
+    # Replace [dream.deduction_model_config] / [dream.induction_model_config]
+    content = re.sub(
+        r"(\[dream\.(?:deduction|induction)_model_config\][^\[]*?model = )\"[^\"]+\"",
+        rf'\1"{new_slug}"',
+        content,
+        flags=re.DOTALL,
+    )
     if content == original:
         return False  # nothing changed (shouldn't happen if slug changed)
     # In-place rewrite to avoid rename(EBUSY) when honcho-deriver has the
@@ -160,11 +193,20 @@ def patch_honcho_config(new_slug: str) -> bool:
     return True
 
 
-def restart_deriver() -> None:
+def restart_honcho() -> None:
+    """Restart both honcho-api and honcho-deriver.
+
+    Both containers load config.toml into an in-memory Settings object
+    once at process start and never re-read it. honcho-api serves the
+    dialectic (chat) endpoint; honcho-deriver serves background fact
+    extraction and dream deduction/induction. A config.toml edit only
+    takes effect for the container(s) restarted, so both must restart
+    together or one silently keeps running on stale config.
+    """
     subprocess.run(
         ["docker", "compose", "-f", "/opt/hermes/docker-compose.yml",
          "-f", "/opt/hermes/docker-compose.override.yml",
-         "restart", "honcho-deriver"],
+         "restart", "honcho-api", "honcho-deriver"],
         check=True,
         capture_output=True,
     )
@@ -190,12 +232,12 @@ def main() -> None:
                 continue
             print(f"  agent model changed: provider={provider} model={model} → {slug}")
             if patch_honcho_config(slug):
-                print(f"  patched {HONCHO_CONFIG}; restarting honcho-deriver")
+                print(f"  patched {HONCHO_CONFIG}; restarting honcho-api + honcho-deriver")
                 try:
-                    restart_deriver()
-                    print(f"  honcho-deriver restarted")
+                    restart_honcho()
+                    print(f"  honcho-api + honcho-deriver restarted")
                 except subprocess.CalledProcessError as e:
-                    print(f"  ERROR restarting deriver: {e.stderr.decode()}", file=sys.stderr)
+                    print(f"  ERROR restarting honcho: {e.stderr.decode()}", file=sys.stderr)
             state["last_slug"] = slug
             save_state(state)
         except Exception as e:
