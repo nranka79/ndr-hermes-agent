@@ -9,6 +9,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from .auth import router as auth_router
 from .users import router as users_router
 from .tokens import router as tokens_router
+from .vocab import router as vocab_router
 from .health import router as health_router
 from .jinja_env import env
 from .vault_client import VaultClient
@@ -49,6 +50,7 @@ def create_app() -> FastAPI:
     app.include_router(auth_router, prefix="/auth")
     app.include_router(users_router, prefix="/users")
     app.include_router(tokens_router, prefix="/tokens")
+    app.include_router(vocab_router, prefix="/vocab")
     app.include_router(health_router, prefix="/health")
 
     app.state.vault = vault

@@ -109,6 +109,22 @@ class VaultClient:
             return resp.get("token_json")
         return None
 
+    def set_token(self, user_id: str, service: str, token_json: str) -> None:
+        """Write token_json for user_id/service. Admin op — uses vault_secret.
+
+        Used by the vocab editor to persist a user's STT vocabulary list
+        (stored as a JSON array string under service ``vocab``).
+        """
+        resp = self._call({
+            "op": "set",
+            "user_id": user_id,
+            "service": service,
+            "token_json": token_json,
+            "vault_secret": self.secret,
+        })
+        if not resp.get("ok"):
+            raise VaultError(resp.get("error", "set_token failed"))
+
     def delete_token(self, user_id: str, service: str) -> bool:
         resp = self._call({"op": "delete", "user_id": user_id, "service": service, "vault_secret": self.secret})
         return resp.get("ok", False)

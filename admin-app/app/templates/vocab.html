@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>STT Vocabulary: {{ user_name }}</h2>
+<p class="text-muted">
+    Custom words the speech-to-text engine biases toward for this user (rare
+    names, domain terms). Same list their <code>/vocab</code> command manages.
+    <span class="badge bg-secondary">{{ terms|length }} term(s)</span>
+</p>
+
+<form method="post" action="/vocab/{{ user_id }}">
+    <div class="mb-3">
+        <label for="vocab_text" class="form-label">Terms — one per line (or comma-separated)</label>
+        <textarea class="form-control" id="vocab_text" name="vocab_text" rows="16"
+                  style="font-family: monospace;">{{ vocab_text }}</textarea>
+        <div class="form-text">Saved sorted &amp; de-duplicated. Empty = clears all vocabulary for this user.</div>
+    </div>
+    <button type="submit" class="btn btn-primary">Save vocabulary</button>
+    <a href="/users/{{ user_id }}" class="btn btn-secondary">Back to user</a>
+</form>
+{% endblock %}
