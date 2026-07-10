@@ -69,15 +69,16 @@ GWS_RESOLVE_ACCOUNT_SCHEMA = {
 
 
 def _current_telegram_id() -> str | None:
-    # NOTE: must use get_session_env(), not os.environ directly. This tool
-    # runs in-process (not via a subprocess), so the session user id only
-    # ever lives in the per-task ContextVar set by
+    # NOTE: must use get_gws_identity_env(), not os.environ directly. This
+    # tool runs in-process (not via a subprocess), so the session user id
+    # only ever lives in the per-task ContextVar set by
     # gateway.session_context.set_session_vars() -- it is never mirrored
     # into process-global os.environ. Reading os.environ here returns ""
     # in every session (interactive and cron alike); see the root-cause
-    # writeup in .plans/ for the bug this fixes.
-    from gateway.session_context import get_session_env
-    tid = get_session_env("HERMES_SESSION_USER_ID", "").strip()
+    # writeup in .plans/ for the bug this fixes. get_gws_identity_env() also
+    # falls back to the cron job's owner id when this is a cron run.
+    from gateway.session_context import get_gws_identity_env
+    tid = get_gws_identity_env().strip()
     return tid or None
 
 

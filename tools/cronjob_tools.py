@@ -286,6 +286,28 @@ def _origin_from_env() -> Optional[Dict[str, str]]:
     return None
 
 
+def _owner_from_env() -> Optional[str]:
+    """Resolve the creating session's canonical vault user_id, for the
+    job's ``owner`` field (GWS/vault identity only -- see
+    cron/jobs.py::create_job docstring and
+    gateway.session_context.get_gws_identity_env()).
+
+    Returns None if the session has no resolvable raw id (e.g. an API
+    session with no identity headers) -- such jobs simply won't be able to
+    use GWS tools under cron until an owner is set manually.
+    """
+    from gateway.session_context import get_session_env
+    raw_id = get_session_env("HERMES_SESSION_USER_ID", "").strip()
+    if not raw_id:
+        return None
+    try:
+        from tools.gws_auth import canonical_uid
+        return canonical_uid(raw_id) or None
+    except Exception:
+        logger.debug("_owner_from_env: canonical_uid resolution failed for %r", raw_id, exc_info=True)
+        return raw_id
+
+
 def _repeat_display(job: Dict[str, Any]) -> str:
     times = (job.get("repeat") or {}).get("times")
     completed = (job.get("repeat") or {}).get("completed", 0)
@@ -544,6 +566,7 @@ def cronjob(
                 workdir=_normalize_optional_job_value(workdir),
                 profile=_normalize_optional_job_value(profile),
                 no_agent=_no_agent,
+                owner=_owner_from_env(),
             )
             return json.dumps(
                 {

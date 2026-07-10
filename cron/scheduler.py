@@ -1579,6 +1579,17 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
     for _var_name in _cron_delivery_vars:
         _VAR_MAP[_var_name].set("")
 
+    # GWS/vault identity for this job, scoped separately from the
+    # HERMES_SESSION_* vars cleared above. Set from the job's stored
+    # ``owner`` field (canonical vault user_id of whoever created it) so
+    # GWS-touching tools can resolve a token instead of reporting "no
+    # session user context" for every cron run. See
+    # gateway.session_context.get_gws_identity_env() for the read side and
+    # cron/jobs.py::create_job for where ``owner`` is set. Deliberately NOT
+    # folded into HERMES_SESSION_USER_ID -- see the comment on set_session_vars
+    # above for why cron must not resurrect a live-chat identity.
+    _VAR_MAP["HERMES_CRON_JOB_OWNER_ID"].set(str(job.get("owner") or ""))
+
     # Per-job working directory.  When set (and validated at create/update
     # time), we point TERMINAL_CWD at it so:
     #   - build_context_files_prompt() picks up AGENTS.md / CLAUDE.md /
@@ -1972,6 +1983,7 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
         clear_session_vars(_ctx_tokens)
         for _var_name in _cron_delivery_vars:
             _VAR_MAP[_var_name].set("")
+        _VAR_MAP["HERMES_CRON_JOB_OWNER_ID"].set("")
         if _session_db:
             # Title the cron session from the job (name → short prompt → id) so
             # sidebars/history show a meaningful label instead of the injected
