@@ -24,9 +24,9 @@ id they have (Telegram numeric id, email, etc.); this module is the single
 choke point that maps it to the canonical vault key, so vocabulary data
 can't end up split across two vault keys for the same physical user the way
 it previously did (raw telegram id vs. canonical ``name-telegramid``
-surrogate) -- see `.plans/` for the root-cause writeup and
-`scripts/migrate_orphaned_vault_keys.py` for the one-time cleanup of data
-written under the old, uncanonicalized key.
+surrogate). A one-time cleanup script (`scripts/migrate_orphaned_vault_keys.py`)
+checked all known users on 2026-07-10, found zero orphaned entries anywhere
+(this fix already covers all writes going forward), and was removed.
 """
 
 from __future__ import annotations
