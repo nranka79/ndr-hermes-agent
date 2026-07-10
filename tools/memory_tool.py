@@ -21,6 +21,13 @@ Design:
 - replace/remove use short unique substring matching (not full text or IDs)
 - Behavioral guidance lives in the tool schema description
 - Frozen snapshot pattern: system prompt is stable, tool responses show live state
+
+Per-user isolation (2026-07-10): MemoryStore accepts an optional
+``canonical_user_id`` (see agent/user_identity.py) so each platform user
+gets their own MEMORY.md/USER.md under memories/<canonical_user_id>/,
+instead of one file shared by everyone talking to the bot. Callers with no
+user context (bare CLI/local use) omit it and get the historical flat
+memories/ path, unchanged.
 """
 
 import json
@@ -52,9 +59,19 @@ logger = logging.getLogger(__name__)
 # (HERMES_HOME env var changes) are always respected.  The old module-level
 # constant was cached at import time and could go stale if a profile switch
 # happened after the first import.
-def get_memory_dir() -> Path:
-    """Return the profile-scoped memories directory."""
-    return get_hermes_home() / "memories"
+def get_memory_dir(canonical_user_id: str = "") -> Path:
+    """Return the profile-scoped memories directory.
+
+    When ``canonical_user_id`` is given (resolved via
+    agent.user_identity.resolve_canonical_user_id), returns a per-user
+    subdirectory so different platform users don't share one
+    MEMORY.md/USER.md. Empty string (the default) returns the historical
+    flat path, used for CLI/local sessions with no platform user context.
+    """
+    base = get_hermes_home() / "memories"
+    if canonical_user_id:
+        return base / canonical_user_id
+    return base
 
 ENTRY_DELIMITER = "\n§\n"
 
@@ -121,11 +138,19 @@ class MemoryStore:
         Tool responses always reflect this live state.
     """
 
-    def __init__(self, memory_char_limit: int = 2200, user_char_limit: int = 1375):
+    def __init__(
+        self,
+        memory_char_limit: int = 2200,
+        user_char_limit: int = 1375,
+        canonical_user_id: str = "",
+    ):
         self.memory_entries: List[str] = []
         self.user_entries: List[str] = []
         self.memory_char_limit = memory_char_limit
         self.user_char_limit = user_char_limit
+        # Per-user storage bucket (see agent/user_identity.py). Empty string
+        # means "no platform user context" -- uses the historical flat path.
+        self._canonical_user_id = canonical_user_id
         # Frozen snapshot for system prompt -- set once at load_from_disk()
         self._system_prompt_snapshot: Dict[str, str] = {"memory": "", "user": ""}
 
@@ -147,7 +172,7 @@ class MemoryStore:
         Scanning is deterministic from disk bytes, so the snapshot remains
         stable for the entire session (prefix-cache invariant holds).
         """
-        mem_dir = get_memory_dir()
+        mem_dir = get_memory_dir(self._canonical_user_id)
         mem_dir.mkdir(parents=True, exist_ok=True)
 
         self.memory_entries = self._read_file(mem_dir / "MEMORY.md")
@@ -242,9 +267,8 @@ class MemoryStore:
                     pass
             fd.close()
 
-    @staticmethod
-    def _path_for(target: str) -> Path:
-        mem_dir = get_memory_dir()
+    def _path_for(self, target: str) -> Path:
+        mem_dir = get_memory_dir(self._canonical_user_id)
         if target == "user":
             return mem_dir / "USER.md"
         return mem_dir / "MEMORY.md"
@@ -269,7 +293,7 @@ class MemoryStore:
 
     def save_to_disk(self, target: str):
         """Persist entries to the appropriate file. Called after every mutation."""
-        get_memory_dir().mkdir(parents=True, exist_ok=True)
+        get_memory_dir(self._canonical_user_id).mkdir(parents=True, exist_ok=True)
         self._write_file(self._path_for(target), self._entries_for(target))
 
     def _entries_for(self, target: str) -> List[str]:
@@ -724,7 +748,3 @@ registry.register(
     check_fn=check_memory_requirements,
     emoji="🧠",
 )
-
-
-
-
