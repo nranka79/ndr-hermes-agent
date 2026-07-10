@@ -67,6 +67,16 @@ _CRON_AUTO_DELIVER_PLATFORM: ContextVar = ContextVar("HERMES_CRON_AUTO_DELIVER_P
 _CRON_AUTO_DELIVER_CHAT_ID: ContextVar = ContextVar("HERMES_CRON_AUTO_DELIVER_CHAT_ID", default=_UNSET)
 _CRON_AUTO_DELIVER_THREAD_ID: ContextVar = ContextVar("HERMES_CRON_AUTO_DELIVER_THREAD_ID", default=_UNSET)
 
+# Cron job owner — set per-job in run_job() from the job's stored ``owner``
+# field (the canonical vault user_id of whoever created the job). Cron jobs
+# otherwise run with HERMES_SESSION_USER_ID deliberately cleared (see the
+# comment in cron/scheduler.py::run_job) so they can't impersonate a live
+# chat for routing purposes. This var is intentionally kept SEPARATE from
+# HERMES_SESSION_USER_ID and is consulted only by get_gws_identity_env()
+# below -- it never affects platform/chat_id routing, TTS format selection,
+# or any of the other things HERMES_SESSION_* drives.
+_CRON_JOB_OWNER_ID: ContextVar = ContextVar("HERMES_CRON_JOB_OWNER_ID", default=_UNSET)
+
 _VAR_MAP = {
     "HERMES_SESSION_PLATFORM": _SESSION_PLATFORM,
     "HERMES_SESSION_CHAT_ID": _SESSION_CHAT_ID,
@@ -80,6 +90,7 @@ _VAR_MAP = {
     "HERMES_CRON_AUTO_DELIVER_PLATFORM": _CRON_AUTO_DELIVER_PLATFORM,
     "HERMES_CRON_AUTO_DELIVER_CHAT_ID": _CRON_AUTO_DELIVER_CHAT_ID,
     "HERMES_CRON_AUTO_DELIVER_THREAD_ID": _CRON_AUTO_DELIVER_THREAD_ID,
+    "HERMES_CRON_JOB_OWNER_ID": _CRON_JOB_OWNER_ID,
 }
 
 
@@ -195,3 +206,27 @@ def get_session_env(name: str, default: str = "") -> str:
             return value
     # Fall back to os.environ for CLI, cron, and test compatibility
     return os.getenv(name, default)
+
+
+def get_gws_identity_env() -> str:
+    """Return the raw channel id GWS/vault-consuming tools should resolve
+    for the current task.
+
+    Normal interactive/API sessions: this is just ``HERMES_SESSION_USER_ID``.
+
+    Cron jobs: ``HERMES_SESSION_USER_ID`` is deliberately cleared (see
+    ``cron/scheduler.py::run_job``) so a job can't impersonate a live chat
+    for routing purposes. This helper falls back to
+    ``HERMES_CRON_JOB_OWNER_ID`` (set from the job's stored ``owner`` field)
+    so GWS/vault token lookups still know *whose* token to use, without
+    resurrecting any of the routing behavior ``HERMES_SESSION_USER_ID``
+    normally drives.
+
+    Returns ``""`` if neither is available (e.g. a legacy cron job with no
+    recorded owner) — callers should treat that exactly like "no session
+    user context", same as before this helper existed.
+    """
+    sid = get_session_env("HERMES_SESSION_USER_ID", "")
+    if sid:
+        return sid
+    return get_session_env("HERMES_CRON_JOB_OWNER_ID", "")
