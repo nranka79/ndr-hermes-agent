@@ -283,7 +283,18 @@ def load_credentials(telegram_id: str, service_name: str = _DEFAULT_SERVICE) -> 
     if creds.expired and creds.refresh_token:
         from google.auth.transport.requests import Request
         creds.refresh(Request())
-        vault.set_token(uid, service_name, creds.to_json())
+        try:
+            vault.set_token(uid, service_name, creds.to_json())
+        except vault.VaultUnauthorizedError:
+            # Vault writes need GWS_VAULT_SECRET, which the execute_code
+            # sandbox never receives. The refreshed creds are still valid --
+            # use them in-memory; the main process persists the refreshed
+            # token on its own next refresh.
+            logger.debug(
+                'vault write-back skipped for %s/%s (no vault secret -- '
+                'sandbox context); using refreshed creds in-memory',
+                uid, service_name,
+            )
     return creds
 
 
