@@ -230,6 +230,20 @@ class GatewayAuthorizationMixin:
                 from tools._user_registry import find_user_by_identity
                 _, _rec = find_user_by_identity("telegram", user_id)
                 if _rec:
+                    # Per-app access gate (admin.ahfl.in App Access toggles).
+                    # Fail-open: an absent apps.telegram key OR True authorizes
+                    # (existing users have no apps key and must keep working);
+                    # only an explicit False blocks. If the vault is unreachable,
+                    # find_user_by_identity raises and we fall through to the env
+                    # allowlist below — so a vault outage can never lock out a
+                    # user who is in TELEGRAM_ALLOWED_USERS.
+                    _apps = (_rec.get("permissions", {}) or {}).get("apps", {}) or {}
+                    if _apps.get("telegram") is False:
+                        logger.info(
+                            "Telegram user %s blocked by admin App Access "
+                            "(permissions.apps.telegram=False)", user_id,
+                        )
+                        return False
                     return True
             except Exception:
                 pass

@@ -26,7 +26,23 @@
                     <dt class="col-sm-4">Permissions</dt>
                     <dd class="col-sm-8"><code>{{ user_data.get('permissions', {}) }}</code></dd>
                 </dl>
-                <p class="text-muted small mb-0">Editing role/permissions/app-access isn't wired up yet — coming in a follow-up pilot.</p>
+            </div>
+        </div>
+
+        <div class="card mt-3">
+            <div class="card-header">App Access</div>
+            <div class="card-body">
+                <p class="text-muted small">Which apps this user may use. Unchecking blocks access at login/message time (no restart needed).</p>
+                <form method="post" action="/users/{{ user_data.user_id }}/apps">
+                    {% for app in managed_apps %}
+                    <div class="form-check form-switch">
+                        <input class="form-check-input" type="checkbox" role="switch"
+                               id="app-{{ app }}" name="{{ app }}" {% if app_states.get(app) %}checked{% endif %}>
+                        <label class="form-check-label" for="app-{{ app }}">{{ app }}</label>
+                    </div>
+                    {% endfor %}
+                    <button type="submit" class="btn btn-primary btn-sm mt-2">Save app access</button>
+                </form>
             </div>
         </div>
 
