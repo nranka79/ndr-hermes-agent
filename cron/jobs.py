@@ -565,6 +565,7 @@ def create_job(
     workdir: Optional[str] = None,
     profile: Optional[str] = None,
     no_agent: bool = False,
+    owner: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Create a new cron job.
@@ -614,6 +615,15 @@ def create_job(
                 and deliver its stdout directly. Empty stdout = silent (no
                 delivery). Requires ``script`` to be set. Ideal for classic
                 watchdogs and periodic alerts that don't need LLM reasoning.
+        owner: Canonical vault user_id of whoever created this job (resolved
+                via ``tools.gws_auth.canonical_uid()`` from the creating
+                session's raw channel id). Used ONLY to resolve GWS/vault
+                tokens when the job runs under cron (see
+                ``gateway.session_context.get_gws_identity_env()`` and
+                ``cron/scheduler.py::run_job``) — it does not affect delivery
+                routing, which still goes through ``origin``/``deliver``.
+                ``None`` for jobs created before this field existed, or when
+                the creating session had no resolvable identity.
 
     Returns:
         The created job dict
@@ -703,6 +713,9 @@ def create_job(
         "enabled_toolsets": normalized_toolsets,
         "workdir": normalized_workdir,
         "profile": normalized_profile,
+        # Canonical vault user_id of the creator — GWS/vault identity only,
+        # see the ``owner`` docstring above. Never used for delivery routing.
+        "owner": (str(owner).strip() or None) if owner else None,
     }
 
     jobs = load_jobs()
