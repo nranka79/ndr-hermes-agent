@@ -6,6 +6,11 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger("admin-app.vault")
 
+# App-access permission keys managed by the admin panel. Extend this list to
+# add a new gated app (e.g. a future "monitor" dashboard) — the toggle UI and
+# the enforcement side (gateway/identity_resolver) both key off these names.
+MANAGED_APPS = ["telegram", "voice", "chat"]
+
 
 class VaultError(RuntimeError):
     pass
@@ -72,6 +77,45 @@ class VaultClient:
         if not resp.get("ok"):
             raise VaultError(resp.get("error", "add_identity failed"))
         return resp.get("identity", {})
+
+    def set_app_permissions(self, user_id: str, apps: Dict[str, bool]) -> Dict:
+        """Merge per-app access flags into the user's permissions, preserving
+        every other permission (vault_admin, manage_users, etc.).
+
+        The vault server REPLACES the whole permissions dict on add_identity
+        (verified 2026-07-10), so this MUST read-modify-write: read the current
+        record, deep-merge the app toggles into permissions.apps, and re-send
+        the full permissions dict against an existing alias (which updates the
+        record in place — name/role are preserved when omitted).
+        """
+        identity = self.get_identity(user_id)
+        if not identity:
+            raise VaultError(f"User {user_id} not found")
+
+        # Pick an existing alias to key the update against (must already be
+        # owned by this user, else the server would create a new alias).
+        aliases = identity.get("identities", {}) or {}
+        anchor_type = None
+        anchor_value = None
+        for t in ("email", "telegram", "slug", "draas_user_id"):
+            vals = aliases.get(t)
+            if vals:
+                anchor_type, anchor_value = t, vals[0]
+                break
+        if not anchor_type:
+            raise VaultError(f"User {user_id} has no identity aliases to anchor the update")
+
+        permissions = dict(identity.get("permissions", {}) or {})
+        current_apps = dict(permissions.get("apps", {}) or {})
+        current_apps.update(apps)
+        permissions["apps"] = current_apps
+
+        return self.add_identity(
+            user_id=user_id,
+            identity_type=anchor_type,
+            identity_value=anchor_value,
+            permissions=permissions,
+        )
 
     def remove_identity(self, user_id: str, identity_type: str, identity_value: str) -> Optional[Dict]:
         resp = self._call({
