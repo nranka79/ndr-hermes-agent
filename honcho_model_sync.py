@@ -1,23 +1,57 @@
 #!/usr/bin/env python3
 """
-Honcho model sync watcher.
+Honcho model pin (formerly "sync watcher").
 
-Polls the agent's config.yaml for changes to model.default / model.provider.
-When either changes, rewrites Honcho's config.toml so [deriver],
-[dialectic.levels.*], and [dream.*_model_config] chat model blocks follow
-the SAME model and provider hermes itself is using, then restarts BOTH the
-honcho-api and honcho-deriver containers.
+Pins Honcho's chat model — [deriver], [dialectic.levels.*], and
+[dream.*_model_config] — to a FIXED, INDEPENDENT model that has NOTHING to
+do with whatever model the main Hermes agent (model.default / model.provider
+in config.yaml) happens to be running.
 
-Provider routing:
-  - provider == "opencode-go" (hermes' default): honcho's chat blocks point
-    directly at opencode-go too (base_url=https://opencode.ai/zen/go/v1,
+--- Why this changed (2026-07-10) ---
+This used to mirror the agent's live model 1:1, restarting honcho-api +
+honcho-deriver every time model.default changed. That seemed like a good
+idea (keep Honcho "on the same brain" as the agent) but had a real cost:
+Honcho's dialectic_chat does its OWN internal agentic tool loop (5-14
+sequential search_memory / search_messages / get_messages_by_date_range
+calls per query — one full LLM round trip per hop). When the agent's model
+was switched to a big frontier reasoning model (grok-4.3), every Honcho
+query started taking 20-62 seconds — blowing straight through the 30s
+client-side timeout in plugins/memory/honcho/client.py and stalling
+delivery of already-computed agent responses (see client.py's own comment:
+Honcho calls happen on run_conversation's post-response path). This is what
+users saw as "Open WebUI shows busy / no response" — the answer was ready,
+Honcho just wouldn't let go of the request in time.
+
+Honcho's job (structured extraction + tool-driven retrieval, not
+user-facing judgment calls) doesn't need frontier-model reasoning quality.
+A fast/cheap model does the same 5-14 hops in a couple of seconds instead
+of a minute. So: independent pin, not a mirror.
+
+--- Configuring Honcho's model ---
+Set in /opt/hermes/.env (both read by this script AND passed through to the
+honcho-api/honcho-deriver containers via env_file in docker-compose.override.yml):
+
+  HONCHO_CHAT_PROVIDER=opencode-go     # default if unset
+  HONCHO_CHAT_MODEL=deepseek-v4-flash  # default if unset
+
+Provider routing (same resolution logic as before):
+  - provider == "opencode-go": honcho's chat blocks point directly at
+    opencode-go (base_url=https://opencode.ai/zen/go/v1,
     api_key_env=OPENCODE_GO_API_KEY, bare model name e.g. "deepseek-v4-flash").
-    Requires OPENCODE_GO_API_KEY to be present in the honcho-api /
-    honcho-deriver containers' env (copied from HERMES_HOME/.env into
-    /opt/hermes/.env -- see 2026-07-10 setup).
+    This is the default pin — already proven working on this stack (this
+    exact pairing served both the agent AND Honcho successfully before the
+    agent was switched to grok-4.3), and OPENCODE_GO_API_KEY is already
+    present in the honcho-api / honcho-deriver containers' env.
   - any other provider: falls back to OpenRouter (base_url=
     https://openrouter.ai/api/v1, api_key_env=OPENROUTER_API_KEY), mapping
     the bare model name to an OpenRouter slug via OPENROUTER_MAP.
+
+To change Honcho's model later: edit HONCHO_CHAT_PROVIDER / HONCHO_CHAT_MODEL
+in /opt/hermes/.env, then `docker compose -f docker-compose.yml -f
+docker-compose.override.yml restart honcho-model-sync` (it re-patches once
+at startup and exits into an idle wait — see main()). Changing the AGENT's
+model.default in config.yaml no longer has ANY effect on Honcho — that
+coupling is gone on purpose.
 
 Both honcho-api and honcho-deriver must restart together: each caches its
 config.toml-derived Settings in memory from process start and never
@@ -34,10 +68,11 @@ fed an OpenRouter-shaped key -- looked exactly like a bad API key (401
 Embedding model is NOT touched — chat LLMs and embedding models are not
 interchangeable, and opencode-go has no embeddings endpoint. The embedding
 block stays pinned to openai/text-embedding-3-small via OpenRouter
-regardless of what hermes' chat provider/model is.
+regardless of what Honcho's chat provider/model is.
 
 State is tracked in /data/hermes/.honcho_model_sync_state.json so we only
-restart the containers when provider or model actually changes.
+restart the containers when the pinned provider/model actually changes
+across a restart of this watcher (e.g. after editing .env).
 """
 import json
 import os
@@ -52,15 +87,24 @@ import yaml
 AGENT_CONFIG = Path(os.environ.get("HERMES_HOME", "/data/hermes")) / "config.yaml"
 HONCHO_CONFIG = Path("/opt/hermes-honcho/config.toml")
 STATE_FILE = Path(os.environ.get("HERMES_HOME", "/data/hermes")) / ".honcho_model_sync_state.json"
-POLL_SECONDS = 30
+
+# How often to re-check (idle heartbeat only — the pinned model is fixed
+# for the life of this process via env vars, so there's nothing to detect
+# short of a container recreation, which re-runs main() from scratch anyway).
+IDLE_HEARTBEAT_SECONDS = 3600
 
 OPENCODE_GO_BASE_URL = "https://opencode.ai/zen/go/v1"
 OPENCODE_GO_API_KEY_ENV = "OPENCODE_GO_API_KEY"
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 OPENROUTER_API_KEY_ENV = "OPENROUTER_API_KEY"
 
-# Fallback mapping table for agent-model-name → OpenRouter-slug. Only used
-# when hermes' configured provider isn't opencode-go. Add more as needed.
+# Independent pin for Honcho's own chat model — NOT tied to the agent's
+# model.default. See module docstring for why.
+DEFAULT_HONCHO_CHAT_PROVIDER = "opencode-go"
+DEFAULT_HONCHO_CHAT_MODEL = "deepseek-v4-flash"
+
+# Fallback mapping table for honcho-model-name -> OpenRouter-slug. Only used
+# when HONCHO_CHAT_PROVIDER isn't opencode-go. Add more as needed.
 OPENROUTER_MAP = {
     "deepseek-v4-flash": "deepseek/deepseek-v4-flash",
     "deepseek-chat": "deepseek/deepseek-chat",
@@ -96,46 +140,57 @@ OPENROUTER_MAP = {
 }
 
 
-def resolve_openrouter_slug(agent_model: str) -> str:
-    """Map agent-side model name to OpenRouter slug (fallback path only).
+def resolve_openrouter_slug(honcho_model: str) -> str:
+    """Map a bare honcho-side model name to OpenRouter slug (fallback path only).
 
     If already in 'provider/model' form, return as-is. If bare, look up in
     OPENROUTER_MAP. If unknown, fail loud — the user must add to the map.
     """
-    if not agent_model:
-        raise ValueError("agent model is empty")
-    if "/" in agent_model:
-        return agent_model
-    if agent_model in OPENROUTER_MAP:
-        return OPENROUTER_MAP[agent_model]
+    if not honcho_model:
+        raise ValueError("honcho model is empty")
+    if "/" in honcho_model:
+        return honcho_model
+    if honcho_model in OPENROUTER_MAP:
+        return OPENROUTER_MAP[honcho_model]
     raise KeyError(
-        f"Unknown agent model {agent_model!r}. Add it to OPENROUTER_MAP in "
-        f"/opt/hermes/bin/honcho_model_sync.py and restart the watcher."
+        f"Unknown honcho model {honcho_model!r}. Add it to OPENROUTER_MAP in "
+        f"/opt/hermes/bin/honcho_model_sync.py and restart honcho-model-sync."
     )
 
 
 def resolve_target(provider: str, model: str) -> tuple[str, str, str]:
-    """Return (model_slug, base_url, api_key_env) for honcho's chat blocks.
-
-    Mirrors the actual provider/model hermes itself is using so honcho's
-    background LLM calls (deriver, dialectic, dream) go through the same
-    backend as the primary agent. Falls back to OpenRouter for any
-    provider other than opencode-go.
-    """
+    """Return (model_slug, base_url, api_key_env) for honcho's chat blocks."""
     if provider == "opencode-go":
         return model, OPENCODE_GO_BASE_URL, OPENCODE_GO_API_KEY_ENV
     slug = resolve_openrouter_slug(model)
     return slug, OPENROUTER_BASE_URL, OPENROUTER_API_KEY_ENV
 
 
-def get_agent_model() -> tuple[str, str]:
-    """Return (provider, model) from /data/hermes/config.yaml."""
-    if not AGENT_CONFIG.exists():
+def get_honcho_model() -> tuple[str, str]:
+    """Return (provider, model) Honcho should use — independent pin via env vars.
+
+    Defaults to opencode-go/deepseek-v4-flash (fast, already proven working
+    on this stack) if the env vars aren't set. This is deliberately NOT
+    read from the agent's config.yaml — see module docstring.
+    """
+    provider = os.environ.get("HONCHO_CHAT_PROVIDER", DEFAULT_HONCHO_CHAT_PROVIDER).strip()
+    model = os.environ.get("HONCHO_CHAT_MODEL", DEFAULT_HONCHO_CHAT_MODEL).strip()
+    return (provider or DEFAULT_HONCHO_CHAT_PROVIDER, model or DEFAULT_HONCHO_CHAT_MODEL)
+
+
+def get_agent_model_for_logging() -> tuple[str, str]:
+    """Best-effort read of the agent's current model, for informational
+    log output only. Never used to decide Honcho's model. Failures are
+    silent — this is a nice-to-have comparison line, not load-bearing."""
+    try:
+        if not AGENT_CONFIG.exists():
+            return ("", "")
+        with open(AGENT_CONFIG) as f:
+            d = yaml.safe_load(f) or {}
+        model = d.get("model", {}) or {}
+        return (model.get("provider", ""), model.get("default", ""))
+    except Exception:
         return ("", "")
-    with open(AGENT_CONFIG) as f:
-        d = yaml.safe_load(f) or {}
-    model = d.get("model", {}) or {}
-    return (model.get("provider", ""), model.get("default", ""))
 
 
 def load_state() -> dict:
@@ -204,7 +259,7 @@ def patch_honcho_config(model_slug: str, base_url: str, api_key_env: str) -> boo
     Skips:
       [embedding.model_config]  (different header pattern, never matched here;
       embedding is pinned to openai/text-embedding-3-small via OpenRouter
-      regardless of what hermes' chat provider is)
+      regardless of what Honcho's chat provider is)
 
     Only patches blocks that already exist in config.toml. A level/specialist
     with no [*.model_config] block at all silently uses Honcho's hardcoded
@@ -259,38 +314,44 @@ def restart_honcho() -> None:
 
 
 def main() -> None:
-    print(f"honcho-model-sync started; polling {AGENT_CONFIG} every {POLL_SECONDS}s")
+    provider, model = get_honcho_model()
+    agent_provider, agent_model = get_agent_model_for_logging()
+    print(
+        f"honcho-model-pin: pinning Honcho to provider={provider} model={model} "
+        f"(independent of the agent's current model="
+        f"{agent_provider or '?'}/{agent_model or '?'} — no longer mirrored)"
+    )
+
     state = load_state()
-    while True:
+    if provider == state.get("last_provider") and model == state.get("last_model"):
+        print("  no change since last pin — leaving honcho-api/honcho-deriver as-is")
+    else:
         try:
-            provider, model = get_agent_model()
-            if not model:
-                time.sleep(POLL_SECONDS)
-                continue
-            if provider == state.get("last_provider") and model == state.get("last_model"):
-                time.sleep(POLL_SECONDS)
-                continue
-            try:
-                model_slug, base_url, api_key_env = resolve_target(provider, model)
-            except KeyError as e:
-                print(f"  SKIP: {e}", file=sys.stderr)
-                time.sleep(POLL_SECONDS)
-                continue
-            print(f"  agent model changed: provider={provider} model={model} → "
-                  f"{model_slug} @ {base_url}")
+            model_slug, base_url, api_key_env = resolve_target(provider, model)
+        except KeyError as e:
+            print(f"  ERROR: {e}", file=sys.stderr)
+            print("  keeping previous pin; fix HONCHO_CHAT_PROVIDER/HONCHO_CHAT_MODEL and restart", file=sys.stderr)
+        else:
+            print(f"  target: {model_slug} @ {base_url}")
             if patch_honcho_config(model_slug, base_url, api_key_env):
                 print(f"  patched {HONCHO_CONFIG}; restarting honcho-api + honcho-deriver")
                 try:
                     restart_honcho()
-                    print(f"  honcho-api + honcho-deriver restarted")
+                    print("  honcho-api + honcho-deriver restarted")
                 except subprocess.CalledProcessError as e:
                     print(f"  ERROR restarting honcho: {e.stderr.decode()}", file=sys.stderr)
+            else:
+                print("  config.toml already matched target — no restart needed")
             state["last_provider"] = provider
             state["last_model"] = model
             save_state(state)
-        except Exception as e:
-            print(f"  ERROR: {e}", file=sys.stderr)
-        time.sleep(POLL_SECONDS)
+
+    # Idle forever. The pin is fixed for this process's lifetime via env
+    # vars; there is nothing to poll. Recreate/restart this container
+    # (after editing HONCHO_CHAT_PROVIDER/HONCHO_CHAT_MODEL in .env) to
+    # apply a new pin.
+    while True:
+        time.sleep(IDLE_HEARTBEAT_SECONDS)
 
 
 if __name__ == "__main__":
