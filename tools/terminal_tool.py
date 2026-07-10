@@ -2312,10 +2312,12 @@ def terminal_tool(
                             default_cwd=cwd,
                         ),
                     }
-                    # Inject session user identity so gws_auth.py can find the right token.
+                    # Inject session user identity so gws_auth.py can find the right
+                    # token. Falls back to the cron job's owner id (if this is a cron
+                    # run) via get_gws_identity_env() -- see gateway/session_context.py.
                     try:
-                        from gateway.session_context import get_session_env as _gse_t
-                        _session_tid = _gse_t("HERMES_SESSION_USER_ID", "")
+                        from gateway.session_context import get_gws_identity_env as _gie_t
+                        _session_tid = _gie_t()
                         if _session_tid:
                             env.env["HERMES_SESSION_USER_ID"] = _session_tid
                     except Exception:

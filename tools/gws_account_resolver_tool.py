@@ -21,7 +21,6 @@ Once you have the ``service_name`` back, use it directly in execute_code:
 """
 
 import json
-import os
 import re
 
 from tools.registry import registry, tool_error, tool_result
@@ -70,7 +69,15 @@ GWS_RESOLVE_ACCOUNT_SCHEMA = {
 
 
 def _current_telegram_id() -> str | None:
-    tid = os.environ.get("HERMES_SESSION_USER_ID", "").strip()
+    # NOTE: must use get_session_env(), not os.environ directly. This tool
+    # runs in-process (not via a subprocess), so the session user id only
+    # ever lives in the per-task ContextVar set by
+    # gateway.session_context.set_session_vars() -- it is never mirrored
+    # into process-global os.environ. Reading os.environ here returns ""
+    # in every session (interactive and cron alike); see the root-cause
+    # writeup in .plans/ for the bug this fixes.
+    from gateway.session_context import get_session_env
+    tid = get_session_env("HERMES_SESSION_USER_ID", "").strip()
     return tid or None
 
 
