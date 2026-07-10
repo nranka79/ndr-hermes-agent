@@ -1,0 +1,181 @@
+#
+# docker-compose.override.yml — DRAAS customizations for Hermes Agent
+#
+# This file is AUTOMATICALLY MERGED with docker-compose.yml by `docker compose up`.
+# It adds the hermes-gws-vault and hermes-gws-service containers without
+# modifying the upstream compose file. To undo: just remove this file.
+#
+# Architecture:
+#   hermes-hermes-1 (network_mode: host) ──HTTP──> 127.0.0.1:8000  gws-vault
+#                                            ──HTTP──> 127.0.0.1:8080  gws-service
+#                                                                │
+#                                                                └─subprocess─> gws CLI
+#
+# The vault and gws-service both use network_mode: host so they're reachable
+# from the hermes container (which also uses network_mode: host). They bind
+# to 127.0.0.1 only, so they're not exposed to the network.
+#
+# OAuth callback flow:
+#   User → https://transcribe.ahfl.in/v1/auth/gws:ndr@draas.com/callback
+#   nginx must route /v1/auth/* to 127.0.0.1:8080 (gws-service)
+#   (configure this in /etc/nginx/sites-available/transcribe.ahfl.in)
+#
+# Required env vars (add to /opt/hermes/.env):
+#   VAULT_SECRET=<long-random-string>          # for gws-vault AND gws-service
+#   GWS_DRAAS_CLIENT_ID=<google oauth client id>
+#   GWS_DRAAS_CLIENT_SECRET=<google oauth client secret>
+#   GWS_DRAAS_SCOPES=openid,https://www.googleapis.com/auth/gmail.modify,...  (optional, has defaults)
+#   GWS_AHFL_CLIENT_ID=...                      (if you want the AHFL account)
+#   GWS_AHFL_CLIENT_SECRET=...
+#   GWS_GMAIL_CLIENT_ID=...                     (if you want personal Gmail)
+#   GWS_GMAIL_CLIENT_SECRET=...
+#   BROWSER_USE_API_KEY=bu_...                  (if you use browser-use)
+#   KELSA_CLIENT_ID=...                          (if you add Kelsa)
+#   KELSA_CLIENT_SECRET=...
+#   KELSA_AUTH_URI=https://kelsa.ai/oauth/authorize
+#   KELSA_TOKEN_URI=https://kelsa.ai/oauth/token
+#
+services:
+
+  gws-vault:
+    build: /opt/hermes-gws-vault
+    image: hermes-gws-vault:latest
+    container_name: hermes-gws-vault-1
+    restart: unless-stopped
+    network_mode: host
+    env_file:
+      - /opt/hermes/.env
+    environment:
+      - TOKEN_DIR=/data/private-tokens
+    volumes:
+      # RW: identity data + tokens + audit log live here
+      - /opt/hermes-gws-vault-data:/data
+    # Healthcheck: hits the in-process health endpoint.
+    # The override file replaces the image's HEALTHCHECK because
+    # network_mode: host means 127.0.0.1 in the container = 127.0.0.1 on host.
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "-H", "X-Vault-Secret: ${VAULT_SECRET}", "http://127.0.0.1:8000/v1/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  gws-service:
+    build: /opt/hermes-draas-tools/gws_service
+    image: hermes-gws-service:latest
+    container_name: hermes-gws-service-1
+    restart: unless-stopped
+    network_mode: host
+    env_file:
+      - /opt/hermes/.env
+    # The gws CLI binary must be present in the PATH inside the container.
+    # The hermes Dockerfile installs it at /usr/local/bin/gws. We mount-bind
+    # that binary from the host so this container doesn't need to repeat
+    # the install. Falls back to PATH if the bind isn't present.
+    volumes:
+      - /usr/local/bin/gws:/usr/local/bin/gws:ro
+    environment:
+      # Override these if you don't want them in .env file
+      - VAULT_URL=http://127.0.0.1:8000
+      - GWS_SERVICE_REDIRECT_BASE=https://transcribe.ahfl.in
+      # OAuth callback path template (service-specific)
+      - GWS_DRAAS_REDIRECT_URI=https://transcribe.ahfl.in/v1/auth/gws:ndr@draas.com/callback
+      - GWS_AHFL_REDIRECT_URI=https://transcribe.ahfl.in/v1/auth/gws:ndr@ahfl.in/callback
+      - GWS_GMAIL_REDIRECT_URI=https://transcribe.ahfl.in/v1/auth/gws:nishantranka@gmail.com/callback
+      - KELSA_REDIRECT_URI=https://transcribe.ahfl.in/v1/auth/kelsa/callback
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/v1/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # Honcho self-hosted memory service — DRAAS
+  # Two services: honcho-api (FastAPI on :8000) and honcho-deriver
+  # (background LLM worker that builds peer cards / dialectic reasoning).
+  # Both share the existing hermes-postgres-1 (pgvector) and hermes-redis-1.
+  # Network mode: host, port-bound to 127.0.0.1 only.
+
+  honcho-api:
+    build:
+      context: /opt/hermes-honcho
+      dockerfile: Dockerfile
+    image: hermes-honcho:latest
+    container_name: hermes-honcho-api-1
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8001:8000"
+    env_file:
+      - /opt/hermes/.env
+    environment:
+      - HONCHO_JWT_SECRET=${HONCHO_JWT_SECRET}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - /opt/hermes-honcho/config.toml:/app/config.toml:ro
+    healthcheck:
+      test:
+        - CMD
+        - /app/.venv/bin/python
+        - -c
+        - import urllib.request; urllib.request.urlopen("http://127.0.0.1:8000/health", timeout=10).read()
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  honcho-deriver:
+    build:
+      context: /opt/hermes-honcho
+      dockerfile: Dockerfile
+    image: hermes-honcho:latest
+    container_name: hermes-honcho-deriver-1
+    restart: unless-stopped
+    command: ["/app/.venv/bin/python", "-m", "src.deriver"]
+    env_file:
+      - /opt/hermes/.env
+    environment:
+      - HONCHO_JWT_SECRET=${HONCHO_JWT_SECRET}
+      - HONCHO_API_URL=http://127.0.0.1:8000
+    depends_on:
+      honcho-api:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - /opt/hermes-honcho/config.toml:/app/config.toml:ro
+  # Honcho model pin (2026-07-10) — pins Honcho's chat model to a FIXED,
+  # INDEPENDENT model (HONCHO_CHAT_PROVIDER/HONCHO_CHAT_MODEL in .env,
+  # default opencode-go/deepseek-v4-flash) instead of mirroring the agent's
+  # model.default. Runs once at container start, patches
+  # /opt/hermes-honcho/config.toml, restarts honcho-api + honcho-deriver if
+  # the pin changed, then idles. See honcho_model_sync.py module docstring
+  # for the full rationale (grok-4.3 mirroring caused 20-62s Honcho stalls).
+  honcho-model-sync:
+    image: python:3.12-slim
+    container_name: hermes-honcho-model-sync-1
+    restart: unless-stopped
+    network_mode: host
+    command:
+      - /bin/sh
+      - -c
+      - "pip install --no-cache-dir pyyaml && python -u /opt/hermes/bin/honcho_model_sync.py"
+    env_file:
+      - /opt/hermes/.env
+    environment:
+      - HERMES_HOME=/data/hermes
+    volumes:
+      - ./hermes-data:/data/hermes:rw
+      - /opt/hermes-honcho/config.toml:/opt/hermes-honcho/config.toml:rw
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /opt/hermes/bin/honcho_model_sync.py:/opt/hermes/bin/honcho_model_sync.py:ro
+      - /usr/bin/docker:/usr/bin/docker:ro
+      - /usr/libexec/docker/cli-plugins:/usr/libexec/docker/cli-plugins:ro
+      - /opt/hermes/docker-compose.yml:/opt/hermes/docker-compose.yml:ro
+      - /opt/hermes/docker-compose.override.yml:/opt/hermes/docker-compose.override.yml:ro
+      - /opt/hermes/.env:/opt/hermes/.env:ro
