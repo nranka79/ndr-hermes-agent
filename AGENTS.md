@@ -271,7 +271,7 @@ ssh -i $env:USERPROFILE\.ssh\hetzner_new root@178.105.35.94 `
 
 | Path | Purpose |
 |---|---|
-| `tools/n8n_tool.py` | Routes GWS ops through N8N webhooks |
+| `skills/productivity/google-workspace/scripts/google_api.py` | Gmail/Calendar/Drive/Sheets/Docs/Contacts CLI (replaced tools/n8n_tool.py, removed 2026-07-11 — see N8N section above, workflows left dormant) |
 | `tools/noun_resolver.py` | In-memory fuzzy / phonetic search across registry sheets |
 | `tools/entity_resolver_tool.py` | Agent tool: search contacts/projects/entities/land |
 | `tools/contact_resolver_tool.py` | Agent tool: ranked contact lookup |
