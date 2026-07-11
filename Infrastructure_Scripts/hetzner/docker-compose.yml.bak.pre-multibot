@@ -1,4 +1,4 @@
-services:
+﻿services:
   postgres:
     image: pgvector/pgvector:pg16
     restart: always
@@ -129,7 +129,7 @@ services:
       TAVILY_API_KEY: ${TAVILY_API_KEY}
       FIRECRAWL_API_KEY: ${FIRECRAWL_API_KEY}
       APIFY_API_KEY: ${APIFY_API_KEY}
-      # GWS Token Vault — access tokens stored outside container
+      # GWS Token Vault ÔÇö access tokens stored outside container
       GWS_VAULT_SECRET: ${GWS_VAULT_SECRET}
       GWS_VAULT_SOCKET: /run/gws-vault/vault.sock
     volumes:
@@ -138,7 +138,7 @@ services:
       - ./hermes-agent/skills:/opt/hermes/skills
       - ./hermes-agent/gateway/authz_mixin.py:/opt/hermes/gateway/authz_mixin.py
       - "/opt/hermes/hermes-agent/gateway/run.py:/opt/hermes/gateway/run.py:ro"
-      # Pilot: subagent-polling fix (Jun 2026) — bind-mount the edited source
+      # Pilot: subagent-polling fix (Jun 2026) ÔÇö bind-mount the edited source
       # files so they survive container recreations. Remove these lines
       # once the fix is baked into the Docker image and the image is rebuilt.
       - ./hermes-agent/hermes_state.py:/opt/hermes/hermes_state.py:ro
@@ -156,138 +156,6 @@ services:
         max-size: "50m"
         max-file: "5"
         tag: "hermes"
-
-  # ── Multi-bot Telegram channels (2026-07) ─────────────────────────────
-  # Same "brain" as the primary `hermes` service — shared users.json,
-  # shared per-user GBrain dirs (./hermes-data/users), shared Honcho config
-  # (honcho.json), shared SOUL.md/config.yaml persona, and the same
-  # gws-vault socket for OAuth identity. Each bot gets its OWN HERMES_HOME
-  # (./hermes-data-botN) so conversation/session state (state.db, sessions/,
-  # gateway.pid) stays fully independent per bot — no chat-history bleed
-  # between bots for the same user. No API server / published port needed:
-  # Open WebUI and the OAuth callback stay anchored on the primary `hermes`
-  # service; gws-service (host-networked) + the shared vault handle OAuth
-  # independent of which bot the user was chatting with.
-
-  hermes-bot2:
-    build:
-      context: ./hermes-agent
-      dockerfile: Dockerfile
-    restart: always
-    command: ["sh", "-c", "exec hermes gateway run -v"]
-    environment:
-      HERMES_HOME: /data/hermes
-      PYTHONUNBUFFERED: "1"
-      NO_COLOR: "1"
-      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN_2}
-      TELEGRAM_ALLOWED_USERS: ${TELEGRAM_ALLOWED_USERS}
-      HERMES_N8N_TOKEN: ${HERMES_N8N_TOKEN}
-      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
-      DEEPSEEK_API_KEY: ${OPENCODE_API_KEY}
-      OPENCODE_API_KEY: ${OPENCODE_API_KEY}
-      GOOGLE_AI_STUDIO_API_KEY: ${GOOGLE_AI_STUDIO_API_KEY}
-      GEMINI_API_KEY: ${GOOGLE_AI_STUDIO_API_KEY}
-      MINIMAX_API_KEY: ${MINIMAX_API_KEY}
-      GITHUB_TOKEN: ${GITHUB_TOKEN}
-      GITHUB_REPO: ${GITHUB_REPO}
-      HERMES_FORCE_SKILL_SYNC: ${HERMES_FORCE_SKILL_SYNC}
-      HERMES_OAUTH_CLIENT_ID: ${HERMES_OAUTH_CLIENT_ID}
-      HERMES_OAUTH_CLIENT_SECRET: ${HERMES_OAUTH_CLIENT_SECRET}
-      # No local API server on secondary bots — Open WebUI + OAuth callback
-      # stay anchored on the primary `hermes` service; nothing here depends
-      # on port 8642.
-      API_SERVER_ENABLED: "false"
-      BROWSER_USE_API_KEY: ${BROWSER_USE_API_KEY}
-      CAMOFOX_URL: http://camofox:9377
-      TAVILY_API_KEY: ${TAVILY_API_KEY}
-      FIRECRAWL_API_KEY: ${FIRECRAWL_API_KEY}
-      APIFY_API_KEY: ${APIFY_API_KEY}
-      GWS_VAULT_SECRET: ${GWS_VAULT_SECRET}
-      GWS_VAULT_SOCKET: /run/gws-vault/vault.sock
-    volumes:
-      # Own HERMES_HOME base — independent session/state store.
-      - ./hermes-data-bot2:/data/hermes
-      # Shared identity + long-term memory (same files/dirs the primary
-      # `hermes` service uses) — mounted INTO the per-bot base above.
-      - ./hermes-data/users.json:/data/hermes/users.json
-      - ./hermes-data/users:/data/hermes/users
-      - ./hermes-data/honcho.json:/data/hermes/honcho.json:ro
-      - ./hermes-data/SOUL.md:/data/hermes/SOUL.md:ro
-      - ./hermes-data/config.yaml:/data/hermes/config.yaml:ro
-      # Same code mounts as the primary `hermes` service (same repo
-      # checkout / hot-patch pilots).
-      - ./hermes-agent/tools:/opt/hermes/tools
-      - ./hermes-agent/skills:/opt/hermes/skills
-      - ./hermes-agent/gateway/authz_mixin.py:/opt/hermes/gateway/authz_mixin.py
-      - "/opt/hermes/hermes-agent/gateway/run.py:/opt/hermes/gateway/run.py:ro"
-      - ./hermes-agent/hermes_state.py:/opt/hermes/hermes_state.py:ro
-      - ./hermes-agent/gateway/platforms/api_server.py:/opt/hermes/gateway/platforms/api_server.py:ro
-      - ./hermes-agent/gateway/platforms/identity_resolver.py:/opt/hermes/gateway/platforms/identity_resolver.py:ro
-      - ./hermes-agent/gateway/session.py:/opt/hermes/gateway/session.py:ro
-      - ./hermes-agent/toolsets.py:/opt/hermes/toolsets.py:ro
-      - /run/gws-vault:/run/gws-vault
-    logging:
-      driver: json-file
-      options:
-        max-size: "50m"
-        max-file: "5"
-        tag: "hermes-bot2"
-
-  hermes-bot3:
-    build:
-      context: ./hermes-agent
-      dockerfile: Dockerfile
-    restart: always
-    command: ["sh", "-c", "exec hermes gateway run -v"]
-    environment:
-      HERMES_HOME: /data/hermes
-      PYTHONUNBUFFERED: "1"
-      NO_COLOR: "1"
-      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN_3}
-      TELEGRAM_ALLOWED_USERS: ${TELEGRAM_ALLOWED_USERS}
-      HERMES_N8N_TOKEN: ${HERMES_N8N_TOKEN}
-      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
-      DEEPSEEK_API_KEY: ${OPENCODE_API_KEY}
-      OPENCODE_API_KEY: ${OPENCODE_API_KEY}
-      GOOGLE_AI_STUDIO_API_KEY: ${GOOGLE_AI_STUDIO_API_KEY}
-      GEMINI_API_KEY: ${GOOGLE_AI_STUDIO_API_KEY}
-      MINIMAX_API_KEY: ${MINIMAX_API_KEY}
-      GITHUB_TOKEN: ${GITHUB_TOKEN}
-      GITHUB_REPO: ${GITHUB_REPO}
-      HERMES_FORCE_SKILL_SYNC: ${HERMES_FORCE_SKILL_SYNC}
-      HERMES_OAUTH_CLIENT_ID: ${HERMES_OAUTH_CLIENT_ID}
-      HERMES_OAUTH_CLIENT_SECRET: ${HERMES_OAUTH_CLIENT_SECRET}
-      API_SERVER_ENABLED: "false"
-      BROWSER_USE_API_KEY: ${BROWSER_USE_API_KEY}
-      CAMOFOX_URL: http://camofox:9377
-      TAVILY_API_KEY: ${TAVILY_API_KEY}
-      FIRECRAWL_API_KEY: ${FIRECRAWL_API_KEY}
-      APIFY_API_KEY: ${APIFY_API_KEY}
-      GWS_VAULT_SECRET: ${GWS_VAULT_SECRET}
-      GWS_VAULT_SOCKET: /run/gws-vault/vault.sock
-    volumes:
-      - ./hermes-data-bot3:/data/hermes
-      - ./hermes-data/users.json:/data/hermes/users.json
-      - ./hermes-data/users:/data/hermes/users
-      - ./hermes-data/honcho.json:/data/hermes/honcho.json:ro
-      - ./hermes-data/SOUL.md:/data/hermes/SOUL.md:ro
-      - ./hermes-data/config.yaml:/data/hermes/config.yaml:ro
-      - ./hermes-agent/tools:/opt/hermes/tools
-      - ./hermes-agent/skills:/opt/hermes/skills
-      - ./hermes-agent/gateway/authz_mixin.py:/opt/hermes/gateway/authz_mixin.py
-      - "/opt/hermes/hermes-agent/gateway/run.py:/opt/hermes/gateway/run.py:ro"
-      - ./hermes-agent/hermes_state.py:/opt/hermes/hermes_state.py:ro
-      - ./hermes-agent/gateway/platforms/api_server.py:/opt/hermes/gateway/platforms/api_server.py:ro
-      - ./hermes-agent/gateway/platforms/identity_resolver.py:/opt/hermes/gateway/platforms/identity_resolver.py:ro
-      - ./hermes-agent/gateway/session.py:/opt/hermes/gateway/session.py:ro
-      - ./hermes-agent/toolsets.py:/opt/hermes/toolsets.py:ro
-      - /run/gws-vault:/run/gws-vault
-    logging:
-      driver: json-file
-      options:
-        max-size: "50m"
-        max-file: "5"
-        tag: "hermes-bot3"
 
   smart-browser:
     build:
@@ -315,7 +183,7 @@ services:
       SAVE_WEBHOOK_URL: ${SAVE_WEBHOOK_URL}
       WHATSAPP_WEBHOOK_URL: ${WHATSAPP_WEBHOOK_URL}
       AUTH_FILE: /data/.auth
-      # Free Whisper microservice — reachable by compose service name on
+      # Free Whisper microservice ÔÇö reachable by compose service name on
       # the shared default network (same pattern as OPENAI_API_BASE_URL:
       # http://hermes:8642/v1 below).
       FREE_WHISPER_URL: http://free-whisper:8000
@@ -324,7 +192,7 @@ services:
     depends_on:
       - free-whisper
 
-  # Free Whisper — isolated faster-whisper transcription microservice.
+  # Free Whisper ÔÇö isolated faster-whisper transcription microservice.
   # Pilot (Phase 1): plain transcription only, called by the `voice` app's
   # new "Free Whisper" button. No vault/vocab wiring yet (Phase 2).
   free-whisper:
