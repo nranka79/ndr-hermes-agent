@@ -109,6 +109,7 @@ services:
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
       DEEPSEEK_API_KEY: ${OPENCODE_API_KEY}
       OPENCODE_API_KEY: ${OPENCODE_API_KEY}
+      OPENCODE_GO_API_KEY: ${OPENCODE_GO_API_KEY}
       GBRAIN_DATABASE_URL: ${GBRAIN_DATABASE_URL}
       GOOGLE_AI_STUDIO_API_KEY: ${GOOGLE_AI_STUDIO_API_KEY}
       GEMINI_API_KEY: ${GOOGLE_AI_STUDIO_API_KEY}
@@ -132,6 +133,7 @@ services:
       # GWS Token Vault — access tokens stored outside container
       GWS_VAULT_SECRET: ${GWS_VAULT_SECRET}
       GWS_VAULT_SOCKET: /run/gws-vault/vault.sock
+      ASSEMBLYAI_API_KEY: ${ASSEMBLYAI_API_KEY}
     volumes:
       - ./hermes-data:/data/hermes
       - ./hermes-agent/tools:/opt/hermes/tools
@@ -185,6 +187,7 @@ services:
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
       DEEPSEEK_API_KEY: ${OPENCODE_API_KEY}
       OPENCODE_API_KEY: ${OPENCODE_API_KEY}
+      OPENCODE_GO_API_KEY: ${OPENCODE_GO_API_KEY}
       GOOGLE_AI_STUDIO_API_KEY: ${GOOGLE_AI_STUDIO_API_KEY}
       GEMINI_API_KEY: ${GOOGLE_AI_STUDIO_API_KEY}
       MINIMAX_API_KEY: ${MINIMAX_API_KEY}
@@ -204,6 +207,7 @@ services:
       APIFY_API_KEY: ${APIFY_API_KEY}
       GWS_VAULT_SECRET: ${GWS_VAULT_SECRET}
       GWS_VAULT_SOCKET: /run/gws-vault/vault.sock
+      ASSEMBLYAI_API_KEY: ${ASSEMBLYAI_API_KEY}
     volumes:
       # Own HERMES_HOME base — independent session/state store.
       - ./hermes-data-bot2:/data/hermes
@@ -212,8 +216,7 @@ services:
       - ./hermes-data/users.json:/data/hermes/users.json
       - ./hermes-data/users:/data/hermes/users
       - ./hermes-data/honcho.json:/data/hermes/honcho.json:ro
-      - ./hermes-data/SOUL.md:/data/hermes/SOUL.md:ro
-      - ./hermes-data/config.yaml:/data/hermes/config.yaml:ro
+      - ./hermes-data/bin:/data/hermes/bin:ro
       # Same code mounts as the primary `hermes` service (same repo
       # checkout / hot-patch pilots).
       - ./hermes-agent/tools:/opt/hermes/tools
@@ -249,6 +252,7 @@ services:
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
       DEEPSEEK_API_KEY: ${OPENCODE_API_KEY}
       OPENCODE_API_KEY: ${OPENCODE_API_KEY}
+      OPENCODE_GO_API_KEY: ${OPENCODE_GO_API_KEY}
       GOOGLE_AI_STUDIO_API_KEY: ${GOOGLE_AI_STUDIO_API_KEY}
       GEMINI_API_KEY: ${GOOGLE_AI_STUDIO_API_KEY}
       MINIMAX_API_KEY: ${MINIMAX_API_KEY}
@@ -265,13 +269,13 @@ services:
       APIFY_API_KEY: ${APIFY_API_KEY}
       GWS_VAULT_SECRET: ${GWS_VAULT_SECRET}
       GWS_VAULT_SOCKET: /run/gws-vault/vault.sock
+      ASSEMBLYAI_API_KEY: ${ASSEMBLYAI_API_KEY}
     volumes:
       - ./hermes-data-bot3:/data/hermes
       - ./hermes-data/users.json:/data/hermes/users.json
       - ./hermes-data/users:/data/hermes/users
       - ./hermes-data/honcho.json:/data/hermes/honcho.json:ro
-      - ./hermes-data/SOUL.md:/data/hermes/SOUL.md:ro
-      - ./hermes-data/config.yaml:/data/hermes/config.yaml:ro
+      - ./hermes-data/bin:/data/hermes/bin:ro
       - ./hermes-agent/tools:/opt/hermes/tools
       - ./hermes-agent/skills:/opt/hermes/skills
       - ./hermes-agent/gateway/authz_mixin.py:/opt/hermes/gateway/authz_mixin.py
