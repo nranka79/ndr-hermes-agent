@@ -10,14 +10,21 @@ container or any paid cloud STT API.
 
 PILOT SCOPE (Phase 1) — deliberately minimal:
   - Plain transcription only. POST audio in, get text back.
-  - No vault integration, no per-user vocabulary injection yet.
-  - X-Hermes-User-Email is accepted and logged now so the request shape
-    is already correct for Phase 2, when this will call the gws-vault
-    daemon (service="vocab") for per-user initial_prompt/hotwords —
-    mirroring how tools/gws_auth.py resolves identity for GWS tokens.
+  - X-Hermes-User-Email is accepted and logged.
 
-Not in this pilot (see plan): vault-backed vocabulary CRUD endpoints,
-migration of existing vocab data, Telegram /vocab command update.
+PHASE 2 (added 2026-07-11) — per-user vocabulary hint passthrough:
+  - This service still has NO direct vault integration (no gws-vault
+    calls here). Callers (stt_wrapper.sh, on behalf of
+    tools/transcription_tools.py::transcribe_audio(), which already
+    resolves the caller's vault-backed "vocab" list) forward the
+    precomputed hint via X-Whisper-Prompt (natural-sentence
+    initial_prompt) / X-Whisper-Hotwords (comma-separated hotwords).
+    Both optional — absent/empty means no hint, identical to old
+    behavior.
+
+Not in this service: vault-backed vocabulary CRUD endpoints, migration
+of existing vocab data, Telegram /vocab command (all live in the main
+hermes app / tools/user_vocab.py).
 
 Model is loaded once at startup (not on first request) so the first real
 user isn't stuck waiting for both model load AND their own transcription.
@@ -92,14 +99,21 @@ async def transcribe(request: Request):
     user_email = request.headers.get("x-hermes-user-email", "unknown")
     language = (request.headers.get("x-whisper-language") or request.query_params.get("language") or "").strip()
     language = language or None
+    # Per-user STT vocabulary hints (Phase 2 — see module docstring). Caller
+    # (stt_wrapper.sh) forwards the same initial_prompt/hotwords already
+    # computed by tools/transcription_tools.py::transcribe_audio() from the
+    # gws-vault "vocab" store. Optional — absent/empty headers behave
+    # exactly as before (no hint injected).
+    initial_prompt = (request.headers.get("x-whisper-prompt") or "").strip() or None
+    hotwords = (request.headers.get("x-whisper-hotwords") or "").strip() or None
 
     audio_bytes = await request.body()
     if not audio_bytes:
         return JSONResponse({"success": False, "error": "empty audio body"}, status_code=400)
 
     logger.info(
-        "Transcribe request: user=%s bytes=%d language=%s",
-        user_email, len(audio_bytes), language or "auto",
+        "Transcribe request: user=%s bytes=%d language=%s vocab_hint=%s",
+        user_email, len(audio_bytes), language or "auto", bool(initial_prompt or hotwords),
     )
 
     try:
@@ -118,6 +132,10 @@ async def transcribe(request: Request):
         kwargs = {"beam_size": 5}
         if language:
             kwargs["language"] = language
+        if initial_prompt:
+            kwargs["initial_prompt"] = initial_prompt
+        if hotwords:
+            kwargs["hotwords"] = hotwords
         segments, info = model.transcribe(tmp_path, **kwargs)
         text = " ".join(seg.text.strip() for seg in segments).strip()
         elapsed = time.time() - t0
