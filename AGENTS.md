@@ -271,12 +271,11 @@ ssh -i $env:USERPROFILE\.ssh\hetzner_new root@178.105.35.94 `
 
 | Path | Purpose |
 |---|---|
-| `skills/productivity/google-workspace/scripts/google_api.py` | Gmail/Calendar/Drive/Sheets/Docs/Contacts CLI (replaced tools/n8n_tool.py, removed 2026-07-11 — see N8N section above, workflows left dormant) |
+| `tools/gws_auth.py` | THE Gmail/Calendar/Drive/Sheets/Docs/Tasks/Contacts mechanism (replaced tools/n8n_tool.py, removed 2026-07-11 — see N8N section above, workflows left dormant). `build_service(api, version, service_name=...)` — agent writes plain google-api-python-client calls inline via `execute_code`. See 'Google Workspace Auth' section above for full detail. Confirmed live in prod logs (drafts, sends, etc). `skills/productivity/google-workspace/` skill is a separate, likely-dead single-account fallback — not confirmed in active use. |
 | `tools/noun_resolver.py` | In-memory fuzzy / phonetic search across registry sheets |
 | `tools/entity_resolver_tool.py` | Agent tool: search contacts/projects/entities/land |
 | `tools/contact_resolver_tool.py` | Agent tool: ranked contact lookup |
 | `tools/noun_learner_tool.py` | Writes corrections/associations back to sheets |
-| `tools/gws_auth.py` | Per-user OAuth2 token management |
 | `model_tools.py` | Tool discovery / registration list |
 | `toolsets.py` | Tool groupings by capability |
 

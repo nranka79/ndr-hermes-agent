@@ -9,10 +9,18 @@ Python: /c/Python314/python.exe (NOT `python3` — Windows Store alias intercept
 ## N8N (DEPRECATED for GWS routing — 2026-07-11)
 
 `tools/n8n_tool.py` has been REMOVED. Hermes no longer routes Gmail/Sheets/
-Calendar/Docs/Tasks/Contacts through N8N webhooks. Replaced by the
-`google-workspace` skill (`skills/productivity/google-workspace/scripts/
-google_api.py` + `gws_bridge.py`), invoked via the `terminal`/`execute_code`
-tools — see Key File Paths below.
+Calendar/Docs/Tasks/Contacts through N8N webhooks. Replaced by direct
+`google-api-python-client` calls written inline via the `execute_code` tool,
+authenticated through `tools/gws_auth.py`'s `build_service(api, version,
+service_name=...)` (per-user, multi-account, vault-backed — service names:
+`google-draas`, `google-ahfl`, `google-gmail`). This is the SOLE sanctioned
+path per `hermes-data/SOUL.md`: "NEVER build Google credentials inline —
+always go through tools.gws_auth.build_service(...)". Confirmed working in
+production logs (Gmail draft creation, real Draft IDs returned) — see Key
+File Paths below. The separate `google-workspace` skill
+(`skills/productivity/google-workspace/`) is a DIFFERENT, single-account,
+legacy mechanism — likely superseded/redundant now, not confirmed in active
+use, needs a follow-up decision on whether to remove it too.
 
 The N8N workflows listed below are left DORMANT on the Hetzner n8n instance
 (not deleted, not decommissioned — just no longer called by Hermes). Do NOT
@@ -129,8 +137,7 @@ docker compose exec hermes bash
 
 | File | Purpose |
 |---|---|
-| `skills/productivity/google-workspace/scripts/google_api.py` | Gmail/Calendar/Drive/Sheets/Docs/Contacts CLI wrapper (uses `gws` binary or bundled Python client) — replaced `tools/n8n_tool.py` (removed 2026-07-11). Invoked via `terminal`/`execute_code`, NOT a direct tool call. |
-| `skills/productivity/google-workspace/scripts/gws_bridge.py` | Bridges Hermes OAuth token (`~/.hermes/google_token.json`) to the external `gws` CLI binary. |
+| `tools/gws_auth.py` | THE Gmail/Calendar/Drive/Sheets/Docs/Tasks/Contacts mechanism — replaced `tools/n8n_tool.py` (removed 2026-07-11). `build_service(api, version, service_name=...)` returns an authenticated `googleapiclient` service object (vault-backed, multi-account, auto-refreshing). Agent writes plain `google-api-python-client` calls inline via `execute_code` — e.g. `service.users().drafts().create(...)`. NOT a discrete named tool — no fixed operation menu, so it covers everything the Google APIs support (drafts included) as long as the model writes the right call. `gws_resolve_account` (separate tool) only picks WHICH service_name to use. |
 | `tools/noun_resolver.py` | In-memory index + fuzzy/phonetic search across all registry sheets |
 | `tools/entity_resolver_tool.py` | Agent tool: search contacts/projects/entities/land by name |
 | `tools/contact_resolver_tool.py` | Agent tool: ranked contact lookup (3-signal: name+context+compound) |
@@ -144,10 +151,11 @@ dead import in `contact_resolver_tool.py` (fixed 2026-07-07) that caused
 draas contact lookups to fail and the agent to wrongly generate an OAuth
 re-auth link.
 
-Note: `skills/productivity/google-workspace/scripts/google_api.py` is
-single-account — it reads one `~/.hermes/google_token.json`, NOT the
-multi-account vault (`gws_auth.py`). It does not currently support Gmail
-draft creation/listing (send/reply/search/get only).
+Note: `skills/productivity/google-workspace/scripts/google_api.py` +
+`gws_bridge.py` are a SEPARATE, single-account skill (reads one
+`~/.hermes/google_token.json`, NOT the multi-account vault). This is NOT
+the mechanism actually used in production (confirmed via logs — see above).
+Status unclear: may be legacy/dead. Do not assume it is the active GWS path.
 
 ---
 
