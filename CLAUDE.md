@@ -6,12 +6,23 @@ Python: /c/Python314/python.exe (NOT `python3` — Windows Store alias intercept
 
 ---
 
-## N8N
+## N8N (DEPRECATED for GWS routing — 2026-07-11)
+
+`tools/n8n_tool.py` has been REMOVED. Hermes no longer routes Gmail/Sheets/
+Calendar/Docs/Tasks/Contacts through N8N webhooks. Replaced by the
+`google-workspace` skill (`skills/productivity/google-workspace/scripts/
+google_api.py` + `gws_bridge.py`), invoked via the `terminal`/`execute_code`
+tools — see Key File Paths below.
+
+The N8N workflows listed below are left DORMANT on the Hetzner n8n instance
+(not deleted, not decommissioned — just no longer called by Hermes). Do NOT
+re-add N8N routing for these services without explicit instruction. Info
+below kept for historical/reference purposes only.
 
 Instance: https://transcribe.ahfl.in (Hetzner, self-hosted)
 API key: stored in env as HERMES_N8N_TOKEN — do not hardcode
 
-### Workflows
+### Workflows (dormant, unused by Hermes)
 
 | Name | ID | Purpose |
 |---|---|---|
@@ -25,7 +36,7 @@ API key: stored in env as HERMES_N8N_TOKEN — do not hardcode
 Webhook base: `https://transcribe.ahfl.in/webhook/{workflow-name}`
 All webhooks are POST, body at `$input.first().json.body`
 
-### N8N Gotchas (learned the hard way)
+### N8N Gotchas (learned the hard way — kept for reference)
 - Webhook wraps POST body under `.body` key: read as `$input.first().json.body || $input.first().json`.
 - Task runner VM (N8N 2.x) does NOT have `fetch`, `URL`, `URLSearchParams` as globals. All workflows use an https-module fetch polyfill + manual encodeURIComponent for query strings.
 - `N8N_BLOCK_ENV_ACCESS_IN_NODE=false` must be set on BOTH `n8n` AND `n8n-worker` — worker runs all Code node executions in queue mode.
@@ -118,12 +129,13 @@ docker compose exec hermes bash
 
 | File | Purpose |
 |---|---|
-| `tools/n8n_tool.py` | Routes GWS operations through N8N webhooks |
+| `skills/productivity/google-workspace/scripts/google_api.py` | Gmail/Calendar/Drive/Sheets/Docs/Contacts CLI wrapper (uses `gws` binary or bundled Python client) — replaced `tools/n8n_tool.py` (removed 2026-07-11). Invoked via `terminal`/`execute_code`, NOT a direct tool call. |
+| `skills/productivity/google-workspace/scripts/gws_bridge.py` | Bridges Hermes OAuth token (`~/.hermes/google_token.json`) to the external `gws` CLI binary. |
 | `tools/noun_resolver.py` | In-memory index + fuzzy/phonetic search across all registry sheets |
 | `tools/entity_resolver_tool.py` | Agent tool: search contacts/projects/entities/land by name |
 | `tools/contact_resolver_tool.py` | Agent tool: ranked contact lookup (3-signal: name+context+compound) |
 | `tools/noun_learner_tool.py` | Writes corrections/associations back to sheets |
-| `tools/gws_auth.py` | Per-user OAuth2 token management (vault-backed): `build_service()`, `get_auth_url()` |
+| `tools/gws_auth.py` | Per-user OAuth2 token management (vault-backed, multi-account): `build_service()`, `get_auth_url()` — used by `gws_resolve_account` tool for account resolution only, NOT Gmail/Calendar/Sheets operations. |
 | `model_tools.py` | Tool discovery/registration list |
 | `toolsets.py` | Tool groupings by capability |
 
@@ -131,6 +143,11 @@ Note: `tools/gws/_shared.py` does NOT exist — do not reference it. It was a
 dead import in `contact_resolver_tool.py` (fixed 2026-07-07) that caused
 draas contact lookups to fail and the agent to wrongly generate an OAuth
 re-auth link.
+
+Note: `skills/productivity/google-workspace/scripts/google_api.py` is
+single-account — it reads one `~/.hermes/google_token.json`, NOT the
+multi-account vault (`gws_auth.py`). It does not currently support Gmail
+draft creation/listing (send/reply/search/get only).
 
 ---
 
