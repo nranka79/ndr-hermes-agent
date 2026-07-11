@@ -619,6 +619,8 @@ def _transcribe_command_stt(
     config: Dict[str, Any],
     stt_config: Dict[str, Any],
     model_override: Optional[str] = None,
+    initial_prompt: Optional[str] = None,
+    hotwords: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Transcribe via a user-declared ``stt.providers.<name>: type: command``.
 
@@ -632,6 +634,8 @@ def _transcribe_command_stt(
     | ``{format}``      | configured output format (``txt`` / ``json`` / ``srt`` / ``vtt``) |
     | ``{language}``    | configured language code (default ``en``)                 |
     | ``{model}``       | configured model id (empty when not set)                  |
+    | ``{initial_prompt}`` | per-user STT vocabulary hint sentence (empty if none)   |
+    | ``{hotwords}``    | per-user STT vocabulary hotword list, comma-separated (empty if none) |
 
     All placeholders are shell-quote-aware (see ``_render_command_stt_template``).
     Doubled braces ``{{`` and ``}}`` are preserved as literal braces.
@@ -676,6 +680,8 @@ def _transcribe_command_stt(
                 "format": output_format,
                 "language": str(language),
                 "model": str(model),
+                "initial_prompt": str(initial_prompt or ""),
+                "hotwords": str(hotwords or ""),
             }
             command = _render_command_stt_template(command_template, placeholders)
             logger.info(
@@ -1730,6 +1736,8 @@ def transcribe_audio(file_path: str, model: Optional[str] = None, user_id: Optio
             command_provider_config,
             stt_config,
             model_override=model,
+            initial_prompt=initial_prompt,
+            hotwords=hotwords,
         )
 
     # Plugin-registered STT backend (e.g. OpenRouter, SenseAudio,
