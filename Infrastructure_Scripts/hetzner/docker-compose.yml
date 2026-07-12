@@ -134,6 +134,7 @@ services:
       GWS_VAULT_SECRET: ${GWS_VAULT_SECRET}
       GWS_VAULT_SOCKET: /run/gws-vault/vault.sock
       ASSEMBLYAI_API_KEY: ${ASSEMBLYAI_API_KEY}
+      MISTRAL_API_KEY: ${MISTRAL_API_KEY}
     volumes:
       - ./hermes-data:/data/hermes
       - ./hermes-agent/tools:/opt/hermes/tools
@@ -208,6 +209,7 @@ services:
       GWS_VAULT_SECRET: ${GWS_VAULT_SECRET}
       GWS_VAULT_SOCKET: /run/gws-vault/vault.sock
       ASSEMBLYAI_API_KEY: ${ASSEMBLYAI_API_KEY}
+      MISTRAL_API_KEY: ${MISTRAL_API_KEY}
     volumes:
       # Own HERMES_HOME base — independent session/state store.
       - ./hermes-data-bot2:/data/hermes
