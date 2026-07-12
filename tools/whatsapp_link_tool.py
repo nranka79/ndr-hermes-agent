@@ -75,6 +75,8 @@ WHATSAPP_LINK_SCHEMA = {
                     "Recipient phone number. Any format is accepted — E.164 "
                     "(+15551234567), local, or with spaces/dashes. "
                     "All non-digit characters are stripped automatically. "
+                    "10-digit numbers without a country code automatically "
+                    "get ISD 91 (India) prepended. "
                     "Omit to create a link that opens WhatsApp without a "
                     "pre-set recipient."
                 ),

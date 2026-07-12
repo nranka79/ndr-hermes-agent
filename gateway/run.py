@@ -285,6 +285,14 @@ def _looks_like_gateway_provider_error(text: str) -> bool:
     return bool(_GATEWAY_PROVIDER_ERROR_SHAPE_RE.search(body))
 
 
+_WA_ME_10DIGIT_RE = re.compile(r"https://wa\.me/(\d{10})(?=[/?\s]|$)")
+
+
+def _fix_wa_me_isd(text: str) -> str:
+    """Add 91 ISD code to bare 10-digit phone numbers in wa.me URLs."""
+    return _WA_ME_10DIGIT_RE.sub(r"https://wa.me/91\1", text)
+
+
 def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
     """Sanitize final gateway replies before sending them to high-noise chats.
 
@@ -294,10 +302,14 @@ def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
     """
     if not text:
         return text
+
+    # Fix bare 10-digit phone numbers in wa.me URLs across all platforms.
+    text = _fix_wa_me_isd(str(text))
+
     if _gateway_platform_value(platform) != "telegram":
         return text
 
-    redacted = _redact_gateway_user_facing_secrets(str(text))
+    redacted = _redact_gateway_user_facing_secrets(text)
     if _looks_like_gateway_provider_error(redacted):
         return _gateway_provider_error_reply(redacted)
     return redacted
