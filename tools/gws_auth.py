@@ -51,6 +51,15 @@ from google_auth_oauthlib.flow import Flow
 logger = logging.getLogger(__name__)
 
 # All scopes granted once; user authorizes the full set at first login.
+# NOTE: this list is the target for NEW authorizations only (get_auth_url /
+# exchange_and_store below). It is intentionally NOT used to override the
+# scopes of an EXISTING stored token in load_credentials() -- see the 2026-07
+# fix there. Forcing this list onto every loaded token meant that adding a
+# single new scope here broke refresh (and therefore ALL API access, Gmail
+# included) for every account that had not yet been individually re-authed,
+# because Google's refresh_token grant requires every requested scope to
+# already be authorized for that refresh_token or it rejects the whole grant
+# with invalid_scope.
 HERMES_GWS_SCOPES = [
     "https://www.googleapis.com/auth/gmail.modify",
     "https://www.googleapis.com/auth/calendar",
@@ -280,13 +289,26 @@ def load_credentials(telegram_id: str, service_name: str = _DEFAULT_SERVICE) -> 
         telegram_id:  Session's raw channel id (Telegram numeric id, etc.).
                       Resolved to the canonical vault user_id internally.
         service_name: Vault service key (e.g. ``"google-draas"``).
+
+    Scope handling (2026-07 fix): the returned ``Credentials`` use whatever
+    scopes are actually stored in the vault token JSON -- ``HERMES_GWS_SCOPES``
+    is intentionally NOT forced onto an existing token here. Previously this
+    function overrode ``.scopes`` to the current ``HERMES_GWS_SCOPES`` on every
+    load, so any token authorized before a scope was added to that constant
+    would fail Google's refresh grant with ``invalid_scope`` -- and because
+    the request bundles every scope into a single refresh call, that ONE
+    missing scope broke refresh (and therefore ALL API access -- Gmail,
+    Calendar, Sheets, everything) for that account, not just the feature that
+    needed the new scope. Loading with the token's own stored scopes means a
+    stale/narrower token still refreshes fine for everything it WAS
+    authorized for; only the genuinely new capability is unavailable until
+    the user re-authorizes via :func:`get_auth_url` (which does use the full
+    current ``HERMES_GWS_SCOPES`` list, since that's a fresh consent grant).
     """
     from tools import gws_vault_client as vault
     uid = canonical_uid(telegram_id)
     token_json = vault.get_token(uid, service_name, session_uid=uid)
-    creds = Credentials.from_authorized_user_info(
-        json.loads(token_json), HERMES_GWS_SCOPES
-    )
+    creds = Credentials.from_authorized_user_info(json.loads(token_json))
     if creds.expired and creds.refresh_token:
         from google.auth.transport.requests import Request
         creds.refresh(Request())
