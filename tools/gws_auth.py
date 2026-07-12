@@ -59,6 +59,13 @@ HERMES_GWS_SCOPES = [
     "https://www.googleapis.com/auth/tasks",
     "https://www.googleapis.com/auth/documents",
     "https://www.googleapis.com/auth/spreadsheets",
+    # Google Photos. Post-2025-03-31 the broad photoslibrary scopes no longer
+    # exist — reading a user's pre-existing library is Picker-API-only (user
+    # selects items in the Google Photos UI), and the Library API only touches
+    # app-created content. See tools/gws_skill_bridge.py photos_* operations.
+    "https://www.googleapis.com/auth/photospicker.mediaitems.readonly",
+    "https://www.googleapis.com/auth/photoslibrary.appendonly",
+    "https://www.googleapis.com/auth/photoslibrary.readonly.appcreateddata",
 ]
 
 _REDIRECT_URI = "https://transcribe.ahfl.in/gws/auth/callback"
