@@ -14,7 +14,7 @@ Encoding rules (RFC 3986 + WhatsApp-specific workarounds):
   │                      │                     │   %3D                    │
   │ Reserved (gen-delim) │ : / ? # [ ] @       │ → %3A %2F %3F %23 %5B    │
   │                      │                     │   %5D %40                │
-  │ Unsafe               │ space " % < > \ ^   │ → %20 %22 %25 %3C %3E    │
+   │ Unsafe               │ space " % < > \\ ^   │ → %20 %22 %25 %3C %3E    │
   │                      │ ` { | }             │   %5C %5E %60 %7B %7C    │
   │                      │                     │   %7D                    │
   │ Non-ASCII            │ unicode, emoji       │ UTF-8 → percent-encoded  │
