@@ -141,6 +141,9 @@ def whatsapp_link_tool(args, **kw):
         return tool_error("At least one of 'phone' or 'text' must be provided.")
 
     phone_digits = _sanitize_phone(phone_raw) if phone_raw else ""
+    # Bare 10-digit number without ISD code — default to ISD 91 (India).
+    if phone_digits and len(phone_digits) == 10:
+        phone_digits = "91" + phone_digits
     base = f"https://wa.me/{phone_digits}" if phone_digits else "https://wa.me/"
     encoded_text = _encode_wa_text(text_raw) if text_raw else ""
     url = f"{base}?text={encoded_text}" if encoded_text else base
