@@ -87,6 +87,8 @@ _HERMES_CORE_TOOLS = [
     # Google Sheets registry) -- per-user OAuth via gws_auth, no SA/DWD.
     "contact_resolver",
     "entity_resolver",
+    # Document OCR (Mistral OCR 4) -- gated on MISTRAL_API_KEY via check_fn
+    "ocr_mistral",
 ]
 
 # Webhook events may originate from untrusted third-party content (for example,
