@@ -483,7 +483,14 @@ WHATSAPP_LINK_GUIDANCE = (
     "you MUST call the whatsapp_link tool — never construct or type a wa.me "
     "URL manually. The tool handles all required URL encoding, including the "
     "special rule that '&' in message text must be encoded as %EF%BC%86 "
-    "(fullwidth ampersand) rather than %26."
+    "(fullwidth ampersand) rather than %26.\n\n"
+    "CRITICAL: Never pre-process, strip, or modify the message text before "
+    "passing it to the tool. Characters like (, ), ', &, #, +, -, =, ., !, "
+    "and all other special characters are properly percent-encoded by the "
+    "tool. If the resulting URL appears broken in Telegram, do NOT strip "
+    "characters from the message text — that is a display-layer issue "
+    "handled automatically by the Telegram platform adapter. Use the "
+    "platform='telegram' parameter to get a MarkdownV2-safe display version."
 )
 
 PLATFORM_HINTS = {
