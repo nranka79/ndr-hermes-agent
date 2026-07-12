@@ -448,6 +448,14 @@ def _parse_target_ref(platform_name: str, target_ref: str):
             # Preserve the leading '+' — signal-cli and sms/whatsapp adapters
             # expect E.164 format for direct recipients.
             return target_ref.strip(), None, True
+        # Bare 10-digit number without ISD code — default to +91 (India).
+        stripped = target_ref.strip()
+        if re.fullmatch(r"\d{10}", stripped):
+            return f"+91{stripped}", None, True
+        # Digits-only number that didn't start with '+' — treat as E.164
+        # with the country code already embedded.
+        if re.fullmatch(r"\d{7,15}", stripped):
+            return f"+{stripped}", None, True
     if target_ref.lstrip("-").isdigit():
         return target_ref, None, True
     # Matrix room IDs (start with !) and user IDs (start with @) are explicit
