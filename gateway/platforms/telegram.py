@@ -4411,6 +4411,21 @@ class TelegramAdapter(BasePlatformAdapter):
 
         text = re.sub(r'\[([^\]]+)\]\(([^()]*(?:\([^()]*\)[^()]*)*)\)', _convert_link, text)
 
+        # 3.5) Wrap bare URLs (not already in markdown link syntax) so that
+        #      Telegram always gets an explicit [display](url) pair.  This
+        #      prevents MarkdownV2 reserved characters inside the URL from
+        #      ever being misinterpreted as formatting markers, and ensures
+        #      wa.me and other deep-link URLs render as clickable links even
+        #      when their percent-encoded payload contains ) or similar chars
+        #      that confuse Telegram's auto-link detection.
+        #      Only http/https URLs are wrapped (wa.me, api.whatsapp.com, etc).
+        def _wrap_bare_url(m):
+            url = m.group(0)
+            display = _escape_mdv2(url)
+            return _ph(f'[{display}]({url})')
+
+        text = re.sub(r'https?://[^\s<>\[\]]+', _wrap_bare_url, text)
+
         # 4) Convert markdown headers (## Title) → bold *Title*
         def _convert_header(m):
             inner = m.group(1).strip()
