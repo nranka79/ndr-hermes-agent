@@ -71,6 +71,26 @@ def _detect_session() -> tuple[str, str]:
         return "", ""
 
 
+def _session_user_id() -> str:
+    """Return the raw channel id of the session user, from session context ONLY.
+
+    This is the identity that ends up in the OAuth ``state`` parameter and
+    therefore decides WHOSE vault entry the token is stored under. It is
+    deliberately not a tool parameter: on 2026-07-13 the model passed another
+    user's telegram id here (it read it from the AGENTS.md user table), which
+    filed psingh's Google token under ndr's vault uid and overwrote ndr's
+    token. Session context is the only trustworthy source.
+
+    Uses ``get_gws_identity_env`` so cron jobs (which clear
+    ``HERMES_SESSION_USER_ID``) still resolve to the job owner's id.
+    """
+    try:
+        from gateway.session_context import get_gws_identity_env
+        return get_gws_identity_env().strip()
+    except Exception:
+        return os.environ.get("HERMES_SESSION_USER_ID", "").strip()
+
+
 # ---------------------------------------------------------------------------
 # Per-channel delivery
 # ---------------------------------------------------------------------------
@@ -191,7 +211,6 @@ def check_requirements() -> bool:
 
 
 def send_oauth_url(
-    telegram_id: str,
     login_hint: str | None = None,
     service_name: str | None = None,
     label: str = "Authorize Google account",
@@ -203,14 +222,12 @@ def send_oauth_url(
     The return value is a status object: ``success``, ``delivery``,
     ``message_id`` (Telegram), and ``service`` — no URLs, no client_ids.
 
+    The authorizing user's identity is taken from the session context ONLY
+    (see :func:`_session_user_id`) — there is deliberately no ``telegram_id``
+    parameter, so the model can never file a token under another user's
+    vault entry.
+
     Args:
-        telegram_id:  Telegram numeric ID of the user authorizing. Used by
-                      ``gws_auth.get_auth_url()`` to build the OAuth state
-                      parameter so the callback can route the token to the
-                      right user. The delivery target is the current session's
-                      chat, NOT necessarily this telegram_id (e.g. cron jobs
-                      can authorize on behalf of a user without sending the
-                      button to that user).
         login_hint:   Optional email to pre-fill in Google's login form.
         service_name: Optional vault service name (e.g. ``"google-draas"``)
                       — for tracking only. The actual vault key is auto-
@@ -219,9 +236,21 @@ def send_oauth_url(
     """
     from tools import gws_auth
 
+    # 0) Resolve the authorizing user from the session — never from the model.
+    user_id = _session_user_id()
+    if not user_id:
+        return json.dumps({
+            "success": False,
+            "error": (
+                "No session user context (HERMES_SESSION_USER_ID / cron owner "
+                "not set) — cannot determine who is authorizing. OAuth links "
+                "can only be sent from a user session."
+            ),
+        })
+
     # 1) Compute the URL server-side. The URL never leaves this function
     #    except via the channel-specific delivery (button / print / JSON).
-    url = gws_auth.get_auth_url(str(telegram_id), login_hint=login_hint)
+    url = gws_auth.get_auth_url(user_id, login_hint=login_hint)
 
     # 2) Detect the current session's channel and deliver accordingly.
     platform, chat_id = _detect_session()
@@ -263,19 +292,14 @@ registry.register(
             "re-type or paraphrase it, because small chat models have been "
             "observed to silently truncate substrings like 'google.' from "
             "OAuth client_ids. Describe the action in prose ('I sent you a "
-            "button / link to authorize ndr@draas.com') without revealing the URL."
+            "button / link to authorize ndr@draas.com') without revealing the URL. "
+            "The authorizing user is ALWAYS the current session user — the "
+            "tool reads the identity from the session itself and there is no "
+            "way (and no need) to pass a user or telegram id."
         ),
         "parameters": {
             "type": "object",
             "properties": {
-                "telegram_id": {
-                    "type": "string",
-                    "description": (
-                        "Telegram numeric ID of the user authorizing. "
-                        "Use HERMES_SESSION_USER_ID when authorizing the "
-                        "current session user."
-                    ),
-                },
                 "login_hint": {
                     "type": "string",
                     "description": (
@@ -299,11 +323,13 @@ registry.register(
                     ),
                 },
             },
-            "required": ["telegram_id"],
+            "required": [],
         },
     },
+    # NOTE: args may still contain a stray "telegram_id" from an older model
+    # transcript — it is intentionally ignored; identity comes from the
+    # session inside send_oauth_url().
     handler=lambda args, **kw: send_oauth_url(
-        telegram_id=args.get("telegram_id"),
         login_hint=args.get("login_hint"),
         service_name=args.get("service_name"),
         label=args.get("label", "Authorize Google account"),

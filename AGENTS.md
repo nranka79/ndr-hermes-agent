@@ -196,14 +196,23 @@ data is small/cheap and the channel is markdown-only and a verbatim
 
 ### Users
 
-| Name | Telegram ID | Email | Role | GBrain home (slug) |
-|---|---|---|---|---|
-| Nishant Ranka | `7449813913` | `ndr@draas.com` | admin | `/data/hermes/users/ndr` |
-| Roshini Ranka | `7245204091` | `rnr@draas.com` | admin | `/data/hermes/users/rnr` |
-| Bharat Hawaldar | `8717455402` | `sales1.blr@draas.com` | employee | `/data/hermes/users/sales1.blr` |
-| Vinod Kumar Das | `8654428154` | `vkdas@draas.com` | employee | `/data/hermes/users/vkdas` |
-| Anbarasan Murugaperumal | `7281906252` | `pm2.blr@draas.com` | employee | `/data/hermes/users/pm2.blr` |
-| Prakash Singh | `8502281203` | `psingh@draas.com` | employee | `/data/hermes/users/psingh` |
+| Name | Email | Role | GBrain home (slug) |
+|---|---|---|---|
+| Nishant Ranka | `ndr@draas.com` | admin | `/data/hermes/users/ndr` |
+| Roshini Ranka | `rnr@draas.com` | admin | `/data/hermes/users/rnr` |
+| Bharat Hawaldar | `sales1.blr@draas.com` | employee | `/data/hermes/users/sales1.blr` |
+| Vinod Kumar Das | `vkdas@draas.com` | employee | `/data/hermes/users/vkdas` |
+| Anbarasan Murugaperumal | `pm2.blr@draas.com` | employee | `/data/hermes/users/pm2.blr` |
+| Prakash Singh | `psingh@draas.com` | employee | `/data/hermes/users/psingh` |
+
+Telegram ids are deliberately NOT listed here (or anywhere else the model can
+read). This file is loaded into every agent session's system prompt, and on
+2026-07-13 the model copied another user's telegram id out of this table into
+an OAuth flow (`send_oauth_url`), which filed one user's Google token under
+another user's vault entry and overwrote the original token. User ids must
+come from the session context only, inside the tools that need them
+(`send_oauth_url`, `gws_auth`). The id ↔ user mapping lives in
+`/opt/hermes/hermes-data/users.json` (not loaded into the model prompt).
 
 Per-user GBrain dir (in container): `/data/hermes/users/{draas_user_id}/`. Each dir is owned by UID `10000` so the agent (running as that UID inside the container) can read + write per-user data.
 

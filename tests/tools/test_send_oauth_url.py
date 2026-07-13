@@ -8,6 +8,11 @@ markdown link). The LLM's return value is a status object, never the URL.
 Also pinned:
   * The tool computes the URL via ``gws_auth.get_auth_url`` (no LLM
     transcription, no string-stitching).
+  * **The authorizing identity comes from the session context ONLY.**
+    There is no ``telegram_id`` parameter; a stray ``telegram_id`` in the
+    tool args (older transcripts) is ignored. Regression for 2026-07-13:
+    the model passed another user's telegram id (read from the AGENTS.md
+    user table) and filed psingh's token under ndr's vault entry.
   * Each channel's delivery primitive is invoked with the URL in the
     right place (button URL, stderr print, markdown link).
   * Channels that support buttons (Telegram) get zero URL in the
@@ -67,10 +72,16 @@ def _stub_session_context(platform: str, chat_id: str):
 
 @pytest.fixture
 def patched_env(monkeypatch):
-    """Set the env vars check_requirements looks for."""
+    """Set the env vars check_requirements looks for + a session user id.
+
+    HERMES_SESSION_USER_ID is set because the tool now resolves the
+    authorizing user from session context only (get_gws_identity_env falls
+    back to os.environ in test processes that never call set_session_vars).
+    """
     monkeypatch.setenv("HERMES_OAUTH_CLIENT_ID", "test-client-id.apps.googleusercontent.com")
     monkeypatch.setenv("HERMES_OAUTH_CLIENT_SECRET", "GOCSPX-testsecret")
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-bot-token")
+    monkeypatch.setenv("HERMES_SESSION_USER_ID", "7449813913")
 
 
 # ---------------------------------------------------------------------------
@@ -116,7 +127,6 @@ class TestTelegramDelivery:
                 MockBot.return_value = bot_instance
 
                 result_json = send_oauth_url.send_oauth_url(
-                    telegram_id="7449813913",
                     login_hint="ndr@draas.com",
                     service_name="google-draas",
                 )
@@ -239,7 +249,7 @@ class TestChannelRouting:
             bot_instance.close = AsyncMock()
             MockBot.return_value = bot_instance
 
-            send_oauth_url.send_oauth_url(telegram_id="7449813913")
+            send_oauth_url.send_oauth_url()
 
         mock_tg.assert_called_once()
         mock_cli.assert_not_called()
@@ -255,7 +265,7 @@ class TestChannelRouting:
              patch.object(send_oauth_url, "_deliver_telegram_button") as mock_tg, \
              patch.object(send_oauth_url, "_deliver_markdown_link") as mock_md:
 
-            send_oauth_url.send_oauth_url(telegram_id="7449813913")
+            send_oauth_url.send_oauth_url()
 
         mock_cli.assert_called_once()
         mock_tg.assert_not_called()
@@ -271,7 +281,7 @@ class TestChannelRouting:
              patch.object(send_oauth_url, "_deliver_telegram_button") as mock_tg, \
              patch.object(send_oauth_url, "_deliver_cli_print") as mock_cli:
 
-            send_oauth_url.send_oauth_url(telegram_id="7449813913")
+            send_oauth_url.send_oauth_url()
 
         mock_md.assert_called_once()
         mock_tg.assert_not_called()
@@ -286,7 +296,7 @@ class TestChannelRouting:
              patch.object(send_oauth_url, "_deliver_markdown_link",
                           wraps=send_oauth_url._deliver_markdown_link) as mock_md:
 
-            send_oauth_url.send_oauth_url(telegram_id="7449813913")
+            send_oauth_url.send_oauth_url()
 
         mock_md.assert_called_once()
 
@@ -302,7 +312,6 @@ class TestChannelRouting:
                           wraps=send_oauth_url._deliver_cli_print):
 
             send_oauth_url.send_oauth_url(
-                telegram_id="7449813913",
                 login_hint="ndr@draas.com",
             )
 
@@ -339,7 +348,6 @@ class TestNoUrlInReturnValue:
             MockBot.return_value = bot_instance
 
             result_json = send_oauth_url.send_oauth_url(
-                telegram_id="7449813913",
                 login_hint="ndr@draas.com",
             )
 
@@ -357,6 +365,80 @@ class TestNoUrlInReturnValue:
             result = json.loads(result_json)
             assert "markdown_link" in result
             assert "VERBATIM" in result["_instruction"]
+
+
+# ---------------------------------------------------------------------------
+# Identity comes from the session ONLY (2026-07-13 regression)
+# ---------------------------------------------------------------------------
+
+class TestSessionIdentityOnly:
+    """The model must not be able to choose WHO the OAuth state points at.
+
+    2026-07-13: in psingh's session the model called this tool with ndr's
+    telegram id (copied from the AGENTS.md user table). The token exchange
+    then stored psingh's Google token under ndr's vault uid, overwriting
+    ndr's token. These tests pin the fix: the id in the OAuth state always
+    comes from the session context, and nothing the model puts in the tool
+    args can change it.
+    """
+
+    def test_schema_has_no_id_parameters(self):
+        from tools.registry import registry
+        schema = registry._tools["send_oauth_url"].schema
+        props = schema["parameters"]["properties"]
+        assert "telegram_id" not in props
+        assert not any("id" == k or k.endswith("_id") for k in props), props
+        assert schema["parameters"]["required"] == []
+
+    def test_stray_telegram_id_in_args_is_ignored(self, patched_env):
+        """Handler drops a model-supplied telegram_id; state uses session id."""
+        from tools import send_oauth_url
+        from tools.registry import registry
+
+        handler = registry._tools["send_oauth_url"].handler
+        with patch("gateway.session_context.get_session_env",
+                   side_effect=_stub_session_context("cli", "")), \
+             patch("tools.gws_auth.get_auth_url",
+                   wraps=_stub_get_auth_url()) as mock_url, \
+             patch.object(send_oauth_url, "_deliver_cli_print",
+                          wraps=send_oauth_url._deliver_cli_print):
+            handler({"telegram_id": "8502281203",  # another user — must be ignored
+                     "login_hint": "psingh@draas.com"})
+
+        assert len(mock_url.calls) == 1
+        # Session user (7449813913 in the stub), NOT the model-supplied id.
+        assert mock_url.calls[0]["telegram_id"] == "7449813913"
+
+    def test_no_session_user_returns_error_without_building_url(self, monkeypatch):
+        monkeypatch.setenv("HERMES_OAUTH_CLIENT_ID", "x")
+        monkeypatch.setenv("HERMES_OAUTH_CLIENT_SECRET", "y")
+        monkeypatch.delenv("HERMES_SESSION_USER_ID", raising=False)
+        monkeypatch.delenv("HERMES_CRON_JOB_OWNER_ID", raising=False)
+        from tools import send_oauth_url
+
+        with patch("tools.gws_auth.get_auth_url") as mock_url:
+            result = json.loads(send_oauth_url.send_oauth_url())
+
+        assert result["success"] is False
+        assert "session user" in result["error"].lower()
+        mock_url.assert_not_called()
+
+    def test_cron_falls_back_to_job_owner(self, monkeypatch):
+        """Cron clears HERMES_SESSION_USER_ID; owner id must still resolve."""
+        monkeypatch.setenv("HERMES_OAUTH_CLIENT_ID", "x")
+        monkeypatch.setenv("HERMES_OAUTH_CLIENT_SECRET", "y")
+        monkeypatch.delenv("HERMES_SESSION_USER_ID", raising=False)
+        monkeypatch.setenv("HERMES_CRON_JOB_OWNER_ID", "8502281203")
+        from tools import send_oauth_url
+
+        with patch("tools.gws_auth.get_auth_url",
+                   wraps=_stub_get_auth_url()) as mock_url, \
+             patch.object(send_oauth_url, "_detect_session",
+                          return_value=("", "")):
+            send_oauth_url.send_oauth_url()
+
+        assert len(mock_url.calls) == 1
+        assert mock_url.calls[0]["telegram_id"] == "8502281203"
 
 
 # ---------------------------------------------------------------------------
