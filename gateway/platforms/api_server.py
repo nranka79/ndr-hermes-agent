@@ -4210,6 +4210,59 @@ class APIServerAdapter(BasePlatformAdapter):
                 content_type="text/html",
                 text=f"<h1>Error</h1><p>Authorization failed: {exc}</p>",
             )
+
+    async def _handle_kelsa_auth_callback(self, request: "web.Request") -> "web.Response":
+        """GET /kelsa/auth/callback — receives OAuth code from Kelsa, stores token.
+
+        The ``state`` parameter is ``"{telegram_id}:{pkce_code_verifier}"`` —
+        see ``tools/kelsa_auth.get_auth_url()``. Kelsa's OAuth server is a
+        public client (no client_secret), so PKCE is required; the verifier
+        generated when the auth URL was built has to round-trip through
+        ``state`` since this callback runs in a separate request (likely a
+        different worker) with no shared memory of that call.
+        """
+        code = request.rel_url.query.get("code", "")
+        raw_state = request.rel_url.query.get("state", "")
+        error = request.rel_url.query.get("error", "")
+
+        if error or not code or not raw_state:
+            reason = error or "missing code or state"
+            logger.warning("Kelsa auth callback failed: %s", reason)
+            return web.Response(
+                content_type="text/html",
+                text=f"<h1>Authorization failed</h1><p>{reason}</p><p>Please try again from Telegram.</p>",
+            )
+
+        if ":" not in raw_state:
+            logger.warning("Kelsa auth callback: malformed state (no PKCE verifier)")
+            return web.Response(
+                content_type="text/html",
+                text="<h1>Authorization failed</h1><p>Malformed state.</p><p>Please try again from Telegram.</p>",
+            )
+        telegram_id, code_verifier = raw_state.split(":", 1)
+        telegram_id = telegram_id.strip()
+
+        try:
+            from tools.kelsa_auth import exchange_and_store as _kelsa_exchange_and_store
+
+            _kelsa_exchange_and_store(telegram_id, code, code_verifier)
+
+            logger.info("Kelsa token stored for telegram_id=%s", telegram_id)
+            asyncio.create_task(self._notify_telegram_user(
+                telegram_id,
+                "Kelsa is now connected. Close this tab and return to Telegram.",
+            ))
+            return web.Response(
+                content_type="text/html",
+                text="<h1>Authorization successful!</h1><p>Kelsa is now connected to your Hermes account.</p><p>You can close this tab and return to Telegram.</p>",
+            )
+        except Exception as exc:
+            logger.exception("Kelsa auth callback error for telegram_id=%s: %s", telegram_id, exc)
+            return web.Response(
+                content_type="text/html",
+                text=f"<h1>Error</h1><p>Authorization failed: {exc}</p>",
+            )
+
     async def _notify_telegram_user(self, telegram_id: str, text: str) -> None:
         bot_token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
         if not bot_token:
@@ -4308,6 +4361,7 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_post("/v1/runs/{run_id}/approval", self._handle_run_approval)
             self._app.router.add_post("/v1/runs/{run_id}/stop", self._handle_stop_run)
             self._app.router.add_get("/gws/auth/callback", self._handle_gws_auth_callback)
+            self._app.router.add_get("/kelsa/auth/callback", self._handle_kelsa_auth_callback)
             # Store the adapter after native routes are registered. Local Hermes-Relay
             # bootstrap shims use this key as a feature-detection hook; registering
             # native routes first lets those shims no-op instead of shadowing the
