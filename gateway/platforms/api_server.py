@@ -1067,63 +1067,6 @@ class APIServerAdapter(BasePlatformAdapter):
         return agent
 
     # ------------------------------------------------------------------
-    # GWS OAuth Callback Handler
-    # ------------------------------------------------------------------
-
-    async def _handle_gws_auth_callback(self, request: "web.Request") -> "web.Response":
-        """GET /gws/auth/callback — receives OAuth code from Google, stores token."""
-        code = request.rel_url.query.get("code", "")
-        state = request.rel_url.query.get("state", "")  # telegram_id
-        error = request.rel_url.query.get("error", "")
-
-        if error or not code or not state:
-            reason = error or "missing code or state"
-            logger.warning("GWS auth callback failed: %s", reason)
-            return web.Response(
-                content_type="text/html",
-                text=f"<h1>Authorization failed</h1><p>{reason}</p><p>Please try again from Telegram.</p>",
-            )
-
-        try:
-            from tools.gws_auth import exchange_and_store
-            exchange_and_store(state, code)
-            logger.info("GWS token stored for telegram_id=%s", state)
-            try:
-                from tools._user_registry import get_user_config
-                uconf = get_user_config(state)
-                display = uconf.get("name") or uconf.get("email") or ("user " + state)
-            except Exception:
-                display = "user " + state
-            asyncio.create_task(self._notify_telegram_user(
-                state,
-                "Google Workspace authorized for " + display
-                + ". Gmail, Calendar and Drive are now connected."
-                " Close this tab and return to Telegram."
-            ))
-            return web.Response(
-                content_type="text/html",
-                text="<h1>Authorization successful!</h1><p>Google Workspace is now connected to your Hermes account.</p><p>You can close this tab and return to Telegram.</p>",
-            )
-        except Exception as exc:
-            logger.exception("GWS auth callback error for state=%s: %s", state, exc)
-            return web.Response(
-                content_type="text/html",
-                text=f"<h1>Error</h1><p>Authorization failed: {exc}</p>",
-            )
-
-    async def _notify_telegram_user(self, telegram_id: str, text: str) -> None:
-        bot_token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-        if not bot_token:
-            return
-        try:
-            import aiohttp as _aiohttp
-            url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-            async with _aiohttp.ClientSession() as session:
-                await session.post(url, json={"chat_id": int(telegram_id), "text": text})
-        except Exception as exc:
-            logger.warning("Telegram notify failed for %s: %s", telegram_id, exc)
-
-    # ------------------------------------------------------------------
     # HTTP Handlers
     # ------------------------------------------------------------------
 
@@ -4418,7 +4361,6 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_post("/v1/runs/{run_id}/approval", self._handle_run_approval)
             self._app.router.add_post("/v1/runs/{run_id}/stop", self._handle_stop_run)
             self._app.router.add_get("/gws/auth/callback", self._handle_gws_auth_callback)
-<<<<<<< Updated upstream
             self._app.router.add_get("/kelsa/auth/callback", self._handle_kelsa_auth_callback)
             # Store the adapter after native routes are registered. Local Hermes-Relay
             # bootstrap shims use this key as a feature-detection hook; registering
@@ -4426,8 +4368,6 @@ class APIServerAdapter(BasePlatformAdapter):
             # upstream session-control handlers.
             self._app["api_server_adapter"] = self
 
-=======
->>>>>>> Stashed changes
             # Start background sweep to clean up orphaned (unconsumed) run streams
             sweep_task = asyncio.create_task(self._sweep_orphaned_runs())
             try:

@@ -288,12 +288,8 @@ def _handle_send(args):
         return json.dumps(duplicate_skip)
 
     # Security: enforce session user boundary.
-<<<<<<< Updated upstream
     # Model cannot route a live user's results to a different user's chat,
     # UNLESS both the sender and target have cross_message_allowed=true in users.json.
-=======
-    # Model cannot route a live user's results to a different user's chat.
->>>>>>> Stashed changes
     # Cron and CLI contexts have no HERMES_SESSION_CHAT_ID -- unaffected.
     from gateway.session_context import get_session_env as _gse
     _sess_chat = _gse("HERMES_SESSION_CHAT_ID", "").strip()
@@ -303,7 +299,6 @@ def _handle_send(args):
         and _sess_plat == platform_name
         and str(chat_id).strip() != str(_sess_chat).strip()
     ):
-<<<<<<< Updated upstream
         _cross_ok = False
         if platform_name == "telegram":
             try:
@@ -352,19 +347,6 @@ def _handle_send(args):
                 return json.dumps({"error": f"Could not open DM with Slack user {chat_id}. Check bot permissions (im:write)."})
         except Exception as e:
             return json.dumps({"error": f"Failed to open Slack DM: {e}"})
-=======
-        logger.warning(
-            "send_message BLOCKED cross-user: session %s (chat %s) -> %s:%s",
-            _gse("HERMES_SESSION_USER_ID", "?"), _sess_chat, platform_name, chat_id,
-        )
-        return json.dumps({
-            "error": (
-                "Cross-user send blocked. Deliver results to the requesting user only. "
-                "Use target='telegram' (no explicit ID) or target='origin' -- "
-                "the gateway routes it to the correct session chat automatically."
-            )
-        })
->>>>>>> Stashed changes
 
     try:
         from model_tools import _run_async
