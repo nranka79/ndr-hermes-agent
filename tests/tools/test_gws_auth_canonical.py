@@ -2,7 +2,7 @@
 
 Pins the fix for the recurring OAuth "no token stored" bug: the write path
 stored tokens under ``draas_user_id`` (e.g. ``ndr``) while the read path looked
-them up under the raw Telegram id (e.g. ``7449813913``) — two different vault
+them up under the raw Telegram id (e.g. ``1000000001``) — two different vault
 keys, so a successful callback was never readable.
 
 The invariant these tests enforce: **a token written after an OAuth callback is
@@ -14,7 +14,7 @@ to the same canonical vault ``user_id`` and the read passes ``session_uid`` ==
 import sys
 import types
 
-CANON = "ndr-7449813913"
+CANON = "ndr-1000000001"
 
 
 def _install_fake_vault(monkeypatch, store):
@@ -23,7 +23,7 @@ def _install_fake_vault(monkeypatch, store):
 
     def resolve(identity_type, value):
         # Every raw identifier for this user maps to the canonical surrogate.
-        if str(value) in ("7449813913", "ndr@draas.com", "ndr@ahfl.in", "ndr", CANON):
+        if str(value) in ("1000000001", "ndr@draas.com", "ndr@ahfl.in", "ndr", CANON):
             return CANON
         return None
 
@@ -56,7 +56,7 @@ def test_canonical_uid_resolves_every_channel_id(monkeypatch):
     _install_fake_vault(monkeypatch, {})
     from tools import gws_auth
 
-    assert gws_auth.canonical_uid("7449813913") == CANON      # telegram
+    assert gws_auth.canonical_uid("1000000001") == CANON      # telegram
     assert gws_auth.canonical_uid("ndr@draas.com") == CANON   # email
     assert gws_auth.canonical_uid("ndr") == CANON             # slug
 
@@ -75,12 +75,12 @@ def test_write_then_read_use_the_same_canonical_key(monkeypatch):
     from tools import gws_auth
 
     # Write path (callback) stores under the canonical uid.
-    uid = gws_auth.canonical_uid("7449813913")
+    uid = gws_auth.canonical_uid("1000000001")
     gws_auth.save_credentials(uid, _FakeCreds(), "google-draas")
 
     # Read path resolves the *raw* telegram id to the same canonical uid.
-    assert gws_auth.has_token("7449813913", "google-draas") is True
+    assert gws_auth.has_token("1000000001", "google-draas") is True
     assert (CANON, "google-draas") in store
     # And nothing was written under the raw telegram id or the slug.
-    assert ("7449813913", "google-draas") not in store
+    assert ("1000000001", "google-draas") not in store
     assert ("ndr", "google-draas") not in store

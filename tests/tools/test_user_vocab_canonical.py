@@ -6,8 +6,8 @@ to canonicalize every raw channel id before touching the vault, but
 ``tools/user_vocab.py`` (STT vocabulary, sharing the same vault) called
 ``gws_vault_client`` directly with whatever raw id the caller passed —
 confirmed still happening in production a full day after the gws_auth.py
-fix landed (``tokens/7449813913/vocab.json`` newer than
-``tokens/ndr-7449813913/vocab.json`` on the live vault).
+fix landed (``tokens/1000000001/vocab.json`` newer than
+``tokens/ndr-1000000001/vocab.json`` on the live vault).
 
 The invariant these tests enforce: regardless of which raw identifier a
 caller passes (Telegram id, email, canonical id already), vocab reads and
@@ -17,7 +17,7 @@ writes land on the same canonical vault key.
 import sys
 import types
 
-CANON = "ndr-7449813913"
+CANON = "ndr-1000000001"
 
 
 def _install_fakes(monkeypatch, store):
@@ -57,7 +57,7 @@ def _install_fakes(monkeypatch, store):
 
     def canonical_uid(channel_id):
         cid = str(channel_id or "")
-        if cid in ("7449813913", "ndr@draas.com", "ndr@ahfl.in", "ndr", CANON):
+        if cid in ("1000000001", "ndr@draas.com", "ndr@ahfl.in", "ndr", CANON):
             return CANON
         return cid
 
@@ -79,9 +79,9 @@ def test_save_then_load_use_the_same_canonical_key_across_raw_ids(monkeypatch):
     uv = _reload_user_vocab()
 
     # Saved under the raw Telegram id.
-    uv.save_vocab("7449813913", ["Kelsa", "Draas"])
+    uv.save_vocab("1000000001", ["Kelsa", "Draas"])
     assert (CANON, "vocab") in store
-    assert ("7449813913", "vocab") not in store
+    assert ("1000000001", "vocab") not in store
 
     # Loaded via the email identity for the same user -- must see the same data.
     assert uv.load_vocab("ndr@draas.com") == ["Draas", "Kelsa"]
@@ -95,8 +95,8 @@ def test_add_terms_does_not_split_across_raw_and_canonical_keys(monkeypatch):
     _install_fakes(monkeypatch, store)
     uv = _reload_user_vocab()
 
-    uv.add_terms("7449813913", ["Nishant"])
-    uv.add_terms("7449813913", ["Kelsa"])
+    uv.add_terms("1000000001", ["Nishant"])
+    uv.add_terms("1000000001", ["Kelsa"])
 
     assert uv.load_vocab(CANON) == ["Kelsa", "Nishant"]
     # Only one vault key was ever touched for this user.
@@ -108,8 +108,8 @@ def test_clear_vocab_removes_the_canonical_key(monkeypatch):
     _install_fakes(monkeypatch, store)
     uv = _reload_user_vocab()
 
-    uv.save_vocab("7449813913", ["term"])
+    uv.save_vocab("1000000001", ["term"])
     assert (CANON, "vocab") in store
 
-    uv.clear_vocab("7449813913")
+    uv.clear_vocab("1000000001")
     assert (CANON, "vocab") not in store

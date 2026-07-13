@@ -15,7 +15,7 @@
   `users.json` scan. `get_user_config` and `find_user_by_identity` auto-benefit.
 - **`identity_resolver.py`** — automatically resolved via vault now (calls
   `find_user_by_identity`).
-- **Key verification:** `resolve("telegram", "7449813913")` → `"ndr@draas.com"` ✅,
+- **Key verification:** `resolve("telegram", "1000000001")` → `"ndr@draas.com"` ✅,
   unknown IDs return `None` gracefully ✅.
 - **VPS deployment:** vault server restarted, Hermes container restarted.
 - **Known difference:** VPS has a more modern `gws_vault_client.py` than local
@@ -59,7 +59,7 @@ Add three new operations to `bin_gws_vault_server_live.py`:
   "role": "admin",
   "permissions": {},
   "identities": {
-    "telegram": ["7449813913"],
+    "telegram": ["1000000001"],
     "email": ["ndr@draas.com", "ndr@ahfl.in"],
     "draas_user_id": ["ndr"]
   }
@@ -83,7 +83,7 @@ Add three new operations to `bin_gws_vault_server_live.py`:
 Replace file-based reads with vault `resolve()` calls. Keep `find_user_by_identity`
 as the public API but change implementation:
 
-- `find_user_by_identity("telegram", "7449813913")` → `vault.resolve("telegram", "7449813913")` → canonical `user_id` → `vault.get_identity(user_id)` → full record
+- `find_user_by_identity("telegram", "1000000001")` → `vault.resolve("telegram", "1000000001")` → canonical `user_id` → `vault.get_identity(user_id)` → full record
 - Keep `load_user_registry()` as cached fallback (for backward compat during rollout)
 
 ### 1d — Update `identity_resolver.py`

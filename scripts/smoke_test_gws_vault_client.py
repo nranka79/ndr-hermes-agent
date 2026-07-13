@@ -157,12 +157,12 @@ def test_get_token_happy():
         sock = os.path.join(d, "v.sock")
         server = start_stub(sock)
         try:
-            StubVaultHandler.stored_tokens[("7449813913", "google-gmail")] = json.dumps(
+            StubVaultHandler.stored_tokens[("1000000001", "google-gmail")] = json.dumps(
                 {"token": "ya29.x", "refresh_token": "rt-1"}
             )
             with patch.object(vault, "VAULT_SOCKET", sock), \
                  patch.object(vault, "VAULT_SECRET", "test-secret"):
-                out = vault.get_token("7449813913", "google-gmail")
+                out = vault.get_token("1000000001", "google-gmail")
                 parsed = json.loads(out)
                 check("returns refresh_token", parsed["refresh_token"] == "rt-1")
                 check("returns access token", parsed["token"] == "ya29.x")
@@ -344,12 +344,12 @@ def test_get_access_token_parses_token_json():
         sock = os.path.join(d, "v.sock")
         server = start_stub(sock)
         try:
-            StubVaultHandler.stored_tokens[("7449813913", "google-gmail")] = json.dumps(
+            StubVaultHandler.stored_tokens[("1000000001", "google-gmail")] = json.dumps(
                 {"token": "ya29.x", "refresh_token": "rt", "scopes": ["gmail"]}
             )
             with patch.object(vault, "VAULT_SOCKET", sock), \
                  patch.object(vault, "VAULT_SECRET", "test-secret"):
-                out = vault.get_access_token("7449813913", "google-gmail")
+                out = vault.get_access_token("1000000001", "google-gmail")
                 check("returns dict", isinstance(out, dict))
                 check("dict has token", out.get("token") == "ya29.x")
                 check("dict has refresh_token", out.get("refresh_token") == "rt")

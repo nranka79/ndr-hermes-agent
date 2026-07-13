@@ -7,7 +7,7 @@ distinct service name so multiple accounts per Telegram user never overwrite
 each other.
 
 Tokens are keyed by the **canonical** vault user_id — a channel-agnostic
-surrogate (e.g. ``ndr-7449813913``) resolved from the session's raw channel
+surrogate (e.g. ``ndr-1000000001``) resolved from the session's raw channel
 identifier (Telegram numeric id, SSO email, slug) via the vault ``resolve``
 op.  This means a token authorized from any channel is readable from every
 channel, and a user with only a phone/Telegram/Slack id (no email) is handled
@@ -151,7 +151,7 @@ def canonical_uid(channel_id) -> str:
     """Resolve a raw channel identifier to the canonical vault user_id.
 
     The canonical user_id is a channel-agnostic surrogate (e.g.
-    ``ndr-7449813913``) stored in the vault identity records.  Every raw
+    ``ndr-1000000001``) stored in the vault identity records.  Every raw
     identifier — Telegram numeric id, SSO email, slug — resolves to it via the
     vault ``resolve`` op, so a token written after one channel's OAuth is
     readable from every channel, and the read path can satisfy the vault's
@@ -200,8 +200,8 @@ def _parse_state(state: str) -> tuple[str, str]:
     """Parse the OAuth state parameter.
 
     Supports two formats:
-      ``"7449813913"``                    → (telegram_id, "google")
-      ``"7449813913:google-ahfl"``         → (telegram_id, "google-ahfl")
+      ``"1000000001"``                    → (telegram_id, "google")
+      ``"1000000001:google-ahfl"``         → (telegram_id, "google-ahfl")
 
     Returns (telegram_id, service_name).
     """

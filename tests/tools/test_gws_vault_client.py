@@ -146,10 +146,10 @@ def stub_vault(tmp_path, monkeypatch):
 
 class TestGetToken:
     def test_returns_stored_json(self, stub_vault):
-        _StubHandler.stored_tokens[("7449813913", "google-gmail")] = json.dumps(
+        _StubHandler.stored_tokens[("1000000001", "google-gmail")] = json.dumps(
             {"token": "ya29.x", "refresh_token": "rt-1"}
         )
-        out = vault.get_token("7449813913", "google-gmail")
+        out = vault.get_token("1000000001", "google-gmail")
         parsed = json.loads(out)
         assert parsed["refresh_token"] == "rt-1"
         assert parsed["token"] == "ya29.x"
@@ -220,10 +220,10 @@ class TestListServices:
 
 class TestGetAccessToken:
     def test_returns_parsed_dict(self, stub_vault):
-        _StubHandler.stored_tokens[("7449813913", "google-gmail")] = json.dumps(
+        _StubHandler.stored_tokens[("1000000001", "google-gmail")] = json.dumps(
             {"token": "ya29.x", "refresh_token": "rt", "scopes": ["gmail"]}
         )
-        out = vault.get_access_token("7449813913", "google-gmail")
+        out = vault.get_access_token("1000000001", "google-gmail")
         assert isinstance(out, dict)
         assert out["token"] == "ya29.x"
         assert out["refresh_token"] == "rt"

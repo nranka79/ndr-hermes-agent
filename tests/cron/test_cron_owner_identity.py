@@ -65,13 +65,13 @@ class TestCronOwnerIdentity:
             "id": "job-with-owner",
             "name": "Gmail cleanup",
             "prompt": "clean up my inbox",
-            "owner": "ndr-7449813913",
+            "owner": "ndr-1000000001",
         }
 
         result, seen = _run_job_with_agent_spy(job, tmp_path)
 
         assert result[0] is True
-        assert seen["gws_identity_during_run"] == "ndr-7449813913"
+        assert seen["gws_identity_during_run"] == "ndr-1000000001"
 
     def test_gws_identity_empty_when_job_has_no_owner(self, tmp_path):
         """Legacy jobs created before the owner field existed must not crash --
@@ -96,7 +96,7 @@ class TestCronOwnerIdentity:
             "id": "job-with-owner-2",
             "name": "Gmail cleanup",
             "prompt": "clean up my inbox",
-            "owner": "ndr-7449813913",
+            "owner": "ndr-1000000001",
         }
 
         _run_job_with_agent_spy(job, tmp_path)
@@ -115,7 +115,7 @@ class TestCronOwnerIdentity:
             "id": "job-with-owner-3",
             "name": "Gmail cleanup",
             "prompt": "clean up my inbox",
-            "owner": "ndr-7449813913",
+            "owner": "ndr-1000000001",
         }
         seen = {}
 

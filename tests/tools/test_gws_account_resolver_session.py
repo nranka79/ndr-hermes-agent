@@ -28,9 +28,9 @@ def test_reads_contextvar_even_though_os_environ_is_untouched():
     """Reproduces the bug: contextvar set, os.environ deliberately untouched."""
     assert "HERMES_SESSION_USER_ID" not in os.environ  # sanity: no env leak
 
-    tokens = set_session_vars(user_id="7449813913")
+    tokens = set_session_vars(user_id="1000000001")
     try:
-        assert _current_telegram_id() == "7449813913"
+        assert _current_telegram_id() == "1000000001"
         # The whole point of the bug: os.environ was NEVER written for this.
         assert "HERMES_SESSION_USER_ID" not in os.environ
     finally:

@@ -12,7 +12,7 @@ logger = logging.getLogger("admin-app.vocab")
 
 # Must match tools/user_vocab.py SERVICE — the STT vocabulary is stored in the
 # vault as a JSON array of strings under this service name, keyed by the
-# canonical user_id (e.g. "ndr-7449813913").
+# canonical user_id (e.g. "ndr-1000000001").
 VOCAB_SERVICE = "vocab"
 
 

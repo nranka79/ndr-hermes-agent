@@ -42,11 +42,11 @@ CORRECT_OAUTH_URL = (
     ".apps.googleusercontent.com&"
     "redirect_uri=https%3A%2F%2Ftranscribe.ahfl.in%2Fgws%2Fauth%2Fcallback&"
     "scope=openid+email&"
-    "state=7449813913"
+    "state=1000000001"
 )
 
 
-def _stub_get_auth_url(login_hint=None, telegram_id="7449813913"):
+def _stub_get_auth_url(login_hint=None, telegram_id="1000000001"):
     """Return a callable that mimics ``gws_auth.get_auth_url`` and records its args.
 
     Use as ``patch("tools.gws_auth.get_auth_url", new=stub)`` (NOT ``wraps=``:
@@ -69,7 +69,7 @@ def _stub_session_context(platform: str, chat_id: str):
         mapping = {
             "HERMES_SESSION_PLATFORM": platform,
             "HERMES_SESSION_CHAT_ID": chat_id,
-            "HERMES_SESSION_USER_ID": "7449813913",
+            "HERMES_SESSION_USER_ID": "1000000001",
         }
         return mapping.get(name, default)
     return _get
@@ -86,7 +86,7 @@ def patched_env(monkeypatch):
     monkeypatch.setenv("HERMES_OAUTH_CLIENT_ID", "test-client-id.apps.googleusercontent.com")
     monkeypatch.setenv("HERMES_OAUTH_CLIENT_SECRET", "GOCSPX-testsecret")
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-bot-token")
-    monkeypatch.setenv("HERMES_SESSION_USER_ID", "7449813913")
+    monkeypatch.setenv("HERMES_SESSION_USER_ID", "1000000001")
 
 
 # ---------------------------------------------------------------------------
@@ -121,7 +121,7 @@ class TestTelegramDelivery:
 
         stub = _stub_get_auth_url()
         with patch.object(send_oauth_url, "_detect_session",
-                          return_value=("telegram", "7449813913")), \
+                          return_value=("telegram", "1000000001")), \
              patch("tools.gws_auth.get_auth_url", new=stub), \
              patch.object(send_oauth_url, "_deliver_telegram_button",
                           wraps=send_oauth_url._deliver_telegram_button) as mock_deliver:
@@ -165,7 +165,7 @@ class TestTelegramDelivery:
         monkeypatch.setenv("HERMES_OAUTH_CLIENT_SECRET", "y")
         from tools import send_oauth_url
         result = send_oauth_url._deliver_telegram_button(
-            chat_id="7449813913", url="https://x", label="L",
+            chat_id="1000000001", url="https://x", label="L",
             login_hint=None, service_name=None,
         )
         assert result["success"] is False
@@ -244,7 +244,7 @@ class TestChannelRouting:
         from tools import send_oauth_url
 
         with patch("gateway.session_context.get_session_env",
-                   side_effect=_stub_session_context("telegram", "7449813913")), \
+                   side_effect=_stub_session_context("telegram", "1000000001")), \
              patch.object(send_oauth_url, "_deliver_telegram_button",
                           wraps=send_oauth_url._deliver_telegram_button) as mock_tg, \
              patch.object(send_oauth_url, "_deliver_cli_print") as mock_cli, \
@@ -324,7 +324,7 @@ class TestChannelRouting:
 
         # The URL builder was called with the session user id + login hint
         assert len(stub.calls) == 1
-        assert stub.calls[0]["telegram_id"] == "7449813913"
+        assert stub.calls[0]["telegram_id"] == "1000000001"
         assert stub.calls[0]["login_hint"] == "ndr@draas.com"
 
 
@@ -337,7 +337,7 @@ class TestNoUrlInReturnValue:
     the LLM-returned JSON. The LLM must not have the URL to (mis)transcribe."""
 
     @pytest.mark.parametrize("platform,chat_id", [
-        ("telegram", "7449813913"),
+        ("telegram", "1000000001"),
         ("cli", ""),
         ("open_webui", "some-chat"),
         ("webui", "some-chat"),
@@ -412,12 +412,12 @@ class TestSessionIdentityOnly:
              patch("tools.gws_auth.get_auth_url", new=stub), \
              patch.object(send_oauth_url, "_deliver_cli_print",
                           wraps=send_oauth_url._deliver_cli_print):
-            handler({"telegram_id": "8502281203",  # another user — must be ignored
+            handler({"telegram_id": "2000000002",  # another user — must be ignored
                      "login_hint": "psingh@draas.com"})
 
         assert len(stub.calls) == 1
-        # Session user (7449813913 in the stub), NOT the model-supplied id.
-        assert stub.calls[0]["telegram_id"] == "7449813913"
+        # Session user (1000000001 in the stub), NOT the model-supplied id.
+        assert stub.calls[0]["telegram_id"] == "1000000001"
 
     def test_no_session_user_returns_error_without_building_url(self, monkeypatch):
         monkeypatch.setenv("HERMES_OAUTH_CLIENT_ID", "x")
@@ -438,7 +438,7 @@ class TestSessionIdentityOnly:
         monkeypatch.setenv("HERMES_OAUTH_CLIENT_ID", "x")
         monkeypatch.setenv("HERMES_OAUTH_CLIENT_SECRET", "y")
         monkeypatch.delenv("HERMES_SESSION_USER_ID", raising=False)
-        monkeypatch.setenv("HERMES_CRON_JOB_OWNER_ID", "8502281203")
+        monkeypatch.setenv("HERMES_CRON_JOB_OWNER_ID", "2000000002")
         from tools import send_oauth_url
 
         stub = _stub_get_auth_url()
@@ -448,7 +448,7 @@ class TestSessionIdentityOnly:
             send_oauth_url.send_oauth_url()
 
         assert len(stub.calls) == 1
-        assert stub.calls[0]["telegram_id"] == "8502281203"
+        assert stub.calls[0]["telegram_id"] == "2000000002"
 
 
 # ---------------------------------------------------------------------------
