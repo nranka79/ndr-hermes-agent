@@ -47,7 +47,12 @@ CORRECT_OAUTH_URL = (
 
 
 def _stub_get_auth_url(login_hint=None, telegram_id="7449813913"):
-    """Return a callable that mimics ``gws_auth.get_auth_url`` and records its args."""
+    """Return a callable that mimics ``gws_auth.get_auth_url`` and records its args.
+
+    Use as ``patch("tools.gws_auth.get_auth_url", new=stub)`` (NOT ``wraps=``:
+    a MagicMock's ``.calls`` attribute is an auto-created child mock, so the
+    recorded list on the stub is unreachable through the mock).
+    """
     calls = []
 
     def _impl(tid, login_hint=None):
@@ -114,8 +119,10 @@ class TestTelegramDelivery:
     def test_url_goes_into_button_never_returned(self, patched_env):
         from tools import send_oauth_url
 
+        stub = _stub_get_auth_url()
         with patch.object(send_oauth_url, "_detect_session",
                           return_value=("telegram", "7449813913")), \
+             patch("tools.gws_auth.get_auth_url", new=stub), \
              patch.object(send_oauth_url, "_deliver_telegram_button",
                           wraps=send_oauth_url._deliver_telegram_button) as mock_deliver:
 
@@ -304,10 +311,10 @@ class TestChannelRouting:
         """The URL builder is called with telegram_id + login_hint."""
         from tools import send_oauth_url
 
+        stub = _stub_get_auth_url()
         with patch("gateway.session_context.get_session_env",
                    side_effect=_stub_session_context("cli", "")), \
-             patch("tools.gws_auth.get_auth_url",
-                   wraps=_stub_get_auth_url()) as mock_url, \
+             patch("tools.gws_auth.get_auth_url", new=stub), \
              patch.object(send_oauth_url, "_deliver_cli_print",
                           wraps=send_oauth_url._deliver_cli_print):
 
@@ -315,10 +322,10 @@ class TestChannelRouting:
                 login_hint="ndr@draas.com",
             )
 
-        # The URL builder was called with the right args
-        assert len(mock_url.calls) == 1
-        assert mock_url.calls[0]["telegram_id"] == "7449813913"
-        assert mock_url.calls[0]["login_hint"] == "ndr@draas.com"
+        # The URL builder was called with the session user id + login hint
+        assert len(stub.calls) == 1
+        assert stub.calls[0]["telegram_id"] == "7449813913"
+        assert stub.calls[0]["login_hint"] == "ndr@draas.com"
 
 
 # ---------------------------------------------------------------------------
@@ -341,6 +348,7 @@ class TestNoUrlInReturnValue:
 
         with patch("gateway.session_context.get_session_env",
                    side_effect=_stub_session_context(platform, chat_id)), \
+             patch("tools.gws_auth.get_auth_url", new=_stub_get_auth_url()), \
              patch("telegram.Bot") as MockBot:
             bot_instance = MagicMock()
             bot_instance.send_message = AsyncMock(return_value=MagicMock(message_id=1))
@@ -351,8 +359,10 @@ class TestNoUrlInReturnValue:
                 login_hint="ndr@draas.com",
             )
 
-        # For non-markdown channels, the URL must not appear at all
-        if platform in ("", "telegram", "cli"):
+        # For non-markdown channels, the URL must not appear at all.
+        # (platform "" falls back to markdown delivery, where the URL is
+        # present by design as the pre-formatted link — see below.)
+        if platform in ("telegram", "cli"):
             assert "googleusercontent" not in result_json, (
                 f"URL leaked to LLM in {platform!r} channel: {result_json}"
             )
@@ -396,18 +406,18 @@ class TestSessionIdentityOnly:
         from tools.registry import registry
 
         handler = registry._tools["send_oauth_url"].handler
+        stub = _stub_get_auth_url()
         with patch("gateway.session_context.get_session_env",
                    side_effect=_stub_session_context("cli", "")), \
-             patch("tools.gws_auth.get_auth_url",
-                   wraps=_stub_get_auth_url()) as mock_url, \
+             patch("tools.gws_auth.get_auth_url", new=stub), \
              patch.object(send_oauth_url, "_deliver_cli_print",
                           wraps=send_oauth_url._deliver_cli_print):
             handler({"telegram_id": "8502281203",  # another user — must be ignored
                      "login_hint": "psingh@draas.com"})
 
-        assert len(mock_url.calls) == 1
+        assert len(stub.calls) == 1
         # Session user (7449813913 in the stub), NOT the model-supplied id.
-        assert mock_url.calls[0]["telegram_id"] == "7449813913"
+        assert stub.calls[0]["telegram_id"] == "7449813913"
 
     def test_no_session_user_returns_error_without_building_url(self, monkeypatch):
         monkeypatch.setenv("HERMES_OAUTH_CLIENT_ID", "x")
@@ -431,14 +441,14 @@ class TestSessionIdentityOnly:
         monkeypatch.setenv("HERMES_CRON_JOB_OWNER_ID", "8502281203")
         from tools import send_oauth_url
 
-        with patch("tools.gws_auth.get_auth_url",
-                   wraps=_stub_get_auth_url()) as mock_url, \
+        stub = _stub_get_auth_url()
+        with patch("tools.gws_auth.get_auth_url", new=stub), \
              patch.object(send_oauth_url, "_detect_session",
                           return_value=("", "")):
             send_oauth_url.send_oauth_url()
 
-        assert len(mock_url.calls) == 1
-        assert mock_url.calls[0]["telegram_id"] == "8502281203"
+        assert len(stub.calls) == 1
+        assert stub.calls[0]["telegram_id"] == "8502281203"
 
 
 # ---------------------------------------------------------------------------

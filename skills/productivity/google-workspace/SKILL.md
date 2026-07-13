@@ -1,3 +1,4 @@
+<<<<<<< Updated upstream
 ---
 name: google-workspace
 description: "Gmail, Calendar, Drive, Docs, Sheets via gws CLI or Python."
@@ -16,46 +17,53 @@ metadata:
     homepage: https://github.com/NousResearch/hermes-agent
     related_skills: [himalaya]
 ---
+=======
+# Google Workspace — DRAAS
+>>>>>>> Stashed changes
 
-# Google Workspace
+## Authentication — ONLY valid pattern
 
-Gmail, Calendar, Drive, Contacts, Sheets, and Docs — through Hermes-managed OAuth and a thin CLI wrapper. When `gws` is installed, the skill uses it as the execution backend for broader Google Workspace coverage; otherwise it falls back to the bundled Python client implementation.
+```python
+from tools.gws_sa import build_service
 
-## References
-
-- `references/gmail-search-syntax.md` — Gmail search operators (is:unread, from:, newer_than:, etc.)
-
-## Scripts
-
-- `scripts/setup.py` — OAuth2 setup (run once to authorize)
-- `scripts/google_api.py` — compatibility wrapper CLI. It prefers `gws` for operations when available, while preserving Hermes' existing JSON output contract.
-
-## First-Time Setup
-
-The setup is fully non-interactive — you drive it step by step so it works
-on CLI, Telegram, Discord, or any platform.
-
-Define a shorthand first:
-
-```bash
-GSETUP="python ${HERMES_HOME:-$HOME/.hermes}/skills/productivity/google-workspace/scripts/setup.py"
+# USER_EMAIL = from session context: "User Profile → Email (Google Workspace)"
+svc = build_service("gmail", "v1", USER_EMAIL)
 ```
 
-### Step 0: Check if already set up
+Available APIs: gmail, calendar, drive, sheets, contacts, tasks, docs, people
 
-```bash
-$GSETUP --check
+## NEVER do any of the following
+
+```python
+# WRONG — file is deleted, will crash
+open('/data/hermes/oauth-draas.json')
+open('/data/hermes/oauth-gmail.json')
+open('/data/hermes/oauth-ahfl.json')
+
+# WRONG — OAuth credentials are removed
+from google.oauth2.credentials import Credentials
+
+# WRONG — impersonating the wrong user
+build_service("gmail", "v1", "ndr@draas.com")  # when responding to Roshini or Bharat
 ```
 
-If it prints `AUTHENTICATED`, skip to Usage — setup is already done.
+## Registry spreadsheet
 
-### Step 1: Triage — ask the user what they need
+ID: `1XbSRAXxPLY4cXMTm2rmvKh11Nx3x0aKUxxuWualoV9g`
+Shared with draas.com domain (writer) — access with session user's email as subject.
 
-Before starting OAuth setup, ask the user TWO questions:
+### Tab names (exact)
+| Purpose | Tab name |
+|---|---|
+| Contacts | `'NDR DRAAS Google contacts.csv'` |
+| Projects | `projects` |
+| Entities | `entities` |
+| Land proposals | `land_proposals` |
+| Topics | `topics` |
 
-**Question 1: "What Google services do you need? Just email, or also
-Calendar/Drive/Sheets/Docs?"**
+## Per-user data vs shared data
 
+<<<<<<< Updated upstream
 - **Email only** → They don't need this skill at all. Use the `himalaya` skill
   instead — it works with a Gmail App Password (Settings → Security → App
   Passwords) and takes 2 minutes to set up. No Google Cloud project needed.
@@ -333,3 +341,10 @@ All commands return JSON. Parse with `jq` or read directly. Key fields:
 ```bash
 $GSETUP --revoke
 ```
+=======
+| Data type | Access pattern |
+|---|---|
+| Gmail, Calendar, Tasks, Drive | SA DWD with **session user's email** |
+| Contacts registry sheet | SA DWD with **session user's email** (domain-shared) |
+| Projects / Land / Topics sheet | SA DWD with **session user's email** (domain-shared) |
+>>>>>>> Stashed changes

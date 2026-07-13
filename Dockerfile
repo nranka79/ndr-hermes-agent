@@ -1,3 +1,4 @@
+<<<<<<< Updated upstream
 FROM ghcr.io/astral-sh/uv:0.11.6-python3.13-trixie@sha256:b3c543b6c4f23a5f2df22866bd7857e5d304b67a564f4feab6ac22044dde719b AS uv_source
 # Node 22 LTS source stage. Debian trixie's bundled nodejs is pinned to 20.x
 # which reached EOL in April 2026 — we copy node + npm + corepack from the
@@ -8,14 +9,30 @@ FROM ghcr.io/astral-sh/uv:0.11.6-python3.13-trixie@sha256:b3c543b6c4f23a5f2df228
 # is a one-line ARG change; see #4977.
 FROM node:22-bookworm-slim@sha256:7af03b14a13c8cdd38e45058fd957bf00a72bbe17feac43b1c15a689c029c732 AS node_source
 FROM debian:13.4
+=======
+FROM python:3.12-slim
+>>>>>>> Stashed changes
 
-# Disable Python stdout buffering to ensure logs are printed immediately
-ENV PYTHONUNBUFFERED=1
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    curl \
+    unzip \
+    poppler-utils \
+    npm \
+    ocrmypdf \
+    tesseract-ocr \
+    tesseract-ocr-eng \
+    tesseract-ocr-hin \
+    ghostscript \
+    qpdf \
+    zip \
+    && rm -rf /var/lib/apt/lists/*
 
-# Store Playwright browsers outside the volume mount so the build-time
-# install survives the /opt/data volume overlay at runtime.
-ENV PLAYWRIGHT_BROWSERS_PATH=/opt/hermes/.playwright
+# Install Bun (used by GBrain)
+RUN curl -fsSL https://bun.sh/install | bash
+ENV PATH="/root/.bun/bin:${PATH}"
 
+<<<<<<< Updated upstream
 # Install system dependencies in one layer, clear APT cache.
 # tini was previously PID 1 to reap orphaned zombie processes (MCP stdio
 # subprocesses, git, bun, etc.) that would otherwise accumulate when hermes
@@ -334,3 +351,28 @@ VOLUME [ "/opt/data" ]
 # like `--version` would be intercepted by /init's POSIX shell.
 ENTRYPOINT [ "/init", "/opt/hermes/docker/main-wrapper.sh" ]
 CMD [ ]
+=======
+# Install GBrain — must use git clone + bun link, not bun install -g
+RUN git clone --depth 1 https://github.com/garrytan/gbrain.git /opt/gbrain \
+    && cd /opt/gbrain && bun install && bun link \
+    && chmod -R a+rX /opt/gbrain
+
+WORKDIR /app
+
+COPY package.json ./
+RUN npm install
+
+COPY pyproject.toml ./
+COPY . .
+
+RUN pip install --no-cache-dir -e ".[messaging]" requests \
+    google-api-python-client google-auth google-auth-httplib2 google-auth-oauthlib \
+    pypdf pdf2image faster-whisper ocrmypdf
+
+COPY bin/pdf-agent /usr/local/bin/pdf-agent
+RUN chmod +x /usr/local/bin/pdf-agent
+
+RUN mkdir -p /data/hermes
+
+CMD ["sh", "-c", "python3 setup_oauth_credentials.py && exec hermes gateway"]
+>>>>>>> Stashed changes

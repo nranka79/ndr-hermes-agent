@@ -41,6 +41,28 @@ def _audit_log_session(context: Any, user_cfg: dict) -> None:
     except Exception:
         pass
 
+_audit_logger = logging.getLogger("HERMES_AUDIT")
+
+
+def _audit_log_session(context, user_cfg: dict) -> None:
+    try:
+        import time
+        record = {
+            "event": "session_start",
+            "ts": time.time(),
+            "platform": context.source.platform.value,
+            "user_id": context.source.user_id or "",
+            "user_name": user_cfg.get("name") or context.source.user_name or "",
+            "user_email": user_cfg.get("email") or "",
+            "role": user_cfg.get("role") or "",
+            "session_key": context.session_key,
+        }
+        _audit_logger.info(json.dumps(record))
+    except Exception:
+        pass
+
+
+
 
 def _now() -> datetime:
     """Return the current local time."""
@@ -334,12 +356,19 @@ def build_session_context_prompt(
             uid = _hash_sender_id(uid)
         lines.append(f"**User ID:** {uid}")
 
+<<<<<<< Updated upstream
     # Inject per-user profile from users.json.
     # Works for any platform where user_id is a Telegram numeric ID — which
     # includes Telegram natively and API server sessions after identity
     # resolution injects the Telegram ID via set_session_vars(user_id=...).
     _user_cfg: dict = {}
     if context.source.user_id:
+=======
+
+    # Inject per-user profile from users.json (Telegram sessions only)
+    _user_cfg: dict = {}
+    if context.source.platform.value == "telegram" and context.source.user_id:
+>>>>>>> Stashed changes
         try:
             from tools._user_registry import get_user_config
             _user_cfg = get_user_config(context.source.user_id)

@@ -1223,6 +1223,7 @@ def execute_code(
         child_env = _scrub_child_env(os.environ)
         child_env["HERMES_RPC_SOCKET"] = rpc_endpoint
         child_env["PYTHONDONTWRITEBYTECODE"] = "1"
+<<<<<<< Updated upstream
         # Force UTF-8 for the child's stdio and default file encoding.
         #
         # Without this, on Windows sys.stdout is bound to the console code
@@ -1242,6 +1243,18 @@ def execute_code(
         # with a C/POSIX locale (containers, minimal base images).
         child_env["PYTHONIOENCODING"] = "utf-8"
         child_env["PYTHONUTF8"] = "1"
+=======
+        # Inject session user identity so gws_auth.py can find the right token.
+        # HERMES_SESSION_USER_ID has HERMES_ prefix so it passes the safe-prefix
+        # filter, but it's not in os.environ — it lives in ContextVar. Read it here.
+        try:
+            from gateway.session_context import get_session_env as _gse
+            _session_tid = _gse("HERMES_SESSION_USER_ID", "")
+            if _session_tid:
+                child_env["HERMES_SESSION_USER_ID"] = _session_tid
+        except Exception:
+            pass
+>>>>>>> Stashed changes
         # Ensure the hermes-agent root is importable in the sandbox so
         # repo-root modules are available to child scripts.  We also prepend
         # the staging tmpdir so ``from hermes_tools import ...`` resolves even

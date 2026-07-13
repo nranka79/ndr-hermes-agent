@@ -2304,6 +2304,7 @@ def terminal_tool(
             
             while retry_count <= max_retries:
                 try:
+<<<<<<< Updated upstream
                     execute_kwargs = {
                         "timeout": effective_timeout,
                         "cwd": _resolve_command_cwd(
@@ -2320,6 +2321,17 @@ def terminal_tool(
                         _session_tid = _gie_t()
                         if _session_tid:
                             env.env["HERMES_SESSION_USER_ID"] = _session_tid
+=======
+                    execute_kwargs = {"timeout": effective_timeout}
+                    if workdir:
+                        execute_kwargs["cwd"] = workdir
+                    # Inject session user identity so gws_auth.py can find the right token.
+                    try:
+                        from gateway.session_context import get_session_env as _gse_t
+                        _tid = _gse_t("HERMES_SESSION_USER_ID", "")
+                        if _tid and hasattr(env, "env"):
+                            env.env["HERMES_SESSION_USER_ID"] = _tid
+>>>>>>> Stashed changes
                     except Exception:
                         pass
                     result = env.execute(command, **execute_kwargs)

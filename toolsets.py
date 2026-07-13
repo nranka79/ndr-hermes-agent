@@ -44,6 +44,8 @@ _HERMES_CORE_TOOLS = [
     "browser_type", "browser_scroll", "browser_back",
     "browser_press", "browser_get_images",
     "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
+    "smart_browser",
+    "browser_use_cloud",
     # Text-to-speech
     "text_to_speech",
     # Planning & memory
@@ -69,6 +71,7 @@ _HERMES_CORE_TOOLS = [
     "kanban_show", "kanban_list",
     "kanban_complete", "kanban_block", "kanban_heartbeat",
     "kanban_comment", "kanban_create", "kanban_link",
+<<<<<<< Updated upstream
     "kanban_unblock",
     # Computer use (macOS, gated on cua-driver being installed via check_fn)
     "computer_use",
@@ -104,6 +107,10 @@ _HERMES_WEBHOOK_SAFE_TOOLS = [
     "web_extract",
     "vision_analyze",
     "clarify",
+=======
+    # OpenRouter ad-hoc model routing (explicit-trigger only)
+    "call_openrouter_model",
+>>>>>>> Stashed changes
 ]
 
 
@@ -285,6 +292,12 @@ TOOLSETS = {
     "delegation": {
         "description": "Spawn subagents with isolated context for complex subtasks",
         "tools": ["delegate_task"],
+        "includes": []
+    },
+
+    "external_model": {
+        "description": "Route a sub-task to a user-specified model via OpenRouter (explicit request only)",
+        "tools": ["call_openrouter_model"],
         "includes": []
     },
 
