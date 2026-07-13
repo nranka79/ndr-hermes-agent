@@ -87,7 +87,7 @@ _HERMES_CORE_TOOLS = [
     # list/call, since Kelsa cannot use the generic mcp_servers auto-connect
     # path (headless gateway can't complete Kelsa's local-interactive OAuth
     # flow -- see tools/kelsa_auth.py). Pilot scope, 2026-07-13.
-    "kelsa_login", "kelsa_list_tools", "kelsa_call_tool",
+    "kelsa_login", "kelsa_complete_login", "kelsa_list_tools", "kelsa_call_tool",
     # Contacts/entities registry lookup (fuzzy/ranked search across the
     # Google Sheets registry) -- per-user OAuth via gws_auth, no SA/DWD.
     "contact_resolver",

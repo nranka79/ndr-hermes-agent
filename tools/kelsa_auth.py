@@ -2,9 +2,8 @@
 Per-user OAuth 2.1 (PKCE, dynamic client registration) token manager for
 Kelsa MCP ("Kelsa-Read", https://kelsa.io/mcp).
 
-Mirrors tools/gws_auth.py's shape (public callback endpoint + state-encoded
-identity + gws-vault storage) but adapted for Kelsa's MCP-spec-compliant
-OAuth server:
+Mirrors tools/gws_auth.py's shape (state-encoded identity + gws-vault
+storage) but adapted for Kelsa's MCP-spec-compliant OAuth server:
 
   - Dynamic Client Registration (RFC 7591) at POST /oauth/register -- no
     manually-provisioned client_id/secret needed, unlike Google.
@@ -13,22 +12,40 @@ OAuth server:
     Google, where Hermes is a confidential client and PKCE is skipped.
   - Refresh tokens ARE supported (grant_types_supported includes
     "refresh_token").
+  - RFC 8707 resource indicator required (Kelsa's consent page silently
+    no-ops on "Authorize" without it -- confirmed 2026-07-13).
+  - **localhost-only redirect_uri.** Kelsa's OAuth server does not accept a
+    public HTTPS redirect_uri at all -- confirmed 2026-07-13 by a hung
+    consent page with zero request ever reaching our server, then found
+    documented in skills/productivity/kelsa-mcp/SKILL.md ("Kelsa accepts
+    http://127.0.0.1:<port>/callback -- no HTTPS tunnel or public URL
+    needed"), from earlier real operational experience with Kelsa predating
+    this pilot. Confirmed 2026-07-13 against
+    https://kelsa.io/.well-known/oauth-authorization-server for the rest of
+    the metadata.
 
-Confirmed 2026-07-13 against
-https://kelsa.io/.well-known/oauth-authorization-server (see investigation
-notes in the Hermes session log for that date).
+Root cause this pilot originally fixed: Kelsa-Read was previously configured
+under mcp_servers with ``auth: oauth``, which routes through
+tools/mcp_oauth.py's *local interactive* flow (opens a browser, listens on a
+localhost callback port). That flow cannot complete inside a headless Docker
+gateway process -- it silently fails with "non-interactive environment and
+no cached tokens", the server connection raises, and zero Kelsa tools get
+registered.
 
-Root cause this fixes: Kelsa-Read was previously configured under
-mcp_servers with ``auth: oauth``, which routes through tools/mcp_oauth.py's
-*local interactive* flow (opens a browser, listens on a localhost callback
-port). That flow cannot complete inside a headless Docker gateway process --
-it silently fails with "non-interactive environment and no cached tokens",
-the server connection raises, and zero Kelsa tools get registered. This
-module instead drives the OAuth dance through Hermes' existing public HTTP
-callback + Telegram-delivered link pattern (same one tools/gws_auth.py
-uses for Gmail/Calendar/Drive), and stores tokens per-user in the gws-vault
-daemon instead of a flat file, so multiple Hermes users can each connect
-their own Kelsa account without clobbering each other.
+Because Kelsa rejects non-localhost redirects outright, a fully automatic
+public-callback flow (like tools/gws_auth.py uses for Google) is not
+possible here. Instead: the redirect_uri is a fixed, never-listened-on
+``http://127.0.0.1:<PSEUDO_PORT>/callback`` placeholder. After the user
+authorizes, their OWN browser tries to load that URL, fails to connect
+(nothing listens on their machine), but the address bar still shows the
+full redirect URL with ``code=`` and ``state=`` -- the user copies that and
+pastes it back into Telegram. tools/kelsa_tool.py's ``kelsa_complete_login``
+tool parses the paste and finishes the exchange. This is the same
+paste-back mechanism tools/mcp_oauth.py's interactive CLI flow already uses
+for this exact server (see the SKILL.md "OAuth in a Non-Interactive
+(Headless) Environment" section) -- reimplemented here so it can be driven
+per-user, from Telegram, with vault-backed storage instead of a single
+shared flat-file token.
 
 PILOT SCOPE (Phase 1, 2026-07-13): proves the auth loop for a single user.
 Token storage/refresh here IS already generically multi-user (vault is
@@ -37,11 +54,12 @@ tokens (tools/kelsa_tool.py) opens one ephemeral connection per call rather
 than a pooled persistent connection -- that generalization is Phase 2.
 
 Usage:
-    from tools.kelsa_auth import get_auth_url, exchange_and_store, has_token, get_valid_access_token
-    url = get_auth_url(telegram_id)                       # send to user
-    exchange_and_store(telegram_id, code, code_verifier)   # called by the /kelsa/auth/callback route
-    has_token(telegram_id)                                 # bool
-    token = get_valid_access_token(telegram_id)            # refreshes if needed
+    from tools.kelsa_auth import get_auth_url, exchange_and_store, has_token, get_valid_access_token, parse_callback_paste
+    url = get_auth_url(telegram_id)                            # send to user
+    code, state = parse_callback_paste(pasted_text)             # from kelsa_complete_login
+    exchange_and_store(telegram_id, code, code_verifier)        # code_verifier extracted from state
+    has_token(telegram_id)                                      # bool
+    token = get_valid_access_token(telegram_id)                 # refreshes if needed
 """
 
 from __future__ import annotations
@@ -52,7 +70,7 @@ import json
 import logging
 import secrets
 import time
-from urllib.parse import urlencode
+from urllib.parse import parse_qs, urlencode, urlparse
 
 import httpx
 
@@ -64,7 +82,11 @@ TOKEN_ENDPOINT = "https://kelsa.io/oauth/token"
 REGISTRATION_ENDPOINT = "https://kelsa.io/oauth/register"
 MCP_URL = "https://kelsa.io/mcp"
 
-REDIRECT_URI = "https://transcribe.ahfl.in/kelsa/auth/callback"
+# Fixed placeholder -- NEVER actually bound/listened on by anything, on any
+# machine. Its only purpose is to satisfy Kelsa's "must be a 127.0.0.1
+# redirect_uri" validation. The user's browser will fail to connect here
+# after authorizing; that's expected -- see module docstring.
+REDIRECT_URI = "http://127.0.0.1:47562/callback"
 
 # "mcp:read" only -- matches the "Kelsa-Read" server name / least privilege.
 # Kelsa also advertises mcp:write and mcp:design; not requested here.
@@ -78,7 +100,12 @@ SERVICE_NAME = "mcp-kelsa-read"
 # NOT a per-user secret, so it is cached on disk next to (but distinct from)
 # the flat-file MCP OAuth token cache, not in the vault. Kelsa issues a
 # client_id only (public client, no client_secret -- see module docstring).
-_CLIENT_INFO_FILENAME = "kelsa-read-dcr-client.json"
+#
+# Filename bumped to v2 (2026-07-13) -- the v1 file cached a client
+# registered against the old, non-working public HTTPS redirect_uri. Rather
+# than migrate/validate the old file, just start clean under a new name so
+# there's no chance of silently reusing a stale registration.
+_CLIENT_INFO_FILENAME = "kelsa-read-dcr-client-v2.json"
 
 
 def _client_info_path():
@@ -145,13 +172,12 @@ def get_auth_url(telegram_id: str) -> str:
     """Build a Kelsa OAuth authorization URL for a user.
 
     The PKCE code_verifier is encoded into ``state`` as
-    ``"{telegram_id}:{code_verifier}"`` because the code exchange happens in
-    a *separate* request (the public /kelsa/auth/callback route, likely a
-    different process/worker) with no shared memory of this call -- the
-    same trick tools/gws_auth.py uses to carry the service_name through
-    state, adapted here to carry the PKCE verifier instead. The verifier is
-    opaque URL-safe base64 (no ':'), so splitting on the first ':' in the
-    callback is safe.
+    ``"{telegram_id}:{code_verifier}"`` because the code exchange happens
+    later, out of process (the user pastes the failed-redirect URL back into
+    Telegram, potentially in a different gateway worker) -- the same trick
+    tools/gws_auth.py uses to carry the service_name through state, adapted
+    here to carry the PKCE verifier instead. The verifier is opaque URL-safe
+    base64 (no ':'), so splitting on the first ':' when parsing is safe.
     """
     client_id = _get_or_register_client()
     verifier, challenge = _generate_pkce()
@@ -168,13 +194,44 @@ def get_auth_url(telegram_id: str) -> str:
         # RFC 8707 resource indicator -- required by MCP's Authorization
         # spec (2025-06-18) so the server knows which protected resource
         # (this MCP endpoint) the grant is for. Omitting it caused Kelsa's
-        # consent page to silently hang on "Authorize" with no redirect and
-        # no request ever reaching our callback -- confirmed 2026-07-13 by
-        # comparing against the reference mcp SDK's own (dead, legacy)
-        # OAuthClientProvider flow, which always includes this param.
+        # consent page to silently no-op on "Authorize" (confirmed
+        # 2026-07-13 against the reference mcp SDK's OAuthClientProvider
+        # flow, which always includes this param).
         "resource": MCP_URL,
     }
     return f"{AUTHORIZATION_ENDPOINT}?{urlencode(params)}"
+
+
+def parse_callback_paste(pasted: str) -> tuple[str, str]:
+    """Extract (code, state) from whatever the user pasted back.
+
+    Accepts either a full failed-redirect URL
+    (``http://127.0.0.1:47562/callback?code=...&state=...``) or just the
+    query-string portion (``code=...&state=...`` or ``?code=...&state=...``).
+
+    Raises ValueError with a clear message if code/state can't be found.
+    """
+    text = (pasted or "").strip()
+    if not text:
+        raise ValueError("Nothing was pasted.")
+
+    if "://" in text:
+        query = urlparse(text).query
+    else:
+        query = text.lstrip("?")
+
+    parsed = parse_qs(query)
+    code = (parsed.get("code") or [None])[0]
+    state = (parsed.get("state") or [None])[0]
+
+    if not code or not state:
+        raise ValueError(
+            "Could not find both 'code' and 'state' in the pasted text. "
+            "Paste the full URL from the browser's address bar after "
+            "authorizing (it will look like a connection-error page at "
+            "127.0.0.1 -- that's expected, the URL itself is what matters)."
+        )
+    return code, state
 
 
 def _store_token_payload(telegram_id: str, payload: dict) -> None:

@@ -30,21 +30,34 @@ Kelsa. These handlers call _ensure_mcp_loop() (idempotent) but must NEVER
 call _stop_mcp_loop() -- doing so would tear down every other live MCP
 server connection in the process, not just this ephemeral one.
 
-2026-07-13 incident: the first pilot build returned the raw Kelsa auth_url
-straight to the LLM as tool-result text ("send this link to the user").
-With no dedicated delivery tool, the model reached for tools.send_oauth_url
-instead -- which is HARDCODED to tools.gws_auth.get_auth_url() (Google
-Workspace only) and ignores everything except its `label` param. The model
-passed label="Authorize Kelsa CRM", and the tool silently built and sent a
-real *Google* OAuth link under that mislabeled button -- the user
-authorized Google (harmless) while Kelsa was never touched, then the loop
-repeated (compounded by a separate nginx routing bug -- see
-tools/kelsa_auth.py module docstring -- that meant a genuine Kelsa
-authorization could never complete either). Fix: never hand the raw URL to
-the LLM at all. Deliver it directly as a Telegram button (mirroring
-send_oauth_url._deliver_telegram_button) from inside this tool, and return
-only a status object -- exactly the pattern send_oauth_url.py already
-established for GWS, applied here for Kelsa instead of bypassed.
+Auth flow history (2026-07-13, in order discovered):
+1. First build returned the raw Kelsa auth_url straight to the LLM as
+   tool-result text. With no dedicated delivery tool, the model reached
+   for tools.send_oauth_url instead -- hardcoded to Google Workspace,
+   ignoring everything except its `label` param -- and silently sent a
+   real *Google* link mislabeled "Authorize Kelsa CRM". Fixed by never
+   handing the raw URL to the LLM: deliver it directly as a Telegram
+   button from inside this tool (mirrors send_oauth_url._deliver_telegram_button).
+2. Button delivery fixed, but authorizing still didn't complete -- nginx
+   in front of the callback domain only proxied /gws/auth/callback to
+   hermes; /kelsa/auth/callback fell through to n8n (the domain's default
+   app) and 200'd with n8n's SPA, so the exchange never ran. Fixed by
+   adding a matching nginx location block.
+3. nginx fixed, still didn't complete -- Kelsa's consent page hung on
+   "Authorize" with no redirect firing at all. Root cause: Kelsa's OAuth
+   server does not accept a public HTTPS redirect_uri AT ALL -- only
+   http://127.0.0.1:<port>/callback (documented in the pre-existing
+   skills/productivity/kelsa-mcp/SKILL.md from earlier operational
+   experience, found only after this was independently re-discovered the
+   hard way). This makes a fully-automatic public callback impossible for
+   Kelsa specifically (unlike Google). Current design: redirect_uri is a
+   fixed, never-listened-on 127.0.0.1 placeholder (see tools/kelsa_auth.py).
+   After authorizing, the user's browser fails to connect there (expected)
+   but the address bar still carries the code/state -- the user pastes
+   that back into Telegram and kelsa_complete_login below finishes the
+   exchange. Same paste-back mechanism the legacy CLI flow already used
+   for this exact server, reimplemented here to run per-user through
+   Telegram with vault-backed storage instead of a shared flat file.
 """
 
 import asyncio
@@ -82,6 +95,15 @@ def _detect_session() -> tuple[str, str]:
         return "", ""
 
 
+_PASTE_BACK_INSTRUCTIONS = (
+    "After you tap Authorize, your browser will try to load a "
+    "127.0.0.1 address and show a connection error / \"can't reach this "
+    "page\" — that's expected, nothing is actually listening there. "
+    "Copy the FULL URL from your browser's address bar at that point "
+    "(it contains the authorization code) and paste it back here."
+)
+
+
 def _deliver_kelsa_auth_link(url: str) -> dict:
     """Deliver the Kelsa auth URL via the current session's channel.
 
@@ -105,7 +127,8 @@ def _deliver_kelsa_auth_link(url: str) -> dict:
         text = (
             "Click the button below to authorize Kelsa CRM.\n\n"
             "This lets Hermes read your Kelsa leads/pipeline on your behalf. "
-            "You can revoke access any time from your Kelsa account settings."
+            "You can revoke access any time from your Kelsa account settings.\n\n"
+            f"{_PASTE_BACK_INSTRUCTIONS}"
         )
         keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("Authorize Kelsa CRM", url=url)]])
 
@@ -135,7 +158,8 @@ def _deliver_kelsa_auth_link(url: str) -> dict:
         sep = "=" * 72
         sys.stderr.write(
             f"\n{sep}\nKelsa CRM Authorization Required\n{sep}\n"
-            f"Open this URL in a browser to authorize:\n\n  {url}\n\n{sep}\n\n"
+            f"Open this URL in a browser to authorize:\n\n  {url}\n\n"
+            f"{_PASTE_BACK_INSTRUCTIONS}\n\n{sep}\n\n"
         )
         sys.stderr.flush()
         return {"success": True, "delivery": "cli_printed"}
@@ -144,7 +168,11 @@ def _deliver_kelsa_auth_link(url: str) -> dict:
         "success": True,
         "delivery": "markdown_link",
         "markdown_link": f"[Authorize Kelsa CRM]({url})",
-        "_instruction": "Embed the markdown_link value VERBATIM in your response. Do not retype or paraphrase it.",
+        "_instruction": (
+            "Embed the markdown_link value VERBATIM in your response. "
+            "Do not retype or paraphrase it. Also tell the user: "
+            f"{_PASTE_BACK_INSTRUCTIONS}"
+        ),
     }
 
 
@@ -159,9 +187,41 @@ KELSA_LOGIN_SCHEMA = {
         "return the URL to you. Do not attempt to build or paste a Kelsa "
         "URL yourself, and NEVER use send_oauth_url for Kelsa -- that tool "
         "is hardcoded to Google Workspace and will silently send a Google "
-        "link instead, mislabeled."
+        "link instead, mislabeled.\n\n"
+        "IMPORTANT: Kelsa's OAuth server only accepts a 127.0.0.1 redirect, "
+        "so after the user taps Authorize their browser will show a "
+        "connection-error page at a 127.0.0.1 address -- this is EXPECTED, "
+        "not a failure. Tell the user to copy that URL from their address "
+        "bar and paste it back to you, then call kelsa_complete_login with "
+        "that pasted text. Do not tell the user something went wrong when "
+        "they report a broken-looking 127.0.0.1 page after authorizing."
     ),
     "parameters": {"type": "object", "properties": {}, "required": []},
+}
+
+KELSA_COMPLETE_LOGIN_SCHEMA = {
+    "name": "kelsa_complete_login",
+    "description": (
+        "Finish a Kelsa CRM authorization after the user has tapped "
+        "Authorize and pasted back the resulting URL (or just the "
+        "code=...&state=... portion) from their browser's address bar. "
+        "Call this as soon as the user provides that pasted text following "
+        "a kelsa_login prompt -- do not ask them to do anything else first."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "pasted": {
+                "type": "string",
+                "description": (
+                    "The full URL or query string the user pasted back "
+                    "(e.g. 'http://127.0.0.1:47562/callback?code=...&state=...' "
+                    "or just 'code=...&state=...')."
+                ),
+            },
+        },
+        "required": ["pasted"],
+    },
 }
 
 KELSA_LIST_TOOLS_SCHEMA = {
@@ -222,9 +282,12 @@ def _not_authorized_result(tid: str) -> str:
     result.update(delivery)
     result["instructions"] = (
         "I already sent the user a Kelsa authorization button/link via "
-        "this delivery — tell them to tap it, then retry once they confirm. "
-        "Do NOT call send_oauth_url for this (it is Google-only), and do "
-        "NOT try to construct, guess, or paste any Kelsa URL yourself."
+        "this delivery — tell them to tap it. After they authorize, their "
+        "browser will show a connection-error page at a 127.0.0.1 address "
+        "— that's expected. Tell them to copy that URL and paste it back "
+        "to you, then call kelsa_complete_login with the pasted text. Do "
+        "NOT call send_oauth_url for this (it is Google-only), and do NOT "
+        "try to construct, guess, or paste any Kelsa URL yourself."
     )
     import json
 
@@ -282,7 +345,51 @@ def kelsa_login_tool(args, **kw):
     if not delivery.get("success"):
         return tool_error(f"Could not deliver Kelsa auth link: {delivery.get('error')}")
 
-    return tool_result(**delivery, message="Sent the Kelsa authorization button/link to the user.")
+    return tool_result(
+        **delivery,
+        message=(
+            "Sent the Kelsa authorization button/link to the user. After "
+            "they authorize, they'll land on a broken-looking 127.0.0.1 "
+            "page -- that's expected. Tell them to paste that URL back, "
+            "then call kelsa_complete_login with it."
+        ),
+    )
+
+
+def kelsa_complete_login_tool(args, **kw):
+    tid = _current_telegram_id()
+    if not tid:
+        return tool_error("No session user context -- cannot complete a Kelsa login.")
+
+    pasted = (args.get("pasted") or "").strip()
+    if not pasted:
+        return tool_error("pasted is required -- the URL or code=...&state=... the user gave you.")
+
+    from tools.kelsa_auth import parse_callback_paste, exchange_and_store
+
+    try:
+        code, state = parse_callback_paste(pasted)
+    except ValueError as exc:
+        return tool_error(str(exc))
+
+    if ":" not in state:
+        return tool_error("Malformed state in the pasted URL -- ask the user to start a fresh kelsa_login.")
+    state_tid, code_verifier = state.split(":", 1)
+    state_tid = state_tid.strip()
+
+    if state_tid != str(tid):
+        return tool_error(
+            "This authorization link belongs to a different user session. "
+            "Ask the user to run kelsa_login themselves and paste back "
+            "their own link's result."
+        )
+
+    try:
+        exchange_and_store(tid, code, code_verifier)
+    except Exception as exc:
+        return tool_error(f"Kelsa token exchange failed: {exc}")
+
+    return tool_result(message="Kelsa CRM authorized successfully. You can now use kelsa_list_tools / kelsa_call_tool.")
 
 
 def kelsa_list_tools_tool(args, **kw):
@@ -369,6 +476,13 @@ registry.register(
     schema=KELSA_LOGIN_SCHEMA,
     handler=kelsa_login_tool,
     emoji="🔑",
+)
+registry.register(
+    name="kelsa_complete_login",
+    toolset="oauth",
+    schema=KELSA_COMPLETE_LOGIN_SCHEMA,
+    handler=kelsa_complete_login_tool,
+    emoji="🔓",
 )
 registry.register(
     name="kelsa_list_tools",
