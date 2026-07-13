@@ -247,10 +247,14 @@ registry.register(
     schema={
         "name": "send_oauth_url",
         "description": (
-            "Send an OAuth authorization link to the user via the current "
-            "session's channel (Telegram button, CLI print, or Open WebUI "
-            "markdown link). Use this WHENEVER a user needs to authorize a "
-            "Google (or other OAuth) account for Hermes. "
+            "Send a GOOGLE WORKSPACE OAuth authorization link to the user via "
+            "the current session's channel (Telegram button, CLI print, or Open "
+            "WebUI markdown link). This tool is GOOGLE-ONLY -- it always builds "
+            "the link via tools.gws_auth, regardless of the `label` you pass; "
+            "passing a non-Google label does NOT change which service gets "
+            "authorized, it only mislabels the button. For any other OAuth "
+            "integration (e.g. Kelsa CRM -> use kelsa_login), call that "
+            "integration's own dedicated login tool instead of this one. "
             "DO NOT write OAuth URLs in your own prose — the URL is generated "
             "inside this tool and delivered via a button, terminal print, or "
             "pre-formatted markdown link. The tool returns a status object "

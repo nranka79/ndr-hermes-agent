@@ -29,9 +29,27 @@ is a process-global resource used by every configured MCP server, not just
 Kelsa. These handlers call _ensure_mcp_loop() (idempotent) but must NEVER
 call _stop_mcp_loop() -- doing so would tear down every other live MCP
 server connection in the process, not just this ephemeral one.
+
+2026-07-13 incident: the first pilot build returned the raw Kelsa auth_url
+straight to the LLM as tool-result text ("send this link to the user").
+With no dedicated delivery tool, the model reached for tools.send_oauth_url
+instead -- which is HARDCODED to tools.gws_auth.get_auth_url() (Google
+Workspace only) and ignores everything except its `label` param. The model
+passed label="Authorize Kelsa CRM", and the tool silently built and sent a
+real *Google* OAuth link under that mislabeled button -- the user
+authorized Google (harmless) while Kelsa was never touched, then the loop
+repeated (compounded by a separate nginx routing bug -- see
+tools/kelsa_auth.py module docstring -- that meant a genuine Kelsa
+authorization could never complete either). Fix: never hand the raw URL to
+the LLM at all. Deliver it directly as a Telegram button (mirroring
+send_oauth_url._deliver_telegram_button) from inside this tool, and return
+only a status object -- exactly the pattern send_oauth_url.py already
+established for GWS, applied here for Kelsa instead of bypassed.
 """
 
+import asyncio
 import logging
+import os
 
 from tools.registry import registry, tool_error, tool_result
 
@@ -51,14 +69,97 @@ def _current_telegram_id() -> str | None:
     return tid or None
 
 
+def _detect_session() -> tuple[str, str]:
+    """Return (platform, chat_id) for the current session. Mirrors
+    tools/send_oauth_url.py's _detect_session -- same ContextVar source."""
+    try:
+        from gateway.session_context import get_session_env
+
+        platform = get_session_env("HERMES_SESSION_PLATFORM", "").lower().strip()
+        chat_id = get_session_env("HERMES_SESSION_CHAT_ID", "").strip()
+        return platform, chat_id
+    except Exception:
+        return "", ""
+
+
+def _deliver_kelsa_auth_link(url: str) -> dict:
+    """Deliver the Kelsa auth URL via the current session's channel.
+
+    The URL is NEVER returned to the caller (the LLM) -- only a status
+    dict. Telegram gets a real inline-keyboard button (URL carried
+    byte-for-byte by Telegram, no LLM transcription involved); other
+    channels get a fallback. This is the Kelsa-specific twin of
+    tools/send_oauth_url.py's delivery logic -- kept separate because that
+    tool is hardcoded to Google Workspace, not because the pattern differs.
+    """
+    platform, chat_id = _detect_session()
+
+    if platform == "telegram" and chat_id:
+        from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
+
+        bot_token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+        if not bot_token:
+            return {"success": False, "delivery": "telegram_button", "error": "TELEGRAM_BOT_TOKEN not set"}
+
+        bot = Bot(token=bot_token)
+        text = (
+            "Click the button below to authorize Kelsa CRM.\n\n"
+            "This lets Hermes read your Kelsa leads/pipeline on your behalf. "
+            "You can revoke access any time from your Kelsa account settings."
+        )
+        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("Authorize Kelsa CRM", url=url)]])
+
+        async def _send():
+            try:
+                msg = await bot.send_message(
+                    chat_id=int(chat_id),
+                    text=text,
+                    reply_markup=keyboard,
+                    disable_web_page_preview=True,
+                )
+                return msg.message_id
+            finally:
+                await bot.close()
+
+        try:
+            message_id = asyncio.run(_send())
+        except Exception as e:
+            logger.warning("Kelsa auth telegram delivery failed: %s", e)
+            return {"success": False, "delivery": "telegram_button", "error": str(e)}
+
+        return {"success": True, "delivery": "telegram_button", "message_id": message_id}
+
+    if platform == "cli":
+        import sys
+
+        sep = "=" * 72
+        sys.stderr.write(
+            f"\n{sep}\nKelsa CRM Authorization Required\n{sep}\n"
+            f"Open this URL in a browser to authorize:\n\n  {url}\n\n{sep}\n\n"
+        )
+        sys.stderr.flush()
+        return {"success": True, "delivery": "cli_printed"}
+
+    return {
+        "success": True,
+        "delivery": "markdown_link",
+        "markdown_link": f"[Authorize Kelsa CRM]({url})",
+        "_instruction": "Embed the markdown_link value VERBATIM in your response. Do not retype or paraphrase it.",
+    }
+
+
 KELSA_LOGIN_SCHEMA = {
     "name": "kelsa_login",
     "description": (
-        "Generate a Kelsa authorization link for the current user. Kelsa "
-        "requires a one-time per-user OAuth login before kelsa_list_tools "
-        "or kelsa_call_tool will work for that user. Send the returned "
-        "auth_url to the user (verbatim, as a clickable link) and ask them "
-        "to open it and authorize, then retry the original request."
+        "Send the current user a Kelsa CRM authorization button/link via "
+        "the current channel (e.g. a Telegram button). Kelsa requires a "
+        "one-time per-user OAuth login before kelsa_list_tools or "
+        "kelsa_call_tool will work for that user. The tool delivers the "
+        "link itself and returns only a delivery status -- it does NOT "
+        "return the URL to you. Do not attempt to build or paste a Kelsa "
+        "URL yourself, and NEVER use send_oauth_url for Kelsa -- that tool "
+        "is hardcoded to Google Workspace and will silently send a Google "
+        "link instead, mislabeled."
     ),
     "parameters": {"type": "object", "properties": {}, "required": []},
 }
@@ -70,7 +171,10 @@ KELSA_LIST_TOOLS_SCHEMA = {
         "current authorized user, with each tool's description and input "
         "schema. Call this BEFORE kelsa_call_tool whenever you don't "
         "already know the exact tool name from a prior call in this "
-        "session -- never guess a Kelsa tool name."
+        "session -- never guess a Kelsa tool name. If the user isn't "
+        "authorized yet, this automatically sends them a fresh Kelsa "
+        "authorization button (same delivery as kelsa_login) instead of "
+        "returning a URL to you."
     ),
     "parameters": {"type": "object", "properties": {}, "required": []},
 }
@@ -106,14 +210,25 @@ def _not_authorized_result(tid: str) -> str:
     from tools.kelsa_auth import get_auth_url
 
     url = get_auth_url(tid)
-    return tool_error(
-        "Not authorized with Kelsa yet.",
-        auth_url=url,
-        instructions=(
-            "Send this auth_url to the user as a clickable link and ask "
-            "them to open it and authorize, then retry."
-        ),
+    delivery = _deliver_kelsa_auth_link(url)
+
+    if not delivery.get("success"):
+        return tool_error(
+            f"Not authorized with Kelsa, and could not deliver a fresh "
+            f"auth link: {delivery.get('error')}"
+        )
+
+    result = {"error": "Not authorized with Kelsa yet."}
+    result.update(delivery)
+    result["instructions"] = (
+        "I already sent the user a Kelsa authorization button/link via "
+        "this delivery — tell them to tap it, then retry once they confirm. "
+        "Do NOT call send_oauth_url for this (it is Google-only), and do "
+        "NOT try to construct, guess, or paste any Kelsa URL yourself."
     )
+    import json
+
+    return json.dumps(result, ensure_ascii=False)
 
 
 async def _connect_and_run(token: str, fn):
@@ -163,7 +278,11 @@ def kelsa_login_tool(args, **kw):
         pass  # fall through to generating a fresh link regardless
 
     url = get_auth_url(tid)
-    return tool_result(auth_url=url, message="Send this link to the user to authorize Kelsa.")
+    delivery = _deliver_kelsa_auth_link(url)
+    if not delivery.get("success"):
+        return tool_error(f"Could not deliver Kelsa auth link: {delivery.get('error')}")
+
+    return tool_result(**delivery, message="Sent the Kelsa authorization button/link to the user.")
 
 
 def kelsa_list_tools_tool(args, **kw):
