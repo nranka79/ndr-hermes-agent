@@ -165,6 +165,14 @@ def get_auth_url(telegram_id: str) -> str:
         "state": state,
         "code_challenge": challenge,
         "code_challenge_method": "S256",
+        # RFC 8707 resource indicator -- required by MCP's Authorization
+        # spec (2025-06-18) so the server knows which protected resource
+        # (this MCP endpoint) the grant is for. Omitting it caused Kelsa's
+        # consent page to silently hang on "Authorize" with no redirect and
+        # no request ever reaching our callback -- confirmed 2026-07-13 by
+        # comparing against the reference mcp SDK's own (dead, legacy)
+        # OAuthClientProvider flow, which always includes this param.
+        "resource": MCP_URL,
     }
     return f"{AUTHORIZATION_ENDPOINT}?{urlencode(params)}"
 
@@ -190,6 +198,7 @@ def exchange_and_store(telegram_id: str, code: str, code_verifier: str) -> None:
             "redirect_uri": REDIRECT_URI,
             "client_id": client_id,
             "code_verifier": code_verifier,
+            "resource": MCP_URL,
         },
         headers={"Content-Type": "application/x-www-form-urlencoded"},
         timeout=20,
@@ -224,6 +233,7 @@ def _refresh(telegram_id: str, refresh_token: str) -> dict:
             "grant_type": "refresh_token",
             "refresh_token": refresh_token,
             "client_id": client_id,
+            "resource": MCP_URL,
         },
         headers={"Content-Type": "application/x-www-form-urlencoded"},
         timeout=20,
