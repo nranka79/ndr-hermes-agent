@@ -137,8 +137,18 @@ def _client_config() -> dict:
 
 
 def _current_telegram_id() -> str:
-    """Get the telegram_id of the active session user."""
-    tid = os.environ.get("HERMES_SESSION_USER_ID", "").strip()
+    """Get the raw channel id of the active session user — session context ONLY.
+
+    Uses ``gateway.session_context.get_gws_identity_env`` (per-task ContextVar
+    with os.environ fallback for subprocess/sandbox/cron contexts, plus the
+    cron job-owner fallback). This is the single source of user identity for
+    every GWS token operation; callers must never supply their own id.
+    """
+    try:
+        from gateway.session_context import get_gws_identity_env
+        tid = get_gws_identity_env().strip()
+    except Exception:
+        tid = os.environ.get("HERMES_SESSION_USER_ID", "").strip()
     if not tid:
         raise ValueError(
             "No session user context (HERMES_SESSION_USER_ID not set). "
@@ -341,13 +351,29 @@ def build_service(api: str, version: str, telegram_id: str = None, service_name:
     """
     Build a Google API client using the stored per-user OAuth token.
 
+    Identity comes from the SESSION ONLY (:func:`_current_telegram_id`). The
+    ``telegram_id`` parameter is retained for backward compatibility but no
+    longer selects the user: a caller-supplied value that differs from the
+    session identity is ignored with a warning. This closes the impersonation
+    hole where skill scripts / execute_code passed a hardcoded id (2026-07-13:
+    skill scripts hardcoding one user's telegram id both broke after the
+    canonical-uid migration and would have read that user's tokens from any
+    other user's session).
+
     Args:
         api:          e.g. ``"gmail"``, ``"calendar"``, ``"drive"``, ``"sheets"``
         version:      e.g. ``"v1"``, ``"v3"``, ``"v4"``
-        telegram_id:  override; defaults to ``HERMES_SESSION_USER_ID`` env var
+        telegram_id:  DEPRECATED — ignored unless equal to the session identity.
         service_name: vault service key (e.g. ``"google-draas"``).
     """
-    tid = telegram_id or _current_telegram_id()
+    tid = _current_telegram_id()
+    if telegram_id and str(telegram_id).strip() != tid:
+        logger.warning(
+            "build_service: ignoring caller-supplied telegram_id=%r -- "
+            "identity always comes from the session (%r). Remove the "
+            "telegram_id argument from the caller.",
+            telegram_id, tid,
+        )
     creds = load_credentials(tid, service_name)
     return build(api, version, credentials=creds)
 
