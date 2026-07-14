@@ -143,6 +143,13 @@ def whatsapp_link_tool(args, **kw):
         return tool_error("At least one of 'phone' or 'text' must be provided.")
 
     phone_digits = _sanitize_phone(phone_raw) if phone_raw else ""
+    # Leading trunk "0" + 10-digit local number (common Indian formatting
+    # convention, e.g. "098765 43210") — strip the trunk 0 so the bare
+    # 10-digit branch below can prepend ISD 91 correctly. Without this, an
+    # 11-digit 0-prefixed number passed through untouched, producing a
+    # wa.me link with a stray leading zero.
+    if phone_digits and len(phone_digits) == 11 and phone_digits.startswith("0"):
+        phone_digits = phone_digits[1:]
     # Bare 10-digit number without ISD code — default to ISD 91 (India).
     if phone_digits and len(phone_digits) == 10:
         phone_digits = "91" + phone_digits

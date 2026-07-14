@@ -62,6 +62,20 @@ def _cell(row: list, idx: int) -> str:
         return ""
 
 
+def _sanitize_phone_value(raw: str) -> str:
+    """Strip non-digit characters from a raw sheet phone value.
+
+    Preserves a leading '+' (ISD/country-code indicator) if present; strips
+    everything else (spaces, dashes, parens, sheet formatting artifacts).
+    Keeps phone numbers returned to the LLM clean so downstream tools
+    (e.g. whatsapp_link) never see spaces/dashes that could be mistranscribed.
+    """
+    raw = (raw or "").strip()
+    has_plus = raw.startswith("+")
+    digits = re.sub(r"\D", "", raw)
+    return f"+{digits}" if has_plus and digits else digits
+
+
 def _fuzzy(q: str, c: str) -> float:
     try:
         from rapidfuzz import fuzz
@@ -382,7 +396,7 @@ def _hydrate(svc, row_num: int, cand: dict, header: list) -> dict:
                 continue
             hl = h.lower()
             if "phone" in hl and "type" not in hl:
-                phones.append({"type": h, "value": val})
+                phones.append({"type": h, "value": _sanitize_phone_value(val)})
             elif "e-mail" in hl and "type" not in hl:
                 emails.append({"type": h, "value": val})
 
