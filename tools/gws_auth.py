@@ -44,6 +44,17 @@ import logging
 import os
 import re
 
+# oauthlib does an exact-string comparison of requested vs granted scope on
+# token exchange. Google frequently echoes the granted scopes back in a
+# DIFFERENT ORDER than requested (not a real scope change) -- with strict
+# comparison this raises 'Scope has changed from ... to ...' and kills the
+# /gws/auth/callback request (2026-07-14: broke YouTube scope rollout). Must
+# be set before google_auth_oauthlib.flow is imported/used. Same fix already
+# proven in plugins/platforms/google_chat/oauth.py and
+# skills/productivity/google-workspace/scripts/setup.py -- ported here since
+# this module is the sole sanctioned GWS OAuth path (see SOUL.md).
+os.environ.setdefault("OAUTHLIB_RELAX_TOKEN_SCOPE", "1")
+
 from googleapiclient.discovery import build
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import Flow
@@ -75,6 +86,12 @@ HERMES_GWS_SCOPES = [
     "https://www.googleapis.com/auth/photospicker.mediaitems.readonly",
     "https://www.googleapis.com/auth/photoslibrary.appendonly",
     "https://www.googleapis.com/auth/photoslibrary.readonly.appcreateddata",
+    # YouTube (2026-07-14): full manage scope, not just youtube.upload --
+    # covers upload + read/list/edit/delete of the user's own videos,
+    # playlists, comments. This is a Google 'restricted' scope; internal/
+    # testing OAuth clients are fine, a public-facing app would need CASA
+    # verification before this scope is usable for external users.
+    "https://www.googleapis.com/auth/youtube",
 ]
 
 _REDIRECT_URI = "https://transcribe.ahfl.in/gws/auth/callback"
