@@ -131,6 +131,42 @@ docker compose up -d --build hermes
 docker compose exec hermes bash
 ```
 
+### Multi-bot Telegram setup (2026-07)
+3 separate telegram bot services in docker-compose, same "brain" (shared
+`users.json`, `hermes-data/users/` GBrain dirs, `honcho.json`, `SOUL.md`),
+but each with its OWN `HERMES_HOME` (own `config.yaml`, own session/state
+DB) — no chat-history bleed between bots for the same user:
+
+| Service | Bot token env var | HERMES_HOME (host path) |
+|---|---|---|
+| `hermes` (primary) | `TELEGRAM_BOT_TOKEN` | `/opt/hermes/hermes-data` |
+| `hermes-bot2` | `TELEGRAM_BOT_TOKEN_2` | `/opt/hermes/hermes-data-bot2` |
+| `hermes-bot3` | `TELEGRAM_BOT_TOKEN_3` | `/opt/hermes/hermes-data-bot3` |
+
+Each `config.yaml` is a **runtime file only — NOT git-tracked, not in this
+repo** (the `hermes-data/` folder tracked in the repo is a seed copy with
+just `SOUL.md` + `users.json`, distinct from the live runtime dirs above).
+
+### Default Model — Telegram Bots (2026-07-14)
+All 3 bots' `config.yaml` top-level `model:` block set to:
+```yaml
+model:
+  provider: opencode-go
+  default: deepseek-v4-flash
+  base_url: https://opencode.ai/zen/go/v1
+  api_mode: anthropic_messages
+```
+Changed `default` from previous `minimax-m3` → `deepseek-v4-flash`.
+`provider: opencode-go` was already correct on all 3, untouched. Per-tool/
+subagent model overrides further down each `config.yaml` were already on
+`opencode-go` + `deepseek-v4-flash` — untouched, no change needed there.
+Edited directly on the VPS via SSH (files aren't git-tracked, so no repo
+diff for the value itself — this note is the record of the change).
+Requires a gateway restart per bot to take effect (`config.yaml` read at
+process startup, not hot-reloaded) — restart via `docker compose restart
+hermes` / `hermes-bot2` / `hermes-bot3`, or via the bot's own
+telegram-triggered gateway restart.
+
 ---
 
 ## Key File Paths
