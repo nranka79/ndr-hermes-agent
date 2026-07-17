@@ -27,6 +27,15 @@ Encoding rules (RFC 3986 + WhatsApp-specific workarounds):
   separator by WhatsApp's URL parser when the URL passes through layers
   (browsers, messaging apps, redirects) that decode and re-encode URLs.
 
+  Same workaround, same reason, for ASCII number sign / hash / pound (U+0023
+  #): encoded as %EF%BC%83 (UTF-8 bytes for U+FF03 FULLWIDTH NUMBER SIGN
+  ＃) instead of the standard %23.  Left as %23, a single decode pass by
+  an intermediary (mobile OS link handler, in-app browser, redirect) turns
+  it into a literal '#', which gets interpreted as the START OF A URL
+  FRAGMENT — everything after it in the message text is silently dropped
+  before WhatsApp ever sees it. This is the "message gets cut off at the
+  pound sign" bug.
+
   The platform parameter (telegram) additionally returns a MarkdownV2-escaped
   display_text and a pre-built MarkdownV2-safe inline link so Telegram's
   parser never breaks on reserved characters in the link text.
@@ -119,12 +128,18 @@ def _encode_wa_text(text: str) -> str:
     2. RFC 3986 percent-encode all non‑unreserved characters
        (unreserved: A‑Z a‑z 0‑9 ‑ . _ ~)
     3. ``%26`` (standard &) → ``%EF%BC%86`` (fullwidth ＆)
+    4. ``%23`` (standard #) → ``%EF%BC%83`` (fullwidth ＃) — prevents
+       intermediary layers from decoding it back to a literal '#' and
+       truncating the message at a URL-fragment boundary (see module
+       docstring).
 
     Returns the percent-encoded string ready for use in ``wa.me/?text=…``.
     """
     text = text.replace("%", "%25")
     encoded = urllib.parse.quote(text, safe="~")
-    return encoded.replace("%26", "%EF%BC%86")
+    encoded = encoded.replace("%26", "%EF%BC%86")
+    encoded = encoded.replace("%23", "%EF%BC%83")
+    return encoded
 
 
 def _extract_whatsapp_preview(text: str, max_len: int = 80) -> str:
