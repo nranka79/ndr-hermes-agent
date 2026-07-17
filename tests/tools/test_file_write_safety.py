@@ -25,6 +25,90 @@ class TestStaticDenyList:
         assert _is_write_denied("/etc/shadow") is True
 
 
+class TestHermesSourceAndRegistryDenyList:
+    """write_file/patch must never be able to touch Hermes's own source
+    tree (tools/, gateway/, agent/, model_tools.py, toolsets.py) or the
+    users.json identity/authorization registry.
+
+    These are LLM-facing tool guards, not OS permission changes — the
+    terminal tool still has unrestricted access (see agent/file_safety.py
+    module docstrings). The point is to stop the two structured write
+    tools from being used by a prompt-injected instruction to rewrite
+    Hermes's own authorization logic or grant an unauthorized user access
+    via a raw users.json edit.
+    """
+
+    @pytest.fixture
+    def fake_install_root(self, tmp_path, monkeypatch):
+        """Build a fake install tree with agent/, gateway/, tools/ and
+        monkeypatch agent.file_safety to see it as the install root."""
+        root = tmp_path / "fake-install"
+        (root / "agent").mkdir(parents=True)
+        (root / "gateway").mkdir(parents=True)
+        (root / "tools").mkdir(parents=True)
+        (root / "model_tools.py").write_text("# stub\n")
+        (root / "toolsets.py").write_text("# stub\n")
+
+        import agent.file_safety as fs
+        monkeypatch.setattr(fs, "_hermes_install_root", lambda: root)
+        return root
+
+    @pytest.fixture
+    def fake_hermes_home(self, tmp_path, monkeypatch):
+        """Build a fake HERMES_HOME/root and monkeypatch agent.file_safety
+        to see it, so users.json resolves under a controlled path."""
+        home = tmp_path / "fake-hermes-home"
+        home.mkdir(parents=True)
+        (home / "users.json").write_text("{}\n")
+
+        import agent.file_safety as fs
+        monkeypatch.setattr(fs, "_hermes_home_path", lambda: home)
+        monkeypatch.setattr(fs, "_hermes_root_path", lambda: home)
+        return home
+
+    def test_gws_auth_under_tools_is_denied(self, fake_install_root):
+        target = fake_install_root / "tools" / "gws_auth.py"
+        assert _is_write_denied(str(target)) is True
+
+    def test_authz_mixin_under_gateway_is_denied(self, fake_install_root):
+        target = fake_install_root / "gateway" / "authz_mixin.py"
+        assert _is_write_denied(str(target)) is True
+
+    def test_new_file_under_agent_is_denied(self, fake_install_root):
+        # Directory-prefix block, not just existing-file names — creating a
+        # brand new file under agent/ must be denied too.
+        target = fake_install_root / "agent" / "some_new_module.py"
+        assert _is_write_denied(str(target)) is True
+
+    def test_model_tools_py_is_denied(self, fake_install_root):
+        target = fake_install_root / "model_tools.py"
+        assert _is_write_denied(str(target)) is True
+
+    def test_toolsets_py_is_denied(self, fake_install_root):
+        target = fake_install_root / "toolsets.py"
+        assert _is_write_denied(str(target)) is True
+
+    def test_unrelated_file_outside_source_tree_still_allowed(self, fake_install_root, tmp_path):
+        target = tmp_path / "workspace" / "notes.txt"
+        assert _is_write_denied(str(target)) is False
+
+    def test_users_json_is_denied(self, fake_hermes_home):
+        target = fake_hermes_home / "users.json"
+        assert _is_write_denied(str(target)) is True
+
+    def test_users_json_denied_even_via_relative_dotdot(self, fake_hermes_home, tmp_path):
+        # Same path, spelled with a traversal component — must still resolve
+        # to the denied file via os.path.realpath.
+        sneaky = str(fake_hermes_home / "subdir" / ".." / "users.json")
+        assert _is_write_denied(sneaky) is True
+
+    def test_other_hermes_home_file_unaffected(self, fake_hermes_home):
+        # Sanity: the users.json addition shouldn't over-broadly deny
+        # sibling files that were never on any list.
+        target = fake_hermes_home / "sessions.db"
+        assert _is_write_denied(str(target)) is False
+
+
 class TestSafeWriteRoot:
     """HERMES_WRITE_SAFE_ROOT should sandbox writes to a specific subtree."""
 
@@ -192,7 +276,7 @@ class TestBomHandling:
     signature is preserved.
     """
 
-    BOM = "\ufeff"
+    BOM = "﻿"
 
     @pytest.fixture
     def ops(self, tmp_path: Path):
@@ -203,12 +287,12 @@ class TestBomHandling:
 
     def test_helpers(self):
         from tools.file_operations import _strip_bom, _has_bom
-        assert _strip_bom("\ufeffhello") == ("hello", True)
+        assert _strip_bom("﻿hello") == ("hello", True)
         assert _strip_bom("hello") == ("hello", False)
         assert _strip_bom("") == ("", False)
         # mid-string BOM is data, not a marker — left alone
-        assert _strip_bom("a\ufeffb") == ("a\ufeffb", False)
-        assert _has_bom("\ufeffx") is True
+        assert _strip_bom("a﻿b") == ("a﻿b", False)
+        assert _has_bom("﻿x") is True
         assert _has_bom("x") is False
         assert _has_bom(None) is False
 

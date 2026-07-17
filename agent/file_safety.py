@@ -25,10 +25,34 @@ def _hermes_root_path() -> Path:
         return Path(os.path.expanduser("~/.hermes"))
 
 
+def _hermes_install_root() -> Path:
+    """Resolve the Hermes source/install root (parent of agent/, gateway/, tools/).
+
+    This is the CODE tree (e.g. /opt/hermes in the Docker image), distinct
+    from HERMES_HOME (the runtime DATA dir resolved above). Derived from
+    this module's own location rather than a config lookup -- this module
+    lives at ``<install_root>/agent/file_safety.py`` in both dev checkouts
+    and the packaged image, so ``__file__``'s grandparent is always right
+    and this has no import-cycle risk.
+
+    Added so write_file/patch (the LLM-facing write tools) cannot rewrite
+    Hermes's own tool/gateway/agent source out from under itself -- e.g. a
+    prompt-injected instruction telling the model to "helpfully" patch
+    ``tools/gws_auth.py`` or ``gateway/authz_mixin.py``. Same
+    defense-in-depth posture as the rest of this module: the terminal tool
+    still has unrestricted OS-level access, so this is a floor for the two
+    structured write tools, not a full security boundary -- see the
+    docstrings on ``get_read_block_error`` / ``get_cross_profile_warning``
+    below for the same caveat applied elsewhere in this file.
+    """
+    return Path(__file__).resolve().parent.parent
+
+
 def build_write_denied_paths(home: str) -> set[str]:
     """Return exact sensitive paths that must never be written."""
     hermes_home = _hermes_home_path()
     hermes_root = _hermes_root_path()
+    install_root = _hermes_install_root()
     return {
         os.path.realpath(p)
         for p in [
@@ -38,7 +62,7 @@ def build_write_denied_paths(home: str) -> set[str]:
             os.path.join(home, ".ssh", "config"),
             # Active profile .env (or top-level .env when not in profile mode).
             str(hermes_home / ".env"),
-            # Top-level .env, even when running under a profile — overwriting it
+            # Top-level .env, even when running under a profile -- overwriting it
             # leaks credentials across every profile that inherits from root (#15981).
             str(hermes_root / ".env"),
             # Active profile Anthropic PKCE credential store.
@@ -59,12 +83,18 @@ def build_write_denied_paths(home: str) -> set[str]:
             "/etc/sudoers",
             "/etc/passwd",
             "/etc/shadow",
+            # Hermes tool-registration / toolset-grouping source files -- the
+            # LLM has no legitimate reason to ever rewrite the list of tools
+            # it itself has access to. See _hermes_install_root() docstring.
+            str(install_root / "model_tools.py"),
+            str(install_root / "toolsets.py"),
         ]
     }
 
 
 def build_write_denied_prefixes(home: str) -> list[str]:
     """Return sensitive directory prefixes that must never be written."""
+    install_root = _hermes_install_root()
     return [
         os.path.realpath(p) + os.sep
         for p in [
@@ -78,6 +108,16 @@ def build_write_denied_prefixes(home: str) -> list[str]:
             os.path.join(home, ".azure"),
             os.path.join(home, ".config", "gh"),
             os.path.join(home, ".config", "gcloud"),
+            # Hermes's own source tree -- tools/, gateway/, agent/ implement
+            # the authorization, credential-vault, and tool-execution logic
+            # itself (e.g. tools/gws_auth.py, gateway/authz_mixin.py,
+            # agent/tool_guardrails.py). write_file/patch must never be able
+            # to modify these regardless of instruction. See
+            # _hermes_install_root() docstring for the full rationale and
+            # its defense-in-depth caveat (terminal tool still bypasses this).
+            str(install_root / "tools"),
+            str(install_root / "gateway"),
+            str(install_root / "agent"),
         ]
     ]
 
@@ -107,9 +147,17 @@ def is_write_denied(path: str) -> bool:
     # Hermes control-plane files: block both the ACTIVE profile's view
     # (hermes_home) AND the global root view. Without the root pass, a
     # profile-mode session leaves <root>/auth.json + <root>/config.yaml
-    # writable — letting a prompt-injected write_file overwrite the global
+    # writable -- letting a prompt-injected write_file overwrite the global
     # files that every profile inherits from (same shape as #15981).
-    control_file_names = ("auth.json", "config.yaml", "webhook_subscriptions.json")
+    #
+    # users.json is the identity/authorization registry (Telegram ID <->
+    # email <-> permissions.manage_users mapping). It has a legitimate
+    # writer -- the manage_user tool, gated on the caller's own
+    # permissions.manage_users flag resolved from the trusted session
+    # context -- but write_file/patch must never be able to touch it
+    # directly, since that would let a prompt-injected instruction add or
+    # promote a user with zero authorization check in the loop.
+    control_file_names = ("auth.json", "config.yaml", "webhook_subscriptions.json", "users.json")
     mcp_tokens_dir_name = "mcp-tokens"
 
     hermes_dirs = []
@@ -167,7 +215,7 @@ def get_read_block_error(path: str) -> Optional[str]:
 
     Three categories are blocked:
 
-      * Internal Hermes cache files under ``HERMES_HOME/skills/.hub`` —
+      * Internal Hermes cache files under ``HERMES_HOME/skills/.hub`` --
         readable metadata that an attacker could use as a prompt-injection
         carrier.
       * Credential / secret stores under HERMES_HOME and the global Hermes
@@ -175,14 +223,14 @@ def get_read_block_error(path: str) -> Optional[str]:
         ``.env``, ``webhook_subscriptions.json``, ``auth/google_oauth.json``,
         and anything under ``mcp-tokens/``. These hold plaintext provider keys,
         OAuth tokens, and HMAC secrets that the agent never needs to read
-        directly — provider tools / gateway adapters consume them through
+        directly -- provider tools / gateway adapters consume them through
         internal channels.
       * Project-local environment files anywhere on disk: ``.env``,
         ``.env.local``, ``.env.development``, ``.env.production``,
         ``.env.test``, ``.env.staging``, ``.envrc``. These routinely hold
         API keys, database passwords, and other credentials for the user's
         own projects. The agent helping debug a project shouldn't normally
-        need to read these — ``.env.example`` is the documented-shape
+        need to read these -- ``.env.example`` is the documented-shape
         substitute.
 
     **This is NOT a security boundary.** The terminal tool runs as the
@@ -194,7 +242,7 @@ def get_read_block_error(path: str) -> Optional[str]:
         empirically prompts most modern models to stop rather than reach
         for the shell.
       * Surfaces a visible audit trail when something tries to read
-        credentials — easier to spot in logs than a generic ``cat``.
+        credentials -- easier to spot in logs than a generic ``cat``.
 
     Treat any user-visible framing around this as "may help" rather than
     "stops attackers." A determined model or malicious instruction can
@@ -265,11 +313,11 @@ def get_read_block_error(path: str) -> Optional[str]:
                     f"Access denied: {path} is a Hermes credential store "
                     "and cannot be read directly. Provider tools consume "
                     "these credentials through internal channels. "
-                    "(Defense-in-depth — not a security boundary; the "
+                    "(Defense-in-depth -- not a security boundary; the "
                     "terminal tool can still bypass.)"
                 )
 
-    # mcp-tokens/: directory prefix match — anything inside is OAuth
+    # mcp-tokens/: directory prefix match -- anything inside is OAuth
     # token material.
     for hd in hermes_dirs:
         try:
@@ -279,7 +327,7 @@ def get_read_block_error(path: str) -> Optional[str]:
         if resolved == mcp_tokens:
             return (
                 f"Access denied: {path} is the Hermes MCP token directory "
-                "and cannot be read directly. (Defense-in-depth — not a "
+                "and cannot be read directly. (Defense-in-depth -- not a "
                 "security boundary; the terminal tool can still bypass.)"
             )
         try:
@@ -288,13 +336,13 @@ def get_read_block_error(path: str) -> Optional[str]:
             continue
         return (
             f"Access denied: {path} is a Hermes MCP token file "
-            "and cannot be read directly. (Defense-in-depth — not a "
+            "and cannot be read directly. (Defense-in-depth -- not a "
             "security boundary; the terminal tool can still bypass.)"
         )
 
     # Block common secret-bearing project-local .env files anywhere on disk.
     # The agent helping a user with their project rarely needs to read raw
-    # .env contents — .env.example is the documented-shape substitute. The
+    # .env contents -- .env.example is the documented-shape substitute. The
     # terminal tool can still ``cat .env``; this is defense-in-depth, not a
     # boundary (see module docstring).
     if resolved.name in _BLOCKED_PROJECT_ENV_BASENAMES:
@@ -302,7 +350,7 @@ def get_read_block_error(path: str) -> Optional[str]:
             f"Access denied: {path} is a secret-bearing environment file "
             "and cannot be read to prevent credential leakage. "
             "If you need to check the file structure, read .env.example instead. "
-            "(Defense-in-depth — not a security boundary; the terminal tool can still bypass.)"
+            "(Defense-in-depth -- not a security boundary; the terminal tool can still bypass.)"
         )
 
     return None
@@ -314,14 +362,14 @@ def get_read_block_error(path: str) -> Optional[str]:
 # Hermes profiles are separate HERMES_HOME dirs under
 # ``<root>/profiles/<name>/``. Each profile has its own skills/, plugins/,
 # cron/, memories/. When an agent runs under one profile, writing into
-# ANOTHER profile's directories is almost always wrong — those skills /
+# ANOTHER profile's directories is almost always wrong -- those skills /
 # plugins / cron jobs / memories affect a different session the user runs
 # from a different shell.
 #
 # Soft guard, NOT a security boundary: the agent runs as the same OS user
 # and has unrestricted terminal access, so this returns a warning the model
 # can choose to honor or override with ``cross_profile=True``. Same shape
-# as the dangerous-command approval flow — the agent is told the boundary
+# as the dangerous-command approval flow -- the agent is told the boundary
 # exists, and explicit user direction is required to cross it.
 #
 # Reference: May 2026 incident where a hermes-security profile session
@@ -374,7 +422,7 @@ def classify_cross_profile_target(path: str) -> Optional[dict]:
       * ``area``: which scoped area (``"skills"``, ``"plugins"``, etc.)
       * ``target_path``: the resolved path string
 
-    The caller decides what to do with the result — surface a warning to
+    The caller decides what to do with the result -- surface a warning to
     the model, prompt the user, or (with explicit consent /
     ``cross_profile=True``) proceed anyway.
     """
@@ -397,7 +445,7 @@ def classify_cross_profile_target(path: str) -> Optional[dict]:
         return None
 
     if parts[0] in PROFILE_SCOPED_AREAS:
-        # ``<root>/<area>/...`` → default profile.
+        # ``<root>/<area>/...`` -> default profile.
         target_profile = "default"
         area = parts[0]
     elif (
@@ -405,7 +453,7 @@ def classify_cross_profile_target(path: str) -> Optional[dict]:
         and len(parts) >= 3
         and parts[2] in PROFILE_SCOPED_AREAS
     ):
-        # ``<root>/profiles/<name>/<area>/...`` → named profile.
+        # ``<root>/profiles/<name>/<area>/...`` -> named profile.
         target_profile = parts[1]
         area = parts[2]
     else:
@@ -413,7 +461,7 @@ def classify_cross_profile_target(path: str) -> Optional[dict]:
 
     active_profile = _resolve_active_profile_name()
     if target_profile == active_profile:
-        # In-profile write — not a cross-profile event.
+        # In-profile write -- not a cross-profile event.
         return None
 
     return {
@@ -429,7 +477,7 @@ def get_cross_profile_warning(path: str) -> Optional[str]:
 
     Returns ``None`` when the write is in-scope (same profile) or outside
     Hermes entirely. Caller is expected to surface the warning to the
-    agent as a tool-result error, NOT to silently allow the write — the
+    agent as a tool-result error, NOT to silently allow the write -- the
     agent must either get explicit user direction to proceed, or pass
     ``cross_profile=True`` to its write tool.
 
@@ -448,7 +496,7 @@ def get_cross_profile_warning(path: str) -> Optional[str]:
         f"profile's future sessions, not the one you are currently in. "
         f"Confirm with the user before proceeding. To bypass this guard "
         f"after explicit user direction, retry the call with "
-        f"``cross_profile=True``. (Defense-in-depth — not a security "
+        f"``cross_profile=True``. (Defense-in-depth -- not a security "
         f"boundary; the terminal tool can still bypass.)"
     )
 
@@ -463,7 +511,7 @@ def get_cross_profile_warning(path: str) -> Optional[str]:
 #
 # When the agent (running host-side) speculates that authoritative profile
 # state lives at one of those sandbox-mirror paths, the write lands on the
-# mirror — never read by the host process — while the host file is left
+# mirror -- never read by the host process -- while the host file is left
 # untouched. The agent reports success, the user sees no change, and on
 # disk two divergent copies accumulate. See #32049 for evidence.
 #
@@ -507,7 +555,7 @@ def classify_sandbox_mirror_target(path: str) -> Optional[dict]:
       * ``inner_path``: the portion under the mirror's ``.hermes`` (what the
         agent likely meant to address on the host)
 
-    Detection is path-shape-only — does not require any Hermes resolver to
+    Detection is path-shape-only -- does not require any Hermes resolver to
     succeed, so it works correctly even when called from contexts where
     HERMES_HOME resolution would be ambiguous.
     """
@@ -553,18 +601,18 @@ def get_sandbox_mirror_warning(path: str) -> Optional[str]:
         f"sits under {info['mirror_root']!r}, which is a per-task mirror "
         f"created by a non-local terminal backend (docker/daytona/etc.). "
         f"Writes here land on a copy that the host Hermes process never "
-        f"reads — the authoritative file is likely {info['inner_path']!r} "
+        f"reads -- the authoritative file is likely {info['inner_path']!r} "
         f"under the real HERMES_HOME. Use the host-side tool for "
         f"authoritative state (e.g. ``memory`` for memories), or address "
         f"the host path directly. To bypass this guard after explicit "
         f"user direction, retry the call with ``cross_profile=True``. "
-        f"(Defense-in-depth — not a security boundary; the terminal tool "
+        f"(Defense-in-depth -- not a security boundary; the terminal tool "
         f"can still bypass.)"
     )
 
 
 # ---------------------------------------------------------------------------
-# Container-context mirror guard (inner-container case — #32049 follow-up)
+# Container-context mirror guard (inner-container case -- #32049 follow-up)
 #
 # Brian's shape-based detector (#32213) catches paths that still carry the
 # full ``…/sandboxes/<backend>/<task>/home/.hermes/…`` prefix on the host.
@@ -629,12 +677,12 @@ def get_container_mirror_warning(
     return (
         f"Sandbox-mirror write blocked by soft guard: {info['target_path']} "
         f"sits under {info['mirror_root']!r}, which is the container's "
-        f"bind-mounted home — a per-task mirror that the host Hermes "
+        f"bind-mounted home -- a per-task mirror that the host Hermes "
         f"process never reads. The authoritative file is "
         f"{info['inner_path']!r} under the real HERMES_HOME. Use the "
         f"host-side tool for authoritative state (e.g. ``memory`` for "
         f"memories), or address the host path directly. To bypass after "
         f"explicit user direction, retry with ``cross_profile=True``. "
-        f"(Defense-in-depth — not a security boundary; the terminal tool "
+        f"(Defense-in-depth -- not a security boundary; the terminal tool "
         f"can still bypass.)"
     )
