@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-Token Vault Server ÔÇö secure per-user, per-service OAuth token storage + identity daemon.
+Token Vault Server — secure per-user, per-service OAuth token storage + identity daemon.
 
 Run as a dedicated OS user (gws-vault), separate from the Hermes process.
-Hermes cannot directly read the token/identity directory ÔÇö it must go through this socket.
+Hermes cannot directly read the token/identity directory — it must go through this socket.
 
 Token layout: VAULT_TOKEN_DIR/{user_id}/{service}.json
-  e.g. /opt/gws-vault/tokens/1000000001/google.json   (Telegram user, numeric ID)
-       /opt/gws-vault/tokens/1000000001/kelsa.json
+  e.g. /opt/gws-vault/tokens/7449813913/google.json   (Telegram user, numeric ID)
+       /opt/gws-vault/tokens/7449813913/kelsa.json
        /opt/gws-vault/tokens/ndr/google.json            (future: alphanumeric user ID)
 
 Identity layout: IDENTITY_DIR/{user_id}.json
@@ -18,7 +18,7 @@ Identity layout: IDENTITY_DIR/{user_id}.json
 Identity model:
   The canonical *user_id* is the primary email (e.g. ``ndr@draas.com``).
   A person may have many raw identifiers (Telegram numeric IDs, emails,
-  draas_user_id slugs) ÔÇö the vault maps them all to one canonical user_id
+  draas_user_id slugs) — the vault maps them all to one canonical user_id
   via the ``identities`` dict in the identity record.
 
 Protocol: newline-delimited JSON over Unix domain socket.
@@ -26,25 +26,25 @@ Protocol: newline-delimited JSON over Unix domain socket.
 Token operations:
 
   get       {"op":"get","user_id":"...","service":"...","session_uid":"..."}
-            ÔåÆ {"ok":true,"token_json":"..."}
+            → {"ok":true,"token_json":"..."}
             Authorization: session_uid MUST equal user_id (no cross-user reads).
 
   set       {"op":"set","user_id":"...","service":"...","token_json":"...","vault_secret":"..."}
-            ÔåÆ {"ok":true}
+            → {"ok":true}
             Authorization: vault_secret must match GWS_VAULT_SECRET env var.
             Called by the OAuth callback handler after exchanging a code for tokens.
-            Hermes NEVER calls this ÔÇö only the callback endpoint does.
+            Hermes NEVER calls this — only the callback endpoint does.
 
   has_token {"op":"has_token","user_id":"...","service":"...","session_uid":"..."/"vault_secret":"..."}
-            ÔåÆ {"ok":true,"has_token":true|false}
+            → {"ok":true,"has_token":true|false}
             Accepts either session_uid (owner checks own status) or vault_secret.
 
   delete    {"op":"delete","user_id":"...","service":"...","vault_secret":"..."}
-            ÔåÆ {"ok":true,"deleted":true|false}
+            → {"ok":true,"deleted":true|false}
             Authorization: vault_secret required.
 
   list_services {"op":"list_services","user_id":"...","session_uid":"..."}
-            ÔåÆ {"ok":true,"services":["google","kelsa",...]}
+            → {"ok":true,"services":["google","kelsa",...]}
             Authorization: session_uid MUST equal user_id.
 
   (All token operations also accept ``telegram_id`` as an alias for ``user_id``.)
@@ -52,27 +52,27 @@ Token operations:
 Identity operations:
 
   resolve   {"op":"resolve","identity_type":"...","identity_value":"..."}
-            ÔåÆ {"ok":true,"user_id":"..."} or {"ok":false,"error":"..."}
+            → {"ok":true,"user_id":"..."} or {"ok":false,"error":"..."}
             No authorization required (only returns canonical user_id, never secrets).
 
   add_identity {"op":"add_identity","user_id":"...","identity_type":"...",
                 "identity_value":"...","vault_secret":"...",
                 "name":"...","role":"...","permissions":{...}}
-            ÔåÆ {"ok":true,"identity":{...}}
+            → {"ok":true,"identity":{...}}
             Authorization: vault_secret required (admin-only write).
             Creates or updates identity record. Rejects if identity_value
             already belongs to a different user_id.
 
   remove_identity {"op":"remove_identity","user_id":"...","identity_type":"...",
                    "identity_value":"...","vault_secret":"..."}
-            ÔåÆ {"ok":true,"identity":{...}}
+            → {"ok":true,"identity":{...}}
             Authorization: vault_secret required (admin-only write).
             Removes one (identity_type, identity_value) pair from the
             user's identity record. Deletes the identity_type key if the
             list becomes empty.
 
   get_identity {"op":"get_identity","user_id":"...","session_uid":"..."}
-            ÔåÆ {"ok":true,"identity":{...}} or {"ok":false,"error":"..."}
+            → {"ok":true,"identity":{...}} or {"ok":false,"error":"..."}
             Authorization: session_uid MUST equal user_id (self-read only).
 
 Environment variables:
@@ -117,7 +117,7 @@ logging.basicConfig(
 logger = logging.getLogger("token-vault")
 
 # Internal user IDs: alphanumeric, dots, hyphens, underscores, @ and +
-# Covers both legacy numeric Telegram IDs (e.g. "1000000001") and future
+# Covers both legacy numeric Telegram IDs (e.g. "7449813913") and future
 # alphanumeric IDs (e.g. "ndr", "user.name", "alice+bot").
 _UID_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._@+\-]{1,63}$")
 _SVC_RE = re.compile(r"^[a-z][a-z0-9-]{0,49}$")  # service names: lowercase
@@ -193,7 +193,7 @@ def _scan_identities() -> list[dict]:
 def _check_secret(req: dict) -> bool:
     provided = req.get("vault_secret", "")
     if not VAULT_SECRET:
-        logger.warning("GWS_VAULT_SECRET not set ÔÇö write operations disabled")
+        logger.warning("GWS_VAULT_SECRET not set — write operations disabled")
         return False
     return bool(provided) and provided == VAULT_SECRET
 
@@ -316,7 +316,7 @@ def handle_request(req: dict, peer_uid: int) -> dict:
             services = []
         return {"ok": True, "services": sorted(services)}
 
-    # ÔöÇÔöÇ Identity operations ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+    # ── Identity operations ──────────────────────────────────────────────────
 
     elif op == "resolve":
         identity_type = str(req.get("identity_type", "")).strip().lower()
@@ -361,7 +361,7 @@ def handle_request(req: dict, peer_uid: int) -> dict:
         # Check that identity_value doesn't already belong to another user
         for rec in _scan_identities():
             if rec.get("user_id") == user_id:
-                continue  # same user ÔÇö skip conflict check
+                continue  # same user — skip conflict check
             ids = rec.get("identities", {})
             values = ids.get(identity_type)
             if isinstance(values, list) and identity_value in values:
@@ -553,7 +553,7 @@ def _handle_connection(conn: socket.socket) -> None:
 def main() -> None:
     if not VAULT_SECRET:
         logger.warning(
-            "GWS_VAULT_SECRET is not set ÔÇö write operations (set/delete) will be disabled."
+            "GWS_VAULT_SECRET is not set — write operations (set/delete) will be disabled."
         )
 
     token_dir = pathlib.Path(VAULT_TOKEN_DIR)
