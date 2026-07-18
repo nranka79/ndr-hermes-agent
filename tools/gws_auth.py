@@ -36,6 +36,13 @@ Usage from skill code (terminal or execute_code):
 
 The session telegram_id is read from HERMES_SESSION_USER_ID env var,
 which is injected into every subprocess by the gateway.
+
+Sandboxed execute_code note (2026-07-18 vault impersonation fix): the
+execute_code sandbox no longer has direct socket access to gws-vault
+(GWS_VAULT_SOCKET is not in its environment). load_credentials() detects
+sandboxed context and routes through the gws_fetch_token RPC tool instead
+(see tools/gws_fetch_token_tool.py for the full rationale) -- this function's
+own call signature and behavior are unchanged for callers either way.
 """
 
 import base64
@@ -307,7 +314,7 @@ def _detect_service_from_credentials(creds: Credentials) -> str | None:
 
 
 def load_credentials(telegram_id: str, service_name: str = _DEFAULT_SERVICE) -> Credentials:
-    """Load stored OAuth credentials for a user from the gws-vault daemon.
+    """Load stored OAuth credentials for the current session's user.
 
     Raises :class:`FileNotFoundError` if no token exists -- caller should
     direct the user to authorize via :func:`get_auth_url`.
@@ -315,7 +322,48 @@ def load_credentials(telegram_id: str, service_name: str = _DEFAULT_SERVICE) -> 
     Args:
         telegram_id:  Session's raw channel id (Telegram numeric id, etc.).
                       Resolved to the canonical vault user_id internally.
+                      Only used on the trusted (non-sandboxed) path -- see
+                      below.
         service_name: Vault service key (e.g. ``"google-draas"``).
+
+    Sandboxed execute_code dispatch (2026-07-18 vault impersonation fix):
+    when running inside the execute_code sandbox (detected via
+    ``HERMES_RPC_SOCKET`` in the environment -- the same signal
+    tools/code_execution_tool.py sets for every sandboxed child), this
+    function has no direct socket to gws-vault at all (GWS_VAULT_SOCKET is
+    not passed into the sandbox's environment). Instead it routes through
+    the ``gws_fetch_token`` RPC tool (tools/gws_fetch_token_tool.py) over the
+    same sandbox<->gateway channel every other sandboxed tool call already
+    uses. That tool's handler runs in the TRUSTED main process and resolves
+    identity via :func:`_current_telegram_id` itself -- the *caller-supplied*
+    ``telegram_id`` argument is never sent across the RPC boundary at all,
+    so a sandboxed script cannot request anyone's token but the real
+    session's own. Outside the sandbox (the trusted main process -- e.g. a
+    Telegram-triggered tool call, the OAuth callback handler, or this RPC
+    tool's own handler), behavior is unchanged: talks to the vault directly.
+    """
+    if "HERMES_RPC_SOCKET" in os.environ:
+        from hermes_tools import gws_fetch_token  # sandbox-generated stub
+        resp = gws_fetch_token(service_name=service_name)
+        if isinstance(resp, dict) and resp.get("error"):
+            if resp.get("needs_auth"):
+                raise FileNotFoundError(resp["error"])
+            raise RuntimeError(resp["error"])
+        token_json = resp["token_json"] if isinstance(resp, dict) else resp
+        return Credentials.from_authorized_user_info(json.loads(token_json))
+    return _load_credentials_direct(telegram_id, service_name)
+
+
+def _load_credentials_direct(telegram_id: str, service_name: str = _DEFAULT_SERVICE) -> Credentials:
+    """Load stored OAuth credentials directly from the gws-vault daemon.
+
+    TRUSTED-PROCESS ONLY. Never call this from code that might run inside
+    the execute_code sandbox -- use :func:`load_credentials` instead, which
+    dispatches correctly for both contexts. This is the implementation
+    :func:`load_credentials` uses on its direct path, and what the
+    ``gws_fetch_token`` RPC tool's handler calls on behalf of sandboxed
+    requests (always with the trusted session's own id, never anything a
+    sandboxed caller supplies).
 
     Scope handling (2026-07 fix): the returned ``Credentials`` use whatever
     scopes are actually stored in the vault token JSON -- ``HERMES_GWS_SCOPES``
@@ -342,13 +390,13 @@ def load_credentials(telegram_id: str, service_name: str = _DEFAULT_SERVICE) -> 
         try:
             vault.set_token(uid, service_name, creds.to_json())
         except vault.VaultUnauthorizedError:
-            # Vault writes need GWS_VAULT_SECRET, which the execute_code
-            # sandbox never receives. The refreshed creds are still valid --
-            # use them in-memory; the main process persists the refreshed
-            # token on its own next refresh.
+            # Only reachable if this ever runs somewhere without
+            # GWS_VAULT_SECRET (this function is trusted-process-only, which
+            # normally has it) -- keep the refreshed creds usable in-memory
+            # rather than failing the caller's request over a write-back.
             logger.debug(
-                'vault write-back skipped for %s/%s (no vault secret -- '
-                'sandbox context); using refreshed creds in-memory',
+                'vault write-back skipped for %s/%s (no vault secret in this '
+                'process); using refreshed creds in-memory',
                 uid, service_name,
             )
     return creds
@@ -376,6 +424,11 @@ def build_service(api: str, version: str, telegram_id: str = None, service_name:
     skill scripts hardcoding one user's telegram id both broke after the
     canonical-uid migration and would have read that user's tokens from any
     other user's session).
+
+    Works identically inside or outside the execute_code sandbox --
+    :func:`load_credentials` handles the dispatch (direct vault call in the
+    trusted process, RPC-mediated fetch inside the sandbox). No caller-facing
+    change either way.
 
     Args:
         api:          e.g. ``"gmail"``, ``"calendar"``, ``"drive"``, ``"sheets"``
