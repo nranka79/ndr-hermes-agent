@@ -217,27 +217,78 @@ class GatewayAuthorizationMixin:
         if self.pairing_store.is_approved(platform_name, user_id):
             return True
 
-        # Users registered in users.json are always authorized (Telegram only).
-        # This allows add-user to take effect immediately without restarting the
-        # gateway or updating TELEGRAM_ALLOWED_USERS in the environment.
-        # users.json is keyed by primary email, not by Telegram ID -- the
-        # Telegram ID lives under each record's identities.telegram list, so
-        # membership must be resolved via find_user_by_identity() rather than
-        # a raw top-level-key check (the old check here never matched anyone,
-        # since no top-level key is ever a Telegram ID).
+        # Telegram identity-registry check: users provisioned via
+        # manage_user/vault are authorized immediately, no gateway restart
+        # needed.
+        #
+        # This checks the VAULT DIRECTLY rather than the shared
+        # find_user_by_identity() helper. That helper is also used by ~15
+        # other callers (gws_auth, contact_resolver_tool, noun_resolver,
+        # send_message_tool, ...) that need file-only app data
+        # (gbrain_home, phone, contacts_sheet_id) not stored in the vault,
+        # so it intentionally falls back to scanning users.json whenever
+        # vault.resolve() doesn't return a user_id -- and it does that on
+        # BOTH "vault genuinely has no such identity" and "vault is
+        # unreachable", because those two cases are indistinguishable once
+        # merged into one try/except. For an AUTHORIZATION decision that
+        # merge is unsafe: users.json is writable by the same OS user that
+        # runs write_file/execute_code/terminal, so a prompt-injected raw
+        # edit to the file -- completely bypassing manage_user's
+        # permissions.manage_users gate -- would resolve as "vault has no
+        # record, fall back to file, found it, authorized." Checking vault
+        # directly here and branching on its three real outcomes closes
+        # that path without touching the shared helper (so the other
+        # callers that need file-only fields are unaffected):
+        #
+        #   1. vault resolves the identity      -> authoritative, trust it.
+        #      Then check the per-app access toggle (admin.ahfl.in "App
+        #      Access"), which is vault-native (see
+        #      admin-app/app/vault_client.py's set_app_permissions) --
+        #      not a users.json field.
+        #   2. vault reached fine, cleanly says "no such identity"
+        #                                         -> do NOT authorize via
+        #      this check, and do NOT consult users.json either. Fall
+        #      through to the env-allowlist checks below -- same as the
+        #      long-standing "user isn't registered at all" behavior, so an
+        #      operator relying purely on TELEGRAM_ALLOWED_USERS (never
+        #      touched manage_user) is unaffected. A raw users.json
+        #      injection has no representation in an env var, so it
+        #      correctly falls through to eventual default-deny.
+        #   3. vault raises (unreachable/timeout/crash-loop, e.g. the
+        #      2026-07-08 gws-vault.service incident) -> fall back to the
+        #      pre-existing file-registry check, UNCHANGED, so an infra
+        #      blip still can't lock out real employees.
         if source.platform == Platform.TELEGRAM and user_id:
             try:
-                from tools._user_registry import find_user_by_identity
-                _, _rec = find_user_by_identity("telegram", user_id)
-                if _rec:
-                    # Per-app access gate (admin.ahfl.in App Access toggles).
-                    # Fail-open: an absent apps.telegram key OR True authorizes
-                    # (existing users have no apps key and must keep working);
-                    # only an explicit False blocks. If the vault is unreachable,
-                    # find_user_by_identity raises and we fall through to the env
-                    # allowlist below — so a vault outage can never lock out a
-                    # user who is in TELEGRAM_ALLOWED_USERS.
-                    _apps = (_rec.get("permissions", {}) or {}).get("apps", {}) or {}
+                from tools import gws_vault_client as vault
+                vault_user_id = vault.resolve("telegram", user_id)
+            except Exception:
+                # Case 3: vault unreachable/erroring.
+                try:
+                    from tools._user_registry import find_user_by_identity
+                    _, _rec = find_user_by_identity("telegram", user_id)
+                    if _rec:
+                        _apps = (_rec.get("permissions", {}) or {}).get("apps", {}) or {}
+                        if _apps.get("telegram") is False:
+                            logger.info(
+                                "Telegram user %s blocked by admin App Access "
+                                "(permissions.apps.telegram=False)", user_id,
+                            )
+                            return False
+                        return True
+                except Exception:
+                    pass
+                # No file record either (or the lookup itself failed) --
+                # fall through to the allowlist checks below, same as
+                # always.
+            else:
+                if vault_user_id:
+                    # Case 1: vault is authoritative for this identity.
+                    try:
+                        _identity = vault.get_identity(vault_user_id, session_uid=vault_user_id)
+                    except Exception:
+                        _identity = None
+                    _apps = ((_identity or {}).get("permissions", {}) or {}).get("apps", {}) or {}
                     if _apps.get("telegram") is False:
                         logger.info(
                             "Telegram user %s blocked by admin App Access "
@@ -245,8 +296,8 @@ class GatewayAuthorizationMixin:
                         )
                         return False
                     return True
-            except Exception:
-                pass
+                # Case 2: vault reached fine, genuinely no record. Fall
+                # through -- see the comment block above.
 
         # Check platform-specific and global allowlists
         platform_allowlist = os.getenv(platform_env_map.get(source.platform, ""), "").strip()
