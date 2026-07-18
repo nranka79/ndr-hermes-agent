@@ -48,9 +48,9 @@ class TestNonSandboxedDispatch:
             return Credentials.from_authorized_user_info(_fake_creds_info())
 
         monkeypatch.setattr(gws_auth, "_load_credentials_direct", fake_direct)
-        creds = gws_auth.load_credentials("8654428154", "google-draas")
+        creds = gws_auth.load_credentials("1234567890", "google-draas")
 
-        assert called == {"tid": "8654428154", "service_name": "google-draas"}
+        assert called == {"tid": "1234567890", "service_name": "google-draas"}
         assert isinstance(creds, Credentials)
 
 
@@ -86,7 +86,7 @@ class TestSandboxedDispatch:
             )
 
         monkeypatch.setattr(gws_auth, "_load_credentials_direct", fail_if_called)
-        creds = gws_auth.load_credentials("8654428154", "google-draas")
+        creds = gws_auth.load_credentials("1234567890", "google-draas")
         assert isinstance(creds, Credentials)
 
     def test_sandboxed_routes_through_rpc_tool(self, monkeypatch):
@@ -96,7 +96,7 @@ class TestSandboxedDispatch:
         calls = self._install_fake_hermes_tools(
             monkeypatch, {"token_json": json.dumps(_fake_creds_info())}
         )
-        gws_auth.load_credentials("8654428154", "google-draas")
+        gws_auth.load_credentials("1234567890", "google-draas")
         assert calls == ["google-draas"]
 
     def test_sandboxed_caller_supplied_telegram_id_never_reaches_rpc_call(self, monkeypatch):
@@ -131,7 +131,7 @@ class TestSandboxedDispatch:
             monkeypatch, {"error": "No google-draas token for this user.", "needs_auth": True}
         )
         with pytest.raises(FileNotFoundError):
-            gws_auth.load_credentials("8654428154", "google-draas")
+            gws_auth.load_credentials("1234567890", "google-draas")
 
     def test_sandboxed_other_error_raises_runtime_error(self, monkeypatch):
         import tools.gws_auth as gws_auth
@@ -139,7 +139,7 @@ class TestSandboxedDispatch:
         monkeypatch.setenv("HERMES_RPC_SOCKET", "/tmp/fake.sock")
         self._install_fake_hermes_tools(monkeypatch, {"error": "vault unreachable"})
         with pytest.raises(RuntimeError):
-            gws_auth.load_credentials("8654428154", "google-draas")
+            gws_auth.load_credentials("1234567890", "google-draas")
 
 
 class TestBuildServiceUnaffectedBySandboxDetail:

@@ -50,7 +50,7 @@ def _make_runner():
     return runner
 
 
-def _source(user_id: str = "8654428154") -> SessionSource:
+def _source(user_id: str = "1234567890") -> SessionSource:
     return SessionSource(
         platform=Platform.TELEGRAM,
         user_id=user_id,
@@ -78,16 +78,16 @@ class TestVaultResolvesIdentity:
 
     def test_authorized_when_vault_has_identity(self, monkeypatch):
         runner = _make_runner()
-        resolve_mock = MagicMock(return_value="vkdas-8654428154")
+        resolve_mock = MagicMock(return_value="testuser-1234567890")
         monkeypatch.setattr(vault_module, "resolve", resolve_mock)
         monkeypatch.setattr(vault_module, "get_identity", MagicMock(return_value={"permissions": {}}))
 
         assert runner._is_user_authorized(_source()) is True
-        resolve_mock.assert_called_once_with("telegram", "8654428154")
+        resolve_mock.assert_called_once_with("telegram", "1234567890")
 
     def test_denied_when_app_access_toggle_is_false(self, monkeypatch):
         runner = _make_runner()
-        monkeypatch.setattr(vault_module, "resolve", MagicMock(return_value="vkdas-8654428154"))
+        monkeypatch.setattr(vault_module, "resolve", MagicMock(return_value="testuser-1234567890"))
         monkeypatch.setattr(
             vault_module,
             "get_identity",
@@ -99,7 +99,7 @@ class TestVaultResolvesIdentity:
     def test_authorized_when_app_access_toggle_missing(self, monkeypatch):
         """Fail-open: absent apps.telegram key must not block existing users."""
         runner = _make_runner()
-        monkeypatch.setattr(vault_module, "resolve", MagicMock(return_value="vkdas-8654428154"))
+        monkeypatch.setattr(vault_module, "resolve", MagicMock(return_value="testuser-1234567890"))
         monkeypatch.setattr(
             vault_module, "get_identity", MagicMock(return_value={"permissions": {"apps": {}}})
         )
@@ -110,7 +110,7 @@ class TestVaultResolvesIdentity:
         """A transient get_identity failure after a successful resolve must
         not deny a user vault already confirmed exists."""
         runner = _make_runner()
-        monkeypatch.setattr(vault_module, "resolve", MagicMock(return_value="vkdas-8654428154"))
+        monkeypatch.setattr(vault_module, "resolve", MagicMock(return_value="testuser-1234567890"))
         monkeypatch.setattr(
             vault_module, "get_identity", MagicMock(side_effect=RuntimeError("transient"))
         )
@@ -143,9 +143,9 @@ class TestVaultCleanNotFound:
         through, not hard-deny."""
         runner = _make_runner()
         monkeypatch.setattr(vault_module, "resolve", MagicMock(return_value=None))
-        monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "555,8654428154")
+        monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "555,1234567890")
 
-        assert runner._is_user_authorized(_source(user_id="8654428154")) is True
+        assert runner._is_user_authorized(_source(user_id="1234567890")) is True
 
     def test_denied_by_default_when_not_in_vault_or_allowlist(self, monkeypatch):
         runner = _make_runner()
@@ -163,11 +163,11 @@ class TestVaultUnreachable:
         monkeypatch.setattr(
             vault_module, "resolve", MagicMock(side_effect=RuntimeError("vault socket unreachable"))
         )
-        find_mock = MagicMock(return_value=("vkdas@draas.com", {"permissions": {}}))
+        find_mock = MagicMock(return_value=("testuser@example.com", {"permissions": {}}))
         monkeypatch.setattr(registry_module, "find_user_by_identity", find_mock)
 
         assert runner._is_user_authorized(_source()) is True
-        find_mock.assert_called_once_with("telegram", "8654428154")
+        find_mock.assert_called_once_with("telegram", "1234567890")
 
     def test_file_registry_app_access_toggle_still_honored_on_outage(self, monkeypatch):
         runner = _make_runner()
@@ -176,7 +176,7 @@ class TestVaultUnreachable:
             registry_module,
             "find_user_by_identity",
             MagicMock(
-                return_value=("vkdas@draas.com", {"permissions": {"apps": {"telegram": False}}})
+                return_value=("testuser@example.com", {"permissions": {"apps": {"telegram": False}}})
             ),
         )
 
@@ -188,7 +188,7 @@ class TestVaultUnreachable:
         monkeypatch.setattr(
             registry_module, "find_user_by_identity", MagicMock(return_value=(None, None))
         )
-        monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "8654428154")
+        monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "1234567890")
 
         assert runner._is_user_authorized(_source()) is True
 

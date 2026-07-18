@@ -51,19 +51,19 @@ class TestHandlerResolvesOwnSessionOnly:
     def test_success_returns_token_json(self, monkeypatch):
         import tools.gws_auth as gws_auth
 
-        monkeypatch.setattr(gws_auth, "_current_telegram_id", lambda: "8654428154")
+        monkeypatch.setattr(gws_auth, "_current_telegram_id", lambda: "1234567890")
         monkeypatch.setattr(
             gws_auth, "_load_credentials_direct",
             lambda tid, service_name: _FakeCreds(f"token-for-{tid}-{service_name}"),
         )
 
         result = json.loads(gws_fetch_token_tool({"service_name": "google-draas"}))
-        assert result == {"token_json": "token-for-8654428154-google-draas"}
+        assert result == {"token_json": "token-for-1234567890-google-draas"}
 
     def test_defaults_service_name_to_google(self, monkeypatch):
         import tools.gws_auth as gws_auth
 
-        monkeypatch.setattr(gws_auth, "_current_telegram_id", lambda: "8654428154")
+        monkeypatch.setattr(gws_auth, "_current_telegram_id", lambda: "1234567890")
         captured = {}
 
         def fake_load(tid, service_name):
@@ -109,7 +109,7 @@ class TestHandlerResolvesOwnSessionOnly:
     def test_no_token_returns_needs_auth(self, monkeypatch):
         import tools.gws_auth as gws_auth
 
-        monkeypatch.setattr(gws_auth, "_current_telegram_id", lambda: "8654428154")
+        monkeypatch.setattr(gws_auth, "_current_telegram_id", lambda: "1234567890")
 
         def raise_not_found(tid, service_name):
             raise FileNotFoundError(f"No {service_name} token for user {tid}.")
@@ -122,7 +122,7 @@ class TestHandlerResolvesOwnSessionOnly:
     def test_unexpected_error_is_reported_not_raised(self, monkeypatch):
         import tools.gws_auth as gws_auth
 
-        monkeypatch.setattr(gws_auth, "_current_telegram_id", lambda: "8654428154")
+        monkeypatch.setattr(gws_auth, "_current_telegram_id", lambda: "1234567890")
 
         def raise_weird(tid, service_name):
             raise RuntimeError("vault socket hiccup")
