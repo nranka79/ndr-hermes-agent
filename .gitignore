@@ -126,3 +126,9 @@ RELEASE_v*.md
 Infrastructure_Scripts/hetzner/railway_credentials_export.json
 Infrastructure_Scripts/hetzner/railway_workflows_export.json
 *.credentials.json
+
+# Real employee PII (names, emails, phone numbers, Telegram IDs) -- must
+# never be committed. Scrubbed from history 2026-07-18; this entry stops
+# the auto-sync scripts (local + Hetzner auto-git-sync.sh) from silently
+# re-adding it on their next git add -A cycle.
+hermes-data/users.json
