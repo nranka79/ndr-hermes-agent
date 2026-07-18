@@ -56,8 +56,16 @@ logger = logging.getLogger(__name__)
 
 SANDBOX_AVAILABLE = True
 
-# The 7 tools allowed inside the sandbox. The intersection of this list
+# The tools allowed inside the sandbox. The intersection of this list
 # and the session's enabled tools determines which stubs are generated.
+#
+# gws_fetch_token (2026-07-18 vault impersonation fix): the ONLY way a
+# sandboxed script can reach a Google Workspace OAuth token now -- direct
+# vault socket access was removed from the sandbox's environment (see
+# GWS_VAULT_SOCKET below). The tool's handler runs in the trusted main
+# process and resolves identity from the real session only; scripts never
+# call it directly -- tools.gws_auth.build_service() dispatches to it
+# transparently. See tools/gws_fetch_token_tool.py for the full rationale.
 SANDBOX_ALLOWED_TOOLS = frozenset([
     "web_search",
     "web_extract",
@@ -66,6 +74,7 @@ SANDBOX_ALLOWED_TOOLS = frozenset([
     "search_files",
     "patch",
     "terminal",
+    "gws_fetch_token",
 ])
 
 # Resource limit defaults (overridable via config.yaml → code_execution.*)
@@ -252,6 +261,12 @@ _TOOL_STUBS = {
         "command: str, timeout: int = None, workdir: str = None",
         '"""Run a shell command (foreground only). Returns dict with "output" and "exit_code"."""',
         '{"command": command, "timeout": timeout, "workdir": workdir}',
+    ),
+    "gws_fetch_token": (
+        "gws_fetch_token",
+        'service_name: str = "google"',
+        '"""Internal plumbing for tools.gws_auth -- do not call directly, use build_service() instead. Fetches the current session GWS OAuth token JSON for service_name. Returns dict with token_json, or error/needs_auth on failure."""',
+        '{"service_name": service_name}',
     ),
 }
 
@@ -1272,16 +1287,21 @@ def execute_code(
         except Exception:
             pass
 
-        # Pass through the vault socket path so gws_auth.py (imported by
-        # sandbox scripts) can reach gws-vault for token lookups. Only the
-        # socket *path* is non-secret; GWS_VAULT_SECRET stays blocked by the
-        # _SECRET_SUBSTRINGS filter in _scrub_child_env -- read ops
-        # (resolve/get) don't need it, only admin write ops do (see
-        # gws_vault_client.py docstring). Same after-scrub re-injection
-        # pattern as HERMES_SESSION_USER_ID/TZ/HOME above (#gws-vault-sandbox).
-        _vault_sock = os.environ.get("GWS_VAULT_SOCKET", "").strip()
-        if _vault_sock:
-            child_env["GWS_VAULT_SOCKET"] = _vault_sock
+        # GWS_VAULT_SOCKET is intentionally NOT passed into the sandbox
+        # (2026-07-18 vault impersonation fix). The vault's own session_uid
+        # == user_id self-service check is satisfied by whatever the caller
+        # puts in the request -- both fields are client-supplied in the same
+        # message, and the vault's SO_PEERCRED peer-credential check is only
+        # ever used for logging, never authorization. Since every Hermes
+        # session shares one OS user, direct socket access let a sandboxed
+        # script skip tools/gws_auth.py's own identity guard and hand-
+        # construct a raw vault request claiming to be any user. Sandboxed
+        # scripts now reach vault-backed tokens exclusively through the
+        # gws_fetch_token RPC tool (tools/gws_fetch_token_tool.py), whose
+        # handler runs in this trusted process and resolves identity from
+        # the real session only -- see tools/gws_auth.py's load_credentials()
+        # for the dispatch. Do not re-add this passthrough without also
+        # closing that gap some other way.
 
         # Per-profile HOME isolation: redirect system tool configs into
         # {HERMES_HOME}/home/ when that directory exists.

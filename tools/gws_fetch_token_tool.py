@@ -45,7 +45,7 @@ GWS_FETCH_TOKEN_SCHEMA = {
         "token. Scripts should call build_service()/load_credentials() "
         "instead of this tool directly."
     ),
-    "input_schema": {
+    "parameters": {
         "type": "object",
         "properties": {
             "service_name": {
@@ -56,6 +56,7 @@ GWS_FETCH_TOKEN_SCHEMA = {
                 ),
             },
         },
+        "required": [],
     },
 }
 
