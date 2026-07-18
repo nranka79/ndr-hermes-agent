@@ -11,16 +11,23 @@ to the same canonical vault ``user_id`` and the read passes ``session_uid`` ==
 ``user_id`` (which the vault requires).
 """
 
-import sys
-import types
+import tools.gws_vault_client as vault_module
 
 CANON = "ndr-1000000001"
 
 
 def _install_fake_vault(monkeypatch, store):
-    """Install a fake ``tools.gws_vault_client`` backed by an in-memory dict."""
-    fake = types.ModuleType("tools.gws_vault_client")
+    """Patch functions directly on the real tools.gws_vault_client module.
 
+    Using monkeypatch.setitem(sys.modules, ...) here used to work, but is
+    fragile to test-collection order: ``from tools import gws_vault_client``
+    resolves via getattr on the already-imported ``tools`` package first,
+    which wins over a sys.modules substitution once any other test in the
+    same session has genuinely imported the real module (2026-07-18,
+    surfaced by new gws-vault-related test files changing collection
+    order). Patching the real module's attributes is correct regardless of
+    import order.
+    """
     def resolve(identity_type, value):
         # Every raw identifier for this user maps to the canonical surrogate.
         if str(value) in ("1000000001", "ndr@draas.com", "ndr@ahfl.in", "ndr", CANON):
@@ -39,12 +46,10 @@ def _install_fake_vault(monkeypatch, store):
         assert session_uid == str(user_id), "read must pass session_uid == user_id"
         return (str(user_id), service) in store
 
-    fake.resolve = resolve
-    fake.set_token = set_token
-    fake.get_token = get_token
-    fake.has_token = has_token
-    monkeypatch.setitem(sys.modules, "tools.gws_vault_client", fake)
-    return fake
+    monkeypatch.setattr(vault_module, "resolve", resolve)
+    monkeypatch.setattr(vault_module, "set_token", set_token)
+    monkeypatch.setattr(vault_module, "get_token", get_token)
+    monkeypatch.setattr(vault_module, "has_token", has_token)
 
 
 class _FakeCreds:

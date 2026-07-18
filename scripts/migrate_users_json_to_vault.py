@@ -59,6 +59,12 @@ def migrate() -> None:
         role = record.get("role", "employee")
         permissions = record.get("permissions", {})
         draas_id = record.get("draas_user_id", "")
+        # App-specific fields (2026-07-18 users.json consolidation) --
+        # migrate alongside identity so existing users get vault-protected
+        # gbrain_home/phone immediately, not just new signups going forward.
+        gbrain_home = record.get("gbrain_home")
+        phone = record.get("phone")
+        contacts_sheet_id = record.get("contacts_sheet_id")
 
         identities = record.get("identities", {})
         if not isinstance(identities, dict):
@@ -74,6 +80,9 @@ def migrate() -> None:
                 name=name,
                 role=role,
                 permissions=permissions,
+                gbrain_home=gbrain_home,
+                phone=phone,
+                contacts_sheet_id=contacts_sheet_id,
             )
             print(f"    ok  canonical email: {user_id}")
         except vault.VaultError as e:

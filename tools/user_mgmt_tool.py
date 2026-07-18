@@ -234,6 +234,8 @@ def manage_user_tool(args, **kw):
                 name=name,
                 role=role,
                 permissions=entry.get("permissions", {}),
+                gbrain_home=entry.get("gbrain_home"),
+                phone=entry.get("phone"),
             )
             vault.add_identity(user_id=email, identity_type="telegram", identity_value=telegram_id)
             if slug and slug != email:
@@ -325,7 +327,7 @@ def manage_user_tool(args, **kw):
         try:
             from tools import gws_vault_client as vault
 
-            if any(f in changed for f in ("name", "role", "permissions.manage_users", "permissions.multi_google")):
+            if any(f in changed for f in ("name", "role", "phone", "permissions.manage_users", "permissions.multi_google")):
                 vault.add_identity(
                     user_id=target_email,
                     identity_type="email",
@@ -333,6 +335,7 @@ def manage_user_tool(args, **kw):
                     name=rec.get("name"),
                     role=rec.get("role"),
                     permissions=rec.get("permissions", {}),
+                    phone=rec.get("phone"),
                 )
             if add_tid:
                 vault.add_identity(user_id=target_email, identity_type="telegram", identity_value=add_tid)

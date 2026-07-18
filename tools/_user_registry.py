@@ -86,6 +86,15 @@ def find_user_by_identity(identity_type: str, identity_value: str) -> Tuple[Opti
                 merged = {**file_rec}
                 merged.setdefault("identities", vault_rec.get("identities", {}))
                 merged.setdefault("permissions", vault_rec.get("permissions", {}))
+                # App-specific fields (2026-07-18 users.json consolidation):
+                # prefer vault's value once present (post-migration source
+                # of truth, protected by the vault's admin-secret-gated
+                # write path), falling back to the file's value for users
+                # not yet migrated. Scoped to just these 3 fields so
+                # identities/permissions merge behavior above is untouched.
+                for _field in ("gbrain_home", "phone", "contacts_sheet_id"):
+                    if _field in vault_rec:
+                        merged[_field] = vault_rec[_field]
                 return user_id, merged
             if file_rec:
                 return user_id, file_rec

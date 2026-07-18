@@ -288,10 +288,20 @@ def add_identity(
     name: Optional[str] = None,
     role: Optional[str] = None,
     permissions: Optional[Dict[str, Any]] = None,
+    gbrain_home: Optional[str] = None,
+    phone: Optional[str] = None,
+    contacts_sheet_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Register an (identity_type, identity_value) alias for user_id.
 
     Requires ``GWS_VAULT_SECRET``. Returns the updated identity record.
+
+    ``gbrain_home``/``phone``/``contacts_sheet_id`` (2026-07-18 users.json
+    consolidation) are app-specific fields, not identity/auth data -- kept
+    optional and merge-only (server preserves previously-set values when
+    omitted on a later call, same as name/role/permissions) so linking a
+    new identity type to an existing user never has to resend the whole
+    profile.
     """
     payload: Dict[str, Any] = {
         "op": "add_identity",
@@ -306,6 +316,12 @@ def add_identity(
         payload["role"] = role
     if permissions is not None:
         payload["permissions"] = permissions
+    if gbrain_home is not None:
+        payload["gbrain_home"] = gbrain_home
+    if phone is not None:
+        payload["phone"] = phone
+    if contacts_sheet_id is not None:
+        payload["contacts_sheet_id"] = contacts_sheet_id
     resp = _send_recv(payload)
     _raise_for_response(resp)
     return resp.get("identity", {})
