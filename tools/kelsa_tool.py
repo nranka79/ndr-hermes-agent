@@ -70,6 +70,12 @@ logger = logging.getLogger(__name__)
 
 _KELSA_URL = "https://kelsa.io/mcp"
 
+# Layer 3: session-level pending-auth guard. Tracks telegram_ids that have
+# an outstanding Kelsa auth URL (one was generated but the user hasn't
+# completed the exchange yet). Prevents the LLM from generating multiple
+# buttons for the same user.
+_pending_auth: set[str] = set()
+
 
 def _current_telegram_id() -> str | None:
     # Same pattern as tools/gws_account_resolver_tool.py -- the session
@@ -231,10 +237,10 @@ KELSA_LIST_TOOLS_SCHEMA = {
         "current authorized user, with each tool's description and input "
         "schema. Call this BEFORE kelsa_call_tool whenever you don't "
         "already know the exact tool name from a prior call in this "
-        "session -- never guess a Kelsa tool name. If the user isn't "
-        "authorized yet, this automatically sends them a fresh Kelsa "
-        "authorization button (same delivery as kelsa_login) instead of "
-        "returning a URL to you."
+        "session -- never guess a Kelsa tool name.\n\n"
+        "IMPORTANT: If the user is not authorized yet, this tool returns an "
+        "error telling you to call kelsa_login first. It does NOT silently "
+        "generate an auth URL on its own."
     ),
     "parameters": {"type": "object", "properties": {}, "required": []},
 }
@@ -244,7 +250,10 @@ KELSA_CALL_TOOL_SCHEMA = {
     "description": (
         "Call one tool on the Kelsa MCP server on behalf of the current "
         "authorized user (e.g. to check leads). Use kelsa_list_tools first "
-        "to get the exact tool_name and its expected arguments schema."
+        "to get the exact tool_name and its expected arguments schema.\n\n"
+        "IMPORTANT: If the user is not authorized yet, this tool returns an "
+        "error telling you to call kelsa_login first. It does NOT silently "
+        "generate an auth URL on its own."
     ),
     "parameters": {
         "type": "object",
@@ -266,32 +275,23 @@ KELSA_CALL_TOOL_SCHEMA = {
 }
 
 
-def _not_authorized_result(tid: str) -> str:
-    from tools.kelsa_auth import get_auth_url
+def _not_authorized_result(tid: str, caller: str) -> str:
+    """Return a clear error directing the model to use ``kelsa_login``.
 
-    url = get_auth_url(tid)
-    delivery = _deliver_kelsa_auth_link(url)
-
-    if not delivery.get("success"):
-        return tool_error(
-            f"Not authorized with Kelsa, and could not deliver a fresh "
-            f"auth link: {delivery.get('error')}"
-        )
-
-    result = {"error": "Not authorized with Kelsa yet."}
-    result.update(delivery)
-    result["instructions"] = (
-        "I already sent the user a Kelsa authorization button/link via "
-        "this delivery — tell them to tap it. After they authorize, their "
-        "browser will show a connection-error page at a 127.0.0.1 address "
-        "— that's expected. Tell them to copy that URL and paste it back "
-        "to you, then call kelsa_complete_login with the pasted text. Do "
-        "NOT call send_oauth_url for this (it is Google-only), and do NOT "
-        "try to construct, guess, or paste any Kelsa URL yourself."
+    Layer 2: no longer auto-generates an auth URL. ``kelsa_list_tools`` and
+    ``kelsa_call_tool`` returning this will NOT create a side-effect button
+    -- the LLM must explicitly call ``kelsa_login`` to start auth.
+    """
+    logger.warning(
+        "_not_authorized_result called from %s for user %s "
+        "-- NOT auto-generating auth URL (Layer 2)",
+        caller, tid,
     )
-    import json
-
-    return json.dumps(result, ensure_ascii=False)
+    return tool_error(
+        "Not authorized with Kelsa yet. You must call kelsa_login first to "
+        "send the user an authorization button/link, then call "
+        "kelsa_complete_login after they paste back the URL."
+    )
 
 
 async def _connect_and_run(token: str, fn):
@@ -332,10 +332,37 @@ def kelsa_login_tool(args, **kw):
     if not tid:
         return tool_error("No session user context -- cannot generate a Kelsa login link.")
 
-    from tools.kelsa_auth import has_token, get_auth_url
+    from tools.kelsa_auth import has_token, get_auth_url, _has_valid_cached_url
+
+    # Layer 3: if an auth is already pending and the cached URL is still
+    # valid, don't generate another URL. If the cache has expired (user
+    # abandoned the first attempt), clear the pending flag and let through.
+    if tid in _pending_auth:
+        if _has_valid_cached_url(tid):
+            logger.info("kelsa_login: pending auth already exists for user %s -- skipping", tid)
+            return tool_result(
+                message=(
+                    "A Kelsa authorization is already pending. I already sent "
+                    "you a button — tap it, authorize, and paste back the URL "
+                    "you see after authorizing (it will be a broken-looking "
+                    "127.0.0.1 page — that's expected)."
+                ),
+                instructions=(
+                    "There is already a pending Kelsa authorization for this "
+                    "user. Do NOT call kelsa_login again. Tell them to complete "
+                    "the pending authorization by pasting back the URL, then "
+                    "call kelsa_complete_login with the pasted text."
+                ),
+            )
+        # Cache expired but _pending_auth still has the tid (user abandoned
+        # the first attempt). Clear the stale flag and fall through to
+        # generate a fresh URL.
+        _pending_auth.discard(tid)
+        logger.info("kelsa_login: stale pending auth discarded for user %s -- generating fresh URL", tid)
 
     try:
         if has_token(tid):
+            logger.info("kelsa_login: user %s already has token", tid)
             return tool_result(message="Already authorized with Kelsa.")
     except Exception:
         pass  # fall through to generating a fresh link regardless
@@ -344,6 +371,16 @@ def kelsa_login_tool(args, **kw):
     delivery = _deliver_kelsa_auth_link(url)
     if not delivery.get("success"):
         return tool_error(f"Could not deliver Kelsa auth link: {delivery.get('error')}")
+
+    _pending_auth.add(tid)
+    from tools.kelsa_auth import set_notify_context
+
+    platform, chat_id = _detect_session()
+    set_notify_context(tid, platform, chat_id)
+    logger.info(
+        "kelsa_login: delivered auth URL for user %s (delivery=%s, platform=%s, pending_set=%s)",
+        tid, delivery.get("delivery"), platform, len(_pending_auth),
+    )
 
     return tool_result(
         **delivery,
@@ -365,7 +402,11 @@ def kelsa_complete_login_tool(args, **kw):
     if not pasted:
         return tool_error("pasted is required -- the URL or code=...&state=... the user gave you.")
 
-    from tools.kelsa_auth import parse_callback_paste, exchange_and_store
+    from tools.kelsa_auth import (
+        parse_callback_paste,
+        exchange_and_store,
+        _clear_auth_url_cache,
+    )
 
     try:
         code, state = parse_callback_paste(pasted)
@@ -387,7 +428,17 @@ def kelsa_complete_login_tool(args, **kw):
     try:
         exchange_and_store(tid, code, code_verifier)
     except Exception as exc:
+        logger.warning(
+            "kelsa_complete_login: exchange failed for user %s: %s", tid, exc,
+        )
         return tool_error(f"Kelsa token exchange failed: {exc}")
+
+    _pending_auth.discard(tid)
+    _clear_auth_url_cache(tid)
+    logger.info(
+        "kelsa_complete_login: token stored for user %s (pending_set=%s)",
+        tid, len(_pending_auth),
+    )
 
     return tool_result(message="Kelsa CRM authorized successfully. You can now use kelsa_list_tools / kelsa_call_tool.")
 
@@ -402,7 +453,7 @@ def kelsa_list_tools_tool(args, **kw):
     except Exception as exc:
         return tool_error(f"Could not load Kelsa token: {exc}")
     if token is None:
-        return _not_authorized_result(tid)
+        return _not_authorized_result(tid, "kelsa_list_tools")
 
     from tools.mcp_tool import _ensure_mcp_loop, _run_on_mcp_loop
 
@@ -441,7 +492,7 @@ def kelsa_call_tool_tool(args, **kw):
     except Exception as exc:
         return tool_error(f"Could not load Kelsa token: {exc}")
     if token is None:
-        return _not_authorized_result(tid)
+        return _not_authorized_result(tid, "kelsa_call_tool")
 
     from tools.mcp_tool import _ensure_mcp_loop, _run_on_mcp_loop
 

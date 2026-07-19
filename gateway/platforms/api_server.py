@@ -4214,12 +4214,16 @@ class APIServerAdapter(BasePlatformAdapter):
     async def _handle_kelsa_auth_callback(self, request: "web.Request") -> "web.Response":
         """GET /kelsa/auth/callback — receives OAuth code from Kelsa, stores token.
 
-        The ``state`` parameter is ``"{telegram_id}:{pkce_code_verifier}"`` —
-        see ``tools/kelsa_auth.get_auth_url()``. Kelsa's OAuth server is a
-        public client (no client_secret), so PKCE is required; the verifier
-        generated when the auth URL was built has to round-trip through
-        ``state`` since this callback runs in a separate request (likely a
-        different worker) with no shared memory of that call.
+        Kelsa's OAuth server currently only accepts ``http://127.0.0.1:<port>/callback``
+        redirect URIs, so this handler is only reachable when ``KELSA_REDIRECT_URI``
+        env var is set to a public HTTPS URL (e.g.
+        ``https://transcribe.ahfl.in/kelsa/auth/callback``). Until Kelsa updates
+        their OAuth server to accept public redirects, the flow goes through the
+        paste-back mechanism instead: ``kelsa_login`` -> ``kelsa_complete_login``.
+
+        The ``state`` parameter carries ``"{telegram_id}:{code_verifier}"`` —
+        unlike Google's callback, which decodes the user identity from the
+        ``id_token``, Kelsa's identity is in the state itself.
         """
         code = request.rel_url.query.get("code", "")
         raw_state = request.rel_url.query.get("state", "")
@@ -4233,31 +4237,72 @@ class APIServerAdapter(BasePlatformAdapter):
                 text=f"<h1>Authorization failed</h1><p>{reason}</p><p>Please try again from Telegram.</p>",
             )
 
+        # State format: "telegram_id:code_verifier"
         if ":" not in raw_state:
-            logger.warning("Kelsa auth callback: malformed state (no PKCE verifier)")
+            logger.warning("Kelsa auth callback: malformed state (no verifier): %s", raw_state)
             return web.Response(
                 content_type="text/html",
-                text="<h1>Authorization failed</h1><p>Malformed state.</p><p>Please try again from Telegram.</p>",
+                text="<h1>Authorization failed</h1><p>Malformed state parameter. Please try again from Telegram.</p>",
             )
         telegram_id, code_verifier = raw_state.split(":", 1)
         telegram_id = telegram_id.strip()
+        code_verifier = code_verifier.strip()
 
         try:
-            from tools.kelsa_auth import exchange_and_store as _kelsa_exchange_and_store
+            from tools.kelsa_auth import (
+                exchange_and_store,
+                _clear_auth_url_cache,
+                get_notify_context,
+            )
 
-            _kelsa_exchange_and_store(telegram_id, code, code_verifier)
+            exchange_and_store(telegram_id, code, code_verifier)
+            _clear_auth_url_cache(telegram_id)
 
             logger.info("Kelsa token stored for telegram_id=%s", telegram_id)
-            asyncio.create_task(self._notify_telegram_user(
-                telegram_id,
-                "Kelsa is now connected. Close this tab and return to Telegram.",
-            ))
+
+            try:
+                from tools._user_registry import get_user_config
+                uconf = get_user_config(telegram_id)
+                display = uconf.get("name") or uconf.get("email") or ("user " + telegram_id)
+            except Exception:
+                display = "user " + telegram_id
+
+            # Route the success notification through the same channel the
+            # user initiated from (Telegram, Open Web UI, WhatsApp, etc.).
+            notify_ctx = get_notify_context(telegram_id)
+            init_platform = notify_ctx.get("platform", "")
+            init_chat_id = notify_ctx.get("chat_id", "")
+
+            if init_platform == "telegram" and init_chat_id:
+                asyncio.create_task(self._notify_telegram_user(
+                    init_chat_id,
+                    "Kelsa CRM authorized for " + display
+                    + ". Close this tab and return to Telegram.",
+                ))
+            elif init_platform and init_chat_id:
+                # Future platform: add a _notify_platform_user dispatcher.
+                # For now, fall back to Telegram notification using the
+                # telegram_id from state (works for Telegram-initiated auth;
+                # for other platforms the user may need to check the callback
+                # page for confirmation).
+                logger.info(
+                    "Kelsa callback: no notification driver for platform=%s "
+                    "chat_id=%s -- user must confirm via the callback page",
+                    init_platform, init_chat_id,
+                )
+            else:
+                logger.info(
+                    "Kelsa callback: no notification context for user %s "
+                    "-- user must confirm via the callback page",
+                    telegram_id,
+                )
+
             return web.Response(
                 content_type="text/html",
-                text="<h1>Authorization successful!</h1><p>Kelsa is now connected to your Hermes account.</p><p>You can close this tab and return to Telegram.</p>",
+                text="<h1>Authorization successful!</h1><p>Kelsa CRM is now connected to your Hermes account.</p><p>You can close this tab and return to Telegram.</p>",
             )
         except Exception as exc:
-            logger.exception("Kelsa auth callback error for telegram_id=%s: %s", telegram_id, exc)
+            logger.exception("Kelsa auth callback error for state=%s: %s", raw_state, exc)
             return web.Response(
                 content_type="text/html",
                 text=f"<h1>Error</h1><p>Authorization failed: {exc}</p>",

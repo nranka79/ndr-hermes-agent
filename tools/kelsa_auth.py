@@ -48,10 +48,26 @@ per-user, from Telegram, with vault-backed storage instead of a single
 shared flat-file token.
 
 PILOT SCOPE (Phase 1, 2026-07-13): proves the auth loop for a single user.
-Token storage/refresh here IS already generically multi-user (vault is
-keyed by canonical uid), but the MCP connection layer that consumes these
-tokens (tools/kelsa_tool.py) opens one ephemeral connection per call rather
-than a pooled persistent connection -- that generalization is Phase 2.
+    Token storage/refresh here IS already generically multi-user (vault is
+    keyed by canonical uid), but the MCP connection layer that consumes these
+    tokens (tools/kelsa_tool.py) opens one ephemeral connection per call rather
+    than a pooled persistent connection -- that generalization is Phase 2.
+
+2026-07-19 three-layer fix for duplicate-button problem:
+
+  **Layer 1 (tools/kelsa_auth.py):** ``get_auth_url()`` is now idempotent
+  within a 5-minute cooldown. Repeated calls for the same user return the
+  same URL with the same PKCE verifier. The ``REDIRECT_URI`` is configurable
+  via ``KELSA_REDIRECT_URI`` env var (defaults to the 127.0.0.1 placeholder)
+  for when Kelsa eventually supports public HTTPS callbacks.
+
+  **Layer 2 (tools/kelsa_tool.py):** ``_not_authorized_result()`` no longer
+  auto-generates auth URLs. ``kelsa_list_tools`` and ``kelsa_call_tool``
+  return a clear error directing the caller to use ``kelsa_login`` instead.
+
+  **Layer 3 (tools/kelsa_tool.py):** A process-global ``_pending_auth`` set
+  prevents a second ``kelsa_login`` from generating a new URL while a
+  previous auth is still outstanding for the same user.
 
 Usage:
     from tools.kelsa_auth import get_auth_url, exchange_and_store, has_token, get_valid_access_token, parse_callback_paste
@@ -68,6 +84,7 @@ import base64
 import hashlib
 import json
 import logging
+import os
 import secrets
 import time
 from urllib.parse import parse_qs, urlencode, urlparse
@@ -82,11 +99,20 @@ TOKEN_ENDPOINT = "https://kelsa.io/oauth/token"
 REGISTRATION_ENDPOINT = "https://kelsa.io/oauth/register"
 MCP_URL = "https://kelsa.io/mcp"
 
-# Fixed placeholder -- NEVER actually bound/listened on by anything, on any
-# machine. Its only purpose is to satisfy Kelsa's "must be a 127.0.0.1
-# redirect_uri" validation. The user's browser will fail to connect here
-# after authorizing; that's expected -- see module docstring.
-REDIRECT_URI = "http://127.0.0.1:47562/callback"
+# Configurable via KELSA_REDIRECT_URI env var. When Kelsa's OAuth server
+# eventually supports public HTTPS redirect URIs (it currently does not --
+# see module docstring), set this to your public callback URL:
+#
+#   KELSA_REDIRECT_URI=https://transcribe.ahfl.in/kelsa/auth/callback
+#
+# Until then, this stays as the 127.0.0.1 placeholder that satisfies
+# Kelsa's redirect_uri validation. The user's browser will fail to
+# connect here after authorizing; that's expected -- they copy the URL
+# from the address bar and paste it back (paste-back flow).
+REDIRECT_URI = os.environ.get(
+    "KELSA_REDIRECT_URI",
+    "http://127.0.0.1:47562/callback",
+)
 
 # "mcp:read" only -- matches the "Kelsa-Read" server name / least privilege.
 # Kelsa also advertises mcp:write and mcp:design; not requested here.
@@ -107,21 +133,97 @@ SERVICE_NAME = "mcp-kelsa-read"
 # there's no chance of silently reusing a stale registration.
 _CLIENT_INFO_FILENAME = "kelsa-read-dcr-client-v2.json"
 
+# Auth URL idempotency cache (Layer 1 of the duplicate-button fix).
+# Maps telegram_id -> (generated_at_timestamp, url). Prevents
+# get_auth_url() from generating a new PKCE verifier + URL if the
+# user already has a valid one outstanding.
+_auth_url_cache: dict[str, tuple[float, str]] = {}
+# How long a cached auth URL remains valid before a fresh one is
+# generated (seconds). 5 minutes should be more than enough for
+# the user to click the button and authorize.
+_AUTH_URL_COOLDOWN_SECONDS = 300
+
+# Notification context for the callback handler. Maps telegram_id ->
+# {"platform": str, "chat_id": str}. Set when kelsa_login delivers an
+# auth URL (tools/kelsa_tool.py), consumed by the callback handler
+# (gateway/platforms/api_server.py) so the success notification goes
+# back through the same channel the user initiated from (Telegram,
+# Open Web UI, CLI, WhatsApp, Slack, etc.).
+_notify_context: dict[str, dict[str, str]] = {}
+
 
 def _client_info_path():
     from tools.mcp_oauth import _get_token_dir
     return _get_token_dir() / _CLIENT_INFO_FILENAME
 
 
+def _clear_auth_url_cache(telegram_id: str) -> None:
+    """Remove the cached auth URL for this user, forcing the next call to
+    ``get_auth_url()`` to generate a fresh PKCE challenge + URL.
+
+    Called after a successful token exchange (the cached URL is one-time use)
+    or when a cooldown timeout is desired (e.g. user wants a fresh URL).
+    """
+    _auth_url_cache.pop(telegram_id, None)
+    _notify_context.pop(telegram_id, None)
+
+
+def _has_valid_cached_url(telegram_id: str) -> bool:
+    """Return True if there is a non-expired cached auth URL for this user.
+
+    Used by ``kelsa_tool._pending_auth`` guard to avoid blocking a fresh
+    ``kelsa_login`` when the previous auth attempt's cache has expired but
+    the ``_pending_auth`` set still has the user's id (e.g. the user
+    abandoned the first attempt and came back later).
+    """
+    cached = _auth_url_cache.get(telegram_id)
+    if cached is None:
+        return False
+    return (time.time() - cached[0]) < _AUTH_URL_COOLDOWN_SECONDS
+
+
+def set_notify_context(telegram_id: str, platform: str, chat_id: str) -> None:
+    """Record which platform + chat the user initiated the Kelsa auth from.
+
+    The callback handler (api_server.py) reads this to send the success
+    notification back through the same channel (Telegram, Open Web UI,
+    CLI, WhatsApp, Slack, etc.) instead of always using Telegram.
+    """
+    _notify_context[telegram_id] = {"platform": platform, "chat_id": chat_id}
+    logger.debug("notify_context set for %s: platform=%s chat_id=%s", telegram_id, platform, chat_id)
+
+
+def get_notify_context(telegram_id: str) -> dict[str, str]:
+    """Return the notification context for this user, or an empty dict.
+
+    Called by the callback handler after a successful token exchange to
+    determine where to send the "authorized" message.
+    """
+    return _notify_context.get(telegram_id, {})
+
+
 def _get_or_register_client() -> str:
-    """Return the cached DCR client_id, registering a new one if needed."""
+    """Return the cached DCR client_id, registering a new one if needed.
+
+    If the cached client was registered with a different redirect_uri than
+    the current ``REDIRECT_URI`` (e.g. after switching from the 127.0.0.1
+    placeholder to a public HTTPS callback), the stale cache is discarded
+    and a new DCR registration is performed automatically.
+    """
     path = _client_info_path()
     try:
         if path.exists():
             data = json.loads(path.read_text(encoding="utf-8"))
             client_id = data.get("client_id")
-            if client_id:
+            cached_redirect = data.get("redirect_uri", "")
+            if client_id and cached_redirect == REDIRECT_URI:
                 return client_id
+            if client_id and cached_redirect != REDIRECT_URI:
+                logger.info(
+                    "Kelsa DCR: cached redirect_uri %r differs from current %r "
+                    "-- discarding stale client_id %s and re-registering",
+                    cached_redirect, REDIRECT_URI, client_id,
+                )
     except Exception:
         logger.warning(
             "Kelsa DCR client info at %s unreadable -- re-registering",
@@ -146,6 +248,7 @@ def _get_or_register_client() -> str:
         raise RuntimeError(f"Kelsa DCR response missing client_id: {payload}")
 
     path.parent.mkdir(parents=True, exist_ok=True)
+    payload["redirect_uri"] = REDIRECT_URI
     path.write_text(json.dumps(payload), encoding="utf-8")
     try:
         path.chmod(0o600)
@@ -168,8 +271,44 @@ def _generate_pkce() -> tuple[str, str]:
     return verifier, challenge
 
 
+def _reject_if_sandboxed(op_name: str) -> None:
+    """Refuse to run a vault-writing Kelsa OAuth operation from inside the
+    execute_code sandbox.
+
+    2026-07-19 incident: in a session where kelsa_login/kelsa_complete_login
+    were not available as real tools (see tools/kelsa_tool.py, toolsets.py),
+    the agent hand-rolled this exchange via execute_code instead. The httpx
+    call to Kelsa's token endpoint succeeded -- burning the one-time
+    authorization code -- but the vault write then crashed with
+    "GWS_VAULT_SOCKET is not set" (the sandbox has no direct vault socket by
+    design; see tools/gws_auth.py's 2026-07-18 vault impersonation fix). The
+    freshly-granted tokens were silently lost, and a retry with the same
+    (now-dead) code failed with invalid_grant -- the user had to authorize
+    Kelsa again from scratch. This guard fails BEFORE calling Kelsa at all,
+    so a one-time authorization code is never burned for nothing. Callers
+    must go through the trusted-process kelsa_login / kelsa_complete_login
+    tools (tools/kelsa_tool.py), never call tools.kelsa_auth functions
+    directly inside execute_code.
+    """
+    if "HERMES_RPC_SOCKET" in os.environ:
+        raise RuntimeError(
+            f"kelsa_auth.{op_name}() cannot run inside the execute_code "
+            "sandbox -- it has no direct vault socket, so a successful "
+            "Kelsa exchange would be silently lost and the one-time code "
+            "burned for nothing. Use the kelsa_login / kelsa_complete_login "
+            "tools instead (they run in the trusted main process with real "
+            "vault access)."
+        )
+
+
 def get_auth_url(telegram_id: str) -> str:
     """Build a Kelsa OAuth authorization URL for a user.
+
+    **Idempotent:** if called again for the same ``telegram_id`` within
+    ``_AUTH_URL_COOLDOWN_SECONDS`` (5 minutes), returns the **same** URL
+    with the **same** PKCE code_challenge. This prevents the LLM from
+    generating multiple auth buttons per user (Layer 1 of the
+    duplicate-button fix).
 
     The PKCE code_verifier is encoded into ``state`` as
     ``"{telegram_id}:{code_verifier}"`` because the code exchange happens
@@ -179,6 +318,17 @@ def get_auth_url(telegram_id: str) -> str:
     here to carry the PKCE verifier instead. The verifier is opaque URL-safe
     base64 (no ':'), so splitting on the first ':' when parsing is safe.
     """
+    now = time.time()
+    cached = _auth_url_cache.get(telegram_id)
+    if cached and (now - cached[0]) < _AUTH_URL_COOLDOWN_SECONDS:
+        logger.info(
+            "Reusing cached Kelsa auth URL for user %s "
+            "(%.0f seconds remaining in cooldown)",
+            telegram_id,
+            _AUTH_URL_COOLDOWN_SECONDS - (now - cached[0]),
+        )
+        return cached[1]
+
     client_id = _get_or_register_client()
     verifier, challenge = _generate_pkce()
     state = f"{telegram_id}:{verifier}"
@@ -199,7 +349,13 @@ def get_auth_url(telegram_id: str) -> str:
         # flow, which always includes this param).
         "resource": MCP_URL,
     }
-    return f"{AUTHORIZATION_ENDPOINT}?{urlencode(params)}"
+    url = f"{AUTHORIZATION_ENDPOINT}?{urlencode(params)}"
+    _auth_url_cache[telegram_id] = (time.time(), url)
+    logger.info(
+        "Generated fresh Kelsa auth URL for user %s (cache expires in %ds)",
+        telegram_id, _AUTH_URL_COOLDOWN_SECONDS,
+    )
+    return url
 
 
 def parse_callback_paste(pasted: str) -> tuple[str, str]:
@@ -246,6 +402,7 @@ def _store_token_payload(telegram_id: str, payload: dict) -> None:
 
 def exchange_and_store(telegram_id: str, code: str, code_verifier: str) -> None:
     """Exchange an authorization code for tokens and store them in the vault."""
+    _reject_if_sandboxed("exchange_and_store")
     client_id = _get_or_register_client()
     resp = httpx.post(
         TOKEN_ENDPOINT,
@@ -271,6 +428,7 @@ def exchange_and_store(telegram_id: str, code: str, code_verifier: str) -> None:
     from tools.gws_auth import canonical_uid
     uid = canonical_uid(telegram_id)
     _store_token_payload(telegram_id, payload)
+    _clear_auth_url_cache(telegram_id)
     logger.info("Kelsa token stored user_id=%s service=%s", uid, SERVICE_NAME)
 
 
@@ -283,6 +441,7 @@ def has_token(telegram_id: str) -> bool:
 
 
 def _refresh(telegram_id: str, refresh_token: str) -> dict:
+    _reject_if_sandboxed("_refresh")
     client_id = _get_or_register_client()
     resp = httpx.post(
         TOKEN_ENDPOINT,

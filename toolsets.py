@@ -60,6 +60,14 @@ _HERMES_CORE_TOOLS = [
     "send_message",
     # OAuth / auth-link delivery (gated on HERMES_OAUTH_CLIENT_ID via check_fn)
     "send_oauth_url",
+    # Kelsa CRM per-user OAuth (2026-07-19 fix) -- these are registered under
+    # toolset "oauth" in tools/kelsa_tool.py but were never listed in any
+    # resolvable toolset here, so kelsa_login/kelsa_complete_login were
+    # invisible to the agent. It fell back to the broken legacy
+    # `hermes mcp --auth oauth` flow and to hand-rolled execute_code calls
+    # that lost a freshly-authorized token to a vault-write crash. See
+    # tools/kelsa_auth.py and tools/kelsa_tool.py.
+    "kelsa_login", "kelsa_complete_login", "kelsa_list_tools", "kelsa_call_tool",
     # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
     "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
     # Kanban multi-agent coordination — only in schema when the agent is
@@ -229,7 +237,8 @@ TOOLSETS = {
                        "computed inside the tool — the LLM never sees them, which prevents the "
                        "class of failures where small chat models silently truncate substrings "
                        "like 'google.' from OAuth client_ids.",
-        "tools": ["send_oauth_url"],
+        "tools": ["send_oauth_url", "kelsa_login", "kelsa_complete_login",
+                  "kelsa_list_tools", "kelsa_call_tool"],
         "includes": []
     },
 
