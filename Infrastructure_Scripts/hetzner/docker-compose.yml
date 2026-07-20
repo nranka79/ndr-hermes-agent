@@ -223,6 +223,14 @@ services:
       - ./hermes-data/users:/data/hermes/users
       - ./hermes-data/honcho.json:/data/hermes/honcho.json:ro
       - ./hermes-data/bin:/data/hermes/bin:ro
+      # Kelsa OAuth DCR client registration MUST be shared, not per-bot:
+      # the public callback (/kelsa/auth/callback) is only ever handled by
+      # the primary `hermes` service (API_SERVER_ENABLED=false here), so an
+      # auth URL generated with a client_id registered under THIS bot's own
+      # mcp-tokens dir would get exchanged against the primary's different
+      # client_id and fail with invalid_grant ("issued to another client")
+      # -- confirmed 2026-07-20. Primary owns read-write; bots read-only.
+      - ./hermes-data/mcp-tokens/kelsa-read-dcr-client-v2.json:/data/hermes/mcp-tokens/kelsa-read-dcr-client-v2.json:ro
       # Same code mounts as the primary `hermes` service (same repo
       # checkout / hot-patch pilots).
       - ./hermes-agent/tools:/opt/hermes/tools
@@ -284,6 +292,9 @@ services:
       - ./hermes-data/users:/data/hermes/users
       - ./hermes-data/honcho.json:/data/hermes/honcho.json:ro
       - ./hermes-data/bin:/data/hermes/bin:ro
+      # Shared Kelsa OAuth DCR client registration -- see hermes-bot2's
+      # matching mount comment above for why this must not be per-bot.
+      - ./hermes-data/mcp-tokens/kelsa-read-dcr-client-v2.json:/data/hermes/mcp-tokens/kelsa-read-dcr-client-v2.json:ro
       - ./hermes-agent/tools:/opt/hermes/tools
       - ./hermes-agent/skills:/opt/hermes/skills
       - ./hermes-agent/gateway/authz_mixin.py:/opt/hermes/gateway/authz_mixin.py

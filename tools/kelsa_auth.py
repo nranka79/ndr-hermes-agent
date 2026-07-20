@@ -102,6 +102,7 @@ import json
 import logging
 import os
 import secrets
+import sys
 import time
 from urllib.parse import parse_qs, urlencode, urlparse
 
@@ -293,6 +294,38 @@ def _generate_pkce() -> tuple[str, str]:
     return verifier, challenge
 
 
+def _reject_if_not_called_from_kelsa_tool(op_name: str) -> None:
+    """Refuse to run unless the immediate caller is tools.kelsa_tool.
+
+    2026-07-20 incident: an agent session (hermes-bot2) needed a Kelsa auth
+    link mid-task, found kelsa_login unavailable/unused, and instead shelled
+    out via the terminal tool to run this module's get_auth_url() directly
+    -- exactly the "build or paste a Kelsa URL yourself" anti-pattern every
+    Kelsa tool description explicitly warns against. That specific call
+    also happened to run inside hermes-bot2's own container, which (before
+    the 2026-07-20 shared-DCR-client fix) had its own independently
+    registered OAuth client -- different from the client the primary
+    hermes service uses to complete the exchange -- so the resulting auth
+    link was structurally guaranteed to fail with invalid_grant ("issued to
+     another client") no matter how carefully the user clicked through it.
+    The shared-client-file mount closes the structural failure mode, but a
+    hand-rolled invocation is still the wrong path (bypasses
+    _deliver_kelsa_auth_link's safe delivery, the has_token short-circuit,
+    and the idempotency cache) -- so it's blocked here at the source
+    regardless of which process it runs in.
+    """
+    caller_module = sys._getframe(2).f_globals.get("__name__", "")
+    if caller_module != "tools.kelsa_tool":
+        raise RuntimeError(
+            f"kelsa_auth.{op_name}() must be called via the kelsa_login tool "
+            "(tools/kelsa_tool.py), not invoked directly -- e.g. never via "
+            "execute_code, a shelled-out python3 -c, or any other ad-hoc "
+            "script. Call the kelsa_login tool instead; it delivers the "
+            "link safely and handles the already-authorized / "
+            "already-pending cases correctly."
+        )
+
+
 def _reject_if_sandboxed(op_name: str) -> None:
     """Refuse to run a vault-writing Kelsa OAuth operation from inside the
     execute_code sandbox.
@@ -340,6 +373,7 @@ def get_auth_url(telegram_id: str) -> str:
     here to carry the PKCE verifier instead. The verifier is opaque URL-safe
     base64 (no ':'), so splitting on the first ':' when parsing is safe.
     """
+    _reject_if_not_called_from_kelsa_tool("get_auth_url")
     now = time.time()
     cached = _auth_url_cache.get(telegram_id)
     if cached and (now - cached[0]) < _AUTH_URL_COOLDOWN_SECONDS:
