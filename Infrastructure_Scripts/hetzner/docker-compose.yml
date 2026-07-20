@@ -323,16 +323,18 @@ services:
       GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET}
       SESSION_SECRET: ${SESSION_SECRET}
       CLEANTEXT_WEBHOOK_URL: ${CLEANTEXT_WEBHOOK_URL}
-      PROCESS_WEBHOOK_URL: ${PROCESS_WEBHOOK_URL}
       SAVE_WEBHOOK_URL: ${SAVE_WEBHOOK_URL}
       WHATSAPP_WEBHOOK_URL: ${WHATSAPP_WEBHOOK_URL}
       AUTH_FILE: /data/.auth
+      GWS_VAULT_SOCKET: ${GWS_VAULT_SOCKET}
+      GWS_VAULT_SECRET: ${GWS_VAULT_SECRET}
       # Free Whisper microservice — reachable by compose service name on
       # the shared default network (same pattern as OPENAI_API_BASE_URL:
       # http://hermes:8642/v1 below).
       FREE_WHISPER_URL: http://free-whisper:8000
     volumes:
       - ./voice-data:/data
+      - /run/gws-vault:/run/gws-vault
     depends_on:
       - free-whisper
 

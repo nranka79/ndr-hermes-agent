@@ -199,6 +199,41 @@
     .action-button.success { background-color: var(--success-dark); color: white; }
     .action-button:hover { opacity: 0.9; transform: translateY(-2px); }
     .action-button:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+    /* Vocabulary Section - Tag Cloud */
+    .vocab-section { margin-top: 24px; border: 1px solid #e0e0e0; border-radius: var(--border-radius); overflow: hidden; }
+    .vocab-header { display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; background: var(--light); cursor: pointer; user-select: none; font-weight: 600; font-size: 0.95rem; color: var(--dark); }
+    .vocab-header:hover { background: #e8e8e8; }
+    .vocab-toggle-icon { transition: transform 0.3s ease; color: var(--gray); }
+    .vocab-toggle-icon.open { transform: rotate(180deg); }
+    .vocab-body { padding: 12px 16px; background: white; }
+    .vocab-input { width: 100%; padding: 10px 12px; border: 2px dashed #ccc; border-radius: 8px; font-size: 0.9rem; outline: none; transition: var(--transition); resize: vertical; font-family: inherit; }
+    .vocab-input:focus { border-color: var(--primary); }
+    .vocab-input-hint { font-size: 0.8rem; color: var(--gray); margin: 4px 0 10px 0; }
+    .vocab-actions { display: flex; gap: 8px; margin-bottom: 14px; }
+    .vocab-add-btn { padding: 8px 20px; border: none; border-radius: 6px; background: var(--primary); color: white; font-size: 0.9rem; cursor: pointer; font-weight: 500; }
+    .vocab-add-btn:hover { background: var(--secondary); }
+    .vocab-status { font-size: 0.85rem; padding: 6px 0; color: var(--gray); min-height: 1.4em; }
+    .vocab-status.success { color: var(--success-dark); }
+    .vocab-status.duplicate { color: var(--warning); }
+    .vocab-status.error { color: var(--danger); }
+    .vocab-tagcloud { display: flex; flex-wrap: wrap; gap: 8px; padding: 4px 0; max-height: 320px; overflow-y: auto; }
+    .vocab-empty { width: 100%; text-align: center; padding: 20px; color: var(--gray); font-style: italic; }
+    .vocab-tag {
+        display: inline-flex; align-items: center; gap: 2px;
+        padding: 6px 6px 6px 12px; background: #eef1ff; color: var(--primary);
+        border-radius: 20px; font-size: 0.85rem; font-weight: 500;
+        transition: var(--transition); cursor: default;
+    }
+    .vocab-tag:hover { background: #e0e4ff; }
+    .vocab-tag-word { padding-right: 2px; }
+    .vocab-tag-delete {
+        display: inline-flex; align-items: center; justify-content: center;
+        width: 18px; height: 18px; border-radius: 50%; border: none;
+        background: transparent; color: var(--danger); cursor: pointer;
+        font-size: 0.75rem; padding: 0; line-height: 1; margin-left: 2px;
+        transition: var(--transition);
+    }
+    .vocab-tag-delete:hover { background: var(--danger); color: white; }
     .debug-container { position: sticky; bottom: 0; background-color: white; margin-top: 40px; border-top: 1px solid #e0e0e0; padding-top: 20px; z-index: 100; }
     .debug-toggle { background: none; border: none; color: var(--gray); cursor: pointer; font-size: 0.9rem; display: flex; align-items: center; }
     .debug-toggle i { margin-right: 5px; transition: transform 0.3s; }
@@ -272,7 +307,6 @@
     <div class="format-toggle">
     <button id="whatsappButton" class="format-button"><i class="fab fa-whatsapp"></i> WhatsApp</button>
     <button id="emailButton" class="format-button"><i class="fas fa-envelope"></i> Email</button>
-    <button id="promptEnhancerButton" class="format-button"><i class="fas fa-magic"></i> Prompt Enhancer</button>
     </div>
 
     <div class="model-toggle">
@@ -439,6 +473,36 @@
     </div>
     </div>
 
+    <!-- Delete Confirmation Modal -->
+    <div id="vocabDeleteModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.4); z-index: 9999; align-items: center; justify-content: center;">
+        <div style="background: white; border-radius: 12px; padding: 24px; max-width: 360px; width: 90%; text-align: center; box-shadow: 0 12px 40px rgba(0,0,0,0.2);">
+            <div style="font-size: 1rem; font-weight: 600; margin-bottom: 6px;">Remove word?</div>
+            <div id="vocabDeleteText" style="font-size: 0.95rem; color: var(--gray); margin-bottom: 20px;"></div>
+            <div style="display: flex; gap: 10px; justify-content: center;">
+                <button id="vocabDeleteCancel" style="flex: 1; padding: 10px; border: 1px solid #ccc; border-radius: 8px; background: white; font-size: 0.9rem; cursor: pointer;">Cancel</button>
+                <button id="vocabDeleteConfirm" style="flex: 1; padding: 10px; border: none; border-radius: 8px; background: var(--danger); color: white; font-size: 0.9rem; cursor: pointer; font-weight: 500;">Remove</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="vocab-section">
+    <div class="vocab-header" id="vocabHeader">
+        <span><i class="fas fa-book"></i> Vocabulary</span>
+        <span id="vocabToggleIcon" class="vocab-toggle-icon"><i class="fas fa-chevron-down"></i></span>
+    </div>
+    <div id="vocabBody" class="vocab-body" style="display: none;">
+        <textarea id="vocabWord" class="vocab-input" rows="2" placeholder="Type or paste words here..."></textarea>
+        <div class="vocab-input-hint">Separate multiple words with spaces, commas, or semicolons</div>
+        <div class="vocab-actions">
+            <button id="vocabAddBtn" class="vocab-add-btn"><i class="fas fa-plus"></i> Add Words</button>
+        </div>
+        <div id="vocabStatus" class="vocab-status"></div>
+        <div id="vocabList" class="vocab-tagcloud">
+            <div class="vocab-empty">Loading...</div>
+        </div>
+    </div>
+    </div>
+
     <div class="debug-container">
     <div style="display: flex; align-items: center; gap: 10px;">
         <button id="debugToggle" class="debug-toggle"><i class="fas fa-chevron-right"></i> Debug Information</button>
@@ -457,7 +521,6 @@
     const SAVE_WEBHOOK_URL = '/api/webhook-form/save';
     const WHATSAPP_WEBHOOK_URL = '/api/webhook/whatsapp';
     const CLEANTEXT_WEBHOOK_URL = '/api/webhook/cleantext';
-    const PROCESS_WEBHOOK_URL = '/api/webhook/process';
     const INITIAL_TIMEOUT = 30000;
     const WHISPER_INITIAL_TIMEOUT = 120000; // CPU-only local transcription can be slower than cloud APIs
     const MAX_RETRIES = 2;
@@ -658,7 +721,7 @@
     reformatButton.addEventListener('click', reformatText);
     whatsappButton.addEventListener('click', () => setFormat('whatsapp'));
     emailButton.addEventListener('click', () => setFormat('email'));
-    promptEnhancerButton.addEventListener('click', () => setFormat('promptEnhancer'));
+
     debugToggle.addEventListener('click', toggleDebug);
     copyDebugButton.addEventListener('click', async () => {
         try { await navigator.clipboard.writeText(debugElement.innerText); copyDebugButton.innerHTML = '<i class="fas fa-check"></i> Copied!'; setTimeout(() => { copyDebugButton.innerHTML = '<i class="fas fa-copy"></i> Copy Logs'; }, 2000); }
@@ -681,11 +744,10 @@
     function toggleDebug() { debugElement.classList.toggle('open'); debugToggle.classList.toggle('open'); }
 
     function setFormat(format) {
-        if (selectedFormat === format) { selectedFormat = null; whatsappButton.classList.remove('active'); emailButton.classList.remove('active'); promptEnhancerButton.classList.remove('active'); formattedResultHeader.innerHTML = '<i class="fas fa-file-alt"></i> Transcription Only'; formattedResultElement.textContent = 'No formatting will be applied (transcription only)'; copyFormattedButton.disabled = true; return; }
-        selectedFormat = format; whatsappButton.classList.remove('active'); emailButton.classList.remove('active'); promptEnhancerButton.classList.remove('active');
+        if (selectedFormat === format) { selectedFormat = null; whatsappButton.classList.remove('active'); emailButton.classList.remove('active'); formattedResultHeader.innerHTML = '<i class="fas fa-file-alt"></i> Transcription Only'; formattedResultElement.textContent = 'No formatting will be applied (transcription only)'; copyFormattedButton.disabled = true; return; }
+        selectedFormat = format; whatsappButton.classList.remove('active'); emailButton.classList.remove('active');
         if (format === 'whatsapp') { whatsappButton.classList.add('active'); formattedResultHeader.innerHTML = '<i class="fab fa-whatsapp"></i> WhatsApp Format'; }
         else if (format === 'email') { emailButton.classList.add('active'); formattedResultHeader.innerHTML = '<i class="fas fa-envelope"></i> Email Format'; }
-        else if (format === 'promptEnhancer') { promptEnhancerButton.classList.add('active'); formattedResultHeader.innerHTML = '<i class="fas fa-magic"></i> Prompt Enhancer'; }
         if (transcribedText && transcribedText !== 'No text detected' && transcribedText !== 'Your transcribed text will appear here...') reformatText();
     }
 
@@ -1042,7 +1104,6 @@
             let webhookUrl;
             if (selectedFormat === 'whatsapp') webhookUrl = WHATSAPP_WEBHOOK_URL;
             else if (selectedFormat === 'email') webhookUrl = CLEANTEXT_WEBHOOK_URL;
-            else if (selectedFormat === 'promptEnhancer') { webhookUrl = PROCESS_WEBHOOK_URL; statusElement.textContent = `Formatting for ${selectedFormat}... (may take a minute)`; }
             const response = await fetchWithRetries(webhookUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ transcription: transcribedText }) });
             if (!response.ok) throw new Error(`Formatting failed: ${response.status}`);
             const data = await response.json(); log(`Response: ${JSON.stringify(data)}`);
@@ -1053,11 +1114,11 @@
             else if (data.html) formattedText = data.html;
             else if (data.result) formattedText = data.result;
             else formattedText = 'Could not find formatted text in response';
-            if ((selectedFormat === 'email' || selectedFormat === 'promptEnhancer') && formattedText.includes('<')) formattedResultElement.innerHTML = formattedText;
+            if (selectedFormat === 'email' && formattedText.includes('<')) formattedResultElement.innerHTML = formattedText;
             else formattedResultElement.textContent = formattedText;
             log(`Formatting complete`); statusElement.textContent = `Formatting for ${selectedFormat} complete!`; statusElement.className = 'status success'; copyFormattedButton.disabled = false;
             if (autoCopyToggle.checked && selectedFormat) {
-                let content = ((selectedFormat === 'email' || selectedFormat === 'promptEnhancer') && formattedText.includes('<')) ? formattedResultElement.innerHTML : formattedResultElement.textContent;
+                let content = (selectedFormat === 'email' && formattedText.includes('<')) ? formattedResultElement.innerHTML : formattedResultElement.textContent;
                 await autoCopy(content, 'formatted text');
             }
         } catch (error) {
@@ -1098,6 +1159,120 @@
             log('Download initiated'); statusElement.textContent = 'Audio download started'; statusElement.className = 'status success';
         } else { log('No audio to download'); statusElement.textContent = 'No audio to download'; statusElement.className = 'status error'; }
     }
+
+    // ===== Vocabulary Management =====
+    let vocabTerms = [];
+
+    document.getElementById('vocabHeader').addEventListener('click', function() {
+        const body = document.getElementById('vocabBody');
+        const icon = document.getElementById('vocabToggleIcon');
+        const isOpen = body.style.display !== 'none';
+        body.style.display = isOpen ? 'none' : 'block';
+        icon.classList.toggle('open', !isOpen);
+        if (!isOpen && vocabTerms.length === 0) loadVocab();
+    });
+
+    function parseWords(text) {
+        return text.split(/[,; \t\n]+/).map(w => w.trim()).filter(w => w.length > 0);
+    }
+
+    async function loadVocab() {
+        const list = document.getElementById('vocabList');
+        list.innerHTML = '<div class="vocab-empty">Loading...</div>';
+        try {
+            const resp = await fetch('/api/vocab');
+            const data = await resp.json();
+            vocabTerms = (data.terms || []).sort((a, b) => a.word.toLowerCase().localeCompare(b.word.toLowerCase()));
+            renderVocab();
+        } catch (err) {
+            log('Vocab load error: ' + err.message);
+            list.innerHTML = '<div class="vocab-empty">Error loading vocabulary.</div>';
+        }
+    }
+
+    function renderVocab() {
+        const list = document.getElementById('vocabList');
+        if (vocabTerms.length === 0) {
+            list.innerHTML = '<div class="vocab-empty">No vocabulary terms yet. Add words so the speech-to-text model recognizes names and terms correctly.</div>';
+            return;
+        }
+        list.innerHTML = vocabTerms.map((t) => `
+            <span class="vocab-tag">
+                <span class="vocab-tag-word">${escHtml(t.word)}</span>
+                <button class="vocab-tag-delete" onclick="deleteVocabTerm('${t.id}')" title="Remove ${escHtml(t.word)}">&times;</button>
+            </span>
+        `).join('');
+    }
+
+    function escHtml(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+    document.getElementById('vocabAddBtn').addEventListener('click', async () => {
+        const raw = document.getElementById('vocabWord').value;
+        const words = parseWords(raw);
+        const status = document.getElementById('vocabStatus');
+        if (words.length === 0) { status.className = 'vocab-status error'; status.textContent = 'Enter at least one word.'; return; }
+        status.className = 'vocab-status'; status.textContent = `Adding ${words.length} word(s)...`;
+        try {
+            const resp = await fetch('/api/vocab', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ words })
+            });
+            if (!resp.ok) throw new Error(await resp.text());
+            const data = await resp.json();
+            document.getElementById('vocabWord').value = '';
+            await loadVocab();
+            const msgs = [];
+            if (data.added && data.added.length > 0) msgs.push(`${data.added.length} word(s) added`);
+            if (data.skipped && data.skipped.length > 0) msgs.push(`${data.skipped.length} already existed`);
+            status.className = 'vocab-status success';
+            status.textContent = msgs.join(', ') + '.';
+            setTimeout(() => { status.className = 'vocab-status'; status.textContent = ''; }, 3000);
+            log(`Vocab: added ${words.length} word(s)`);
+        } catch (err) {
+            status.className = 'vocab-status error';
+            status.textContent = 'Error: ' + err.message;
+            log('Vocab add error: ' + err.message);
+        }
+    });
+
+    document.getElementById('vocabWord').addEventListener('keydown', function(e) {
+        if (e.key === 'Enter' && e.ctrlKey) document.getElementById('vocabAddBtn').click();
+    });
+
+    const deleteModal = document.getElementById('vocabDeleteModal');
+    const deleteModalText = document.getElementById('vocabDeleteText');
+    const deleteModalConfirm = document.getElementById('vocabDeleteConfirm');
+    const deleteModalCancel = document.getElementById('vocabDeleteCancel');
+    let pendingDelete = null;
+
+    window.deleteVocabTerm = async function(id) {
+        const term = vocabTerms.find(t => t.id === id);
+        if (!term) return;
+        pendingDelete = { id };
+        deleteModalText.textContent = `Remove "${term.word}" from vocabulary?`;
+        deleteModal.style.display = 'flex';
+    };
+
+    deleteModalConfirm.addEventListener('click', async () => {
+        if (!pendingDelete) return;
+        const { id } = pendingDelete;
+        deleteModal.style.display = 'none';
+        pendingDelete = null;
+        try {
+            const resp = await fetch('/api/vocab/' + id, { method: 'DELETE' });
+            if (!resp.ok) throw new Error(await resp.text());
+            await loadVocab();
+            log('Vocab: deleted term');
+        } catch (err) {
+            log('Vocab delete error: ' + err.message);
+        }
+    });
+
+    deleteModalCancel.addEventListener('click', () => {
+        deleteModal.style.display = 'none';
+        pendingDelete = null;
+    });
 
     // ===== Initialize =====
     log('Page loaded. Loading user info and checking microphone...');

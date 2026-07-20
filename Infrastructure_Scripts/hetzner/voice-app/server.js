@@ -2,6 +2,7 @@ const express = require('express');
 const path = require('path');
 const http = require('http');
 const https = require('https');
+const net = require('net');
 const { URL } = require('url');
 const fs = require('fs-extra');
 const session = require('express-session');
@@ -20,8 +21,10 @@ const ASSEMBLYAI_API_KEY_FALLBACK = process.env.ASSEMBLYAI_API_KEY;
 const SAVE_WEBHOOK_URL = process.env.SAVE_WEBHOOK_URL;
 const WHATSAPP_WEBHOOK_URL = process.env.WHATSAPP_WEBHOOK_URL;
 const CLEANTEXT_WEBHOOK_URL = process.env.CLEANTEXT_WEBHOOK_URL;
-const PROCESS_WEBHOOK_URL = process.env.PROCESS_WEBHOOK_URL;
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
+const GWS_VAULT_SOCKET = process.env.GWS_VAULT_SOCKET;
+const GWS_VAULT_SECRET = process.env.GWS_VAULT_SECRET;
+const VOCAB_SERVICE = 'vocab';
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
 const SESSION_SECRET = process.env.SESSION_SECRET || 'voice-transcription-secret';
 // Free Whisper microservice (isolated faster-whisper container) — reachable
@@ -29,7 +32,54 @@ const SESSION_SECRET = process.env.SESSION_SECRET || 'voice-transcription-secret
 // pattern as OPENAI_API_BASE_URL: http://hermes:8642/v1 used elsewhere.
 const FREE_WHISPER_URL = process.env.FREE_WHISPER_URL || 'http://free-whisper:8000';
 
+// ---------------------------------------------------------------------------
+// GWS Vault client (Unix socket, NDJSON protocol)
+// ---------------------------------------------------------------------------
+function vaultRequest(op, payload) {
+  return new Promise((resolve, reject) => {
+    if (!GWS_VAULT_SOCKET) return reject(new Error('GWS_VAULT_SOCKET not set'));
+    const reqObj = JSON.stringify({ op, ...payload }) + '\n';
+    const client = net.createConnection(GWS_VAULT_SOCKET, () => {
+      client.write(reqObj);
+    });
+    let buf = '';
+    client.on('data', (chunk) => { buf += chunk.toString(); });
+    client.on('end', () => {
+      try {
+        const lines = buf.trim().split('\n').filter(Boolean);
+        const last = JSON.parse(lines[lines.length - 1] || '{}');
+        if (last.ok === false) reject(new Error(last.error || 'vault error'));
+        else resolve(last);
+      } catch (e) { reject(new Error('vault parse error: ' + e.message)); }
+    });
+    client.on('error', reject);
+  });
+}
+
+async function resolveUser(email) {
+  const resp = await vaultRequest('resolve', { identity_type: 'email', identity_value: email });
+  return resp.user_id;
+}
+
+async function getVocab(userId) {
+  const resp = await vaultRequest('get', { user_id: userId, service: VOCAB_SERVICE, session_uid: userId });
+  if (!resp.token_json) return [];
+  let data;
+  try { data = JSON.parse(resp.token_json); } catch (e) { return []; }
+  if (Array.isArray(data)) return data.sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+  if (typeof data === 'object' && data !== null) return Object.values(data).map((v) => typeof v === 'object' ? v.word || v : String(v));
+  return [];
+}
+
+async function setVocab(userId, terms) {
+  const cleaned = [...new Set(terms.map((t) => t.trim()).filter(Boolean))].sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+  await vaultRequest('set', { user_id: userId, service: VOCAB_SERVICE, token_json: JSON.stringify(cleaned), vault_secret: GWS_VAULT_SECRET });
+  return cleaned;
+}
+
+// ---------------------------------------------------------------------------
 // Middleware
+// ---------------------------------------------------------------------------
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true }));
 
@@ -422,18 +472,107 @@ app.post('/api/whisper/transcribe', isAuthenticated, async (req, res) => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// Vocabulary API (per-user, stored in GWS vault)
+// ---------------------------------------------------------------------------
+app.get('/api/vocab', isAuthenticated, async (req, res) => {
+  try {
+    const userId = await resolveUser(req.user.email);
+    if (!userId) return res.json({ terms: [] });
+    const terms = await getVocab(userId);
+    const mapped = terms.map((word, i) => ({ id: String(i), word }));
+    res.json({ terms: mapped });
+  } catch (err) {
+    console.error('[VOCAB] get error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/vocab', isAuthenticated, async (req, res) => {
+  try {
+    const words = req.body.words || (req.body.word ? [req.body.word] : []);
+    if (!words.length) return res.status(400).json({ error: 'word or words required' });
+    const cleaned = words.map((w) => w.trim()).filter((w) => w.length > 0);
+    if (!cleaned.length) return res.status(400).json({ error: 'no valid words provided' });
+    const userId = await resolveUser(req.user.email);
+    if (!userId) return res.status(500).json({ error: 'user not found' });
+    const current = await getVocab(userId);
+    const added = [];
+    const skipped = [];
+    for (const w of cleaned) {
+      if (current.includes(w)) { skipped.push(w); }
+      else { current.push(w); added.push(w); }
+    }
+    if (added.length) await setVocab(userId, current);
+    res.json({ success: true, added, skipped, count: current.length });
+  } catch (err) {
+    console.error('[VOCAB] add error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put('/api/vocab/:id', isAuthenticated, async (req, res) => {
+  try {
+    const { word } = req.body;
+    const idx = parseInt(req.params.id, 10);
+    if (isNaN(idx) || !word || !word.trim()) return res.status(400).json({ error: 'invalid index or word' });
+    const userId = await resolveUser(req.user.email);
+    if (!userId) return res.status(500).json({ error: 'user not found' });
+    const current = await getVocab(userId);
+    if (idx < 0 || idx >= current.length) return res.status(404).json({ error: 'term not found' });
+    current[idx] = word.trim();
+    await setVocab(userId, current);
+    res.json({ success: true });
+  } catch (err) {
+    console.error('[VOCAB] update error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/vocab/:id', isAuthenticated, async (req, res) => {
+  try {
+    const idx = parseInt(req.params.id, 10);
+    if (isNaN(idx)) return res.status(400).json({ error: 'invalid index' });
+    const userId = await resolveUser(req.user.email);
+    if (!userId) return res.status(500).json({ error: 'user not found' });
+    const current = await getVocab(userId);
+    if (idx < 0 || idx >= current.length) return res.status(404).json({ error: 'term not found' });
+    current.splice(idx, 1);
+    await setVocab(userId, current);
+    res.json({ success: true });
+  } catch (err) {
+    console.error('[VOCAB] delete error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Webhook proxy routes
+// ---------------------------------------------------------------------------
 app.post('/api/webhook/:type', isAuthenticated, async (req, res) => {
   try {
     const webhookMap = {
       save: SAVE_WEBHOOK_URL,
       whatsapp: WHATSAPP_WEBHOOK_URL,
       cleantext: CLEANTEXT_WEBHOOK_URL,
-      process: PROCESS_WEBHOOK_URL,
     };
     const targetUrl = webhookMap[req.params.type];
     if (!targetUrl) return res.status(400).json({ error: 'Unknown webhook type' });
 
-    const bodyToSend = JSON.stringify(req.body);
+    const body = { ...req.body };
+    if (req.params.type === 'whatsapp' || req.params.type === 'cleantext') {
+      try {
+        const userId = await resolveUser(req.user.email);
+        if (userId) {
+          const vocab = await getVocab(userId);
+          if (vocab.length > 0) body.vocabulary = vocab;
+        }
+      } catch (vErr) {
+        console.error('[WEBHOOK] vocab fetch error (non-fatal):', vErr.message);
+      }
+    }
+
+    const bodyToSend = JSON.stringify(body);
     const result = await proxyRequest(targetUrl, 'POST', {
       'Content-Type': 'application/json',
       'Content-Length': Buffer.byteLength(bodyToSend)
