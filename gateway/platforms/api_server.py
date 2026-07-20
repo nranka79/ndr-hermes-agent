@@ -4258,6 +4258,19 @@ class APIServerAdapter(BasePlatformAdapter):
             exchange_and_store(telegram_id, code, code_verifier)
             _clear_auth_url_cache(telegram_id)
 
+            # Clear the kelsa_tool pending-auth guard too. Previously only
+            # kelsa_complete_login_tool (the manual paste-back path) cleared
+            # this set -- with the HTTPS callback now completing the
+            # exchange automatically (2026-07-20), a user could get stuck
+            # permanently "pending" (blocking all future kelsa_login calls)
+            # if they never manually pasted anything back. Import is local
+            # to avoid a module-load-order cycle with tools.kelsa_tool.
+            try:
+                from tools.kelsa_tool import _pending_auth
+                _pending_auth.discard(telegram_id)
+            except Exception:
+                logger.debug("Kelsa callback: could not clear _pending_auth for %s", telegram_id, exc_info=True)
+
             logger.info("Kelsa token stored for telegram_id=%s", telegram_id)
 
             try:

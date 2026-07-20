@@ -69,6 +69,22 @@ PILOT SCOPE (Phase 1, 2026-07-13): proves the auth loop for a single user.
   prevents a second ``kelsa_login`` from generating a new URL while a
   previous auth is still outstanding for the same user.
 
+2026-07-20 HTTPS callback restored: Kelsa's developer confirmed the
+OAuth server DOES accept a public HTTPS redirect_uri -- the 2026-07-13
+finding (hung consent page, zero request ever reaching our server) was
+most likely nginx not yet routing /kelsa/auth/callback to hermes at
+that point (fixed later the same day per tools/kelsa_tool.py's history
+comment #2, but the redirect_uri default here was never flipped back).
+REDIRECT_URI now defaults to the public HTTPS callback
+(https://transcribe.ahfl.in/kelsa/auth/callback), handled by the SAME
+gateway/platforms/api_server.py handler as Google Workspace's OAuth
+callback (_handle_kelsa_auth_callback, GET /kelsa/auth/callback). The
+paste-back mechanism described above is kept as a fallback
+(kelsa_complete_login still works) in case the HTTPS path ever
+regresses, but is no longer the primary/expected flow. SCOPE also
+widened to the full set Kelsa advertises (mcp:read mcp:write
+mcp:design) -- every user authorizes full scope, no partial grants.
+
 Usage:
     from tools.kelsa_auth import get_auth_url, exchange_and_store, has_token, get_valid_access_token, parse_callback_paste
     url = get_auth_url(telegram_id)                            # send to user
@@ -99,24 +115,30 @@ TOKEN_ENDPOINT = "https://kelsa.io/oauth/token"
 REGISTRATION_ENDPOINT = "https://kelsa.io/oauth/register"
 MCP_URL = "https://kelsa.io/mcp"
 
-# Configurable via KELSA_REDIRECT_URI env var. When Kelsa's OAuth server
-# eventually supports public HTTPS redirect URIs (it currently does not --
-# see module docstring), set this to your public callback URL:
+# 2026-07-20: flipped to the public HTTPS callback (see module docstring's
+# "2026-07-20 HTTPS callback restored" note) -- Kelsa's OAuth server does
+# accept a public HTTPS redirect_uri. Routed through the same
+# gateway/platforms/api_server.py callback handler used for Google
+# Workspace OAuth (_handle_kelsa_auth_callback, GET /kelsa/auth/callback),
+# proxied by nginx to hermes on :8642. KELSA_REDIRECT_URI env var still
+# overrides this (e.g. temporary rollback to the 127.0.0.1 paste-back
+# flow for debugging):
 #
-#   KELSA_REDIRECT_URI=https://transcribe.ahfl.in/kelsa/auth/callback
-#
-# Until then, this stays as the 127.0.0.1 placeholder that satisfies
-# Kelsa's redirect_uri validation. The user's browser will fail to
-# connect here after authorizing; that's expected -- they copy the URL
-# from the address bar and paste it back (paste-back flow).
+#   KELSA_REDIRECT_URI=http://127.0.0.1:47562/callback
 REDIRECT_URI = os.environ.get(
     "KELSA_REDIRECT_URI",
-    "http://127.0.0.1:47562/callback",
+    "https://transcribe.ahfl.in/kelsa/auth/callback",
 )
 
-# "mcp:read" only -- matches the "Kelsa-Read" server name / least privilege.
-# Kelsa also advertises mcp:write and mcp:design; not requested here.
-SCOPE = "mcp:read"
+# Full scope, every time -- every user authorizes mcp:read + mcp:write +
+# mcp:design in one grant (2026-07-20 decision: no partial/least-privilege
+# scoping for Kelsa, since re-auth-for-more-scope is a bad UX and Kelsa's
+# refresh grant may reject a narrower-than-requested scope change later,
+# same failure class as Google's refresh_token scope mismatch -- see
+# tools/gws_auth.py's HERMES_GWS_SCOPES comment). Confirmed via
+# https://kelsa.io/.well-known/oauth-authorization-server that these three
+# are the complete scopes_supported list.
+SCOPE = "mcp:read mcp:write mcp:design"
 
 # Vault service key. Must match ^[a-z][a-z0-9-]{0,49}$ (tools/gws_vault_client.py).
 SERVICE_NAME = "mcp-kelsa-read"

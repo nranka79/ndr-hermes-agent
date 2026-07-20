@@ -15,7 +15,8 @@ when ``kelsa_login_tool._pending_auth`` already contains the user's id;
 ``kelsa_complete_login`` clears it on success.
 
 Configurable redirect_uri: ``REDIRECT_URI`` reads from ``KELSA_REDIRECT_URI``
-env var, falling back to ``http://127.0.0.1:47562/callback``. The DCR
+env var, falling back to the public HTTPS callback
+``https://transcribe.ahfl.in/kelsa/auth/callback`` (2026-07-20). The DCR
 client cache detects stale redirect_uris and re-registers automatically.
 """
 
@@ -479,8 +480,10 @@ class TestPendingAuthGuard:
 class TestRedirectUri:
     """Tests that ``REDIRECT_URI`` respects the ``KELSA_REDIRECT_URI`` env var."""
 
-    def test_default_is_localhost(self):
-        # Unset the env var to ensure fallback
+    def test_default_is_https_callback(self):
+        # Unset the env var to ensure fallback -- 2026-07-20: default is now
+        # the public HTTPS callback (Kelsa's OAuth server confirmed to
+        # accept it; see tools/kelsa_auth.py's REDIRECT_URI comment).
         old = os.environ.pop("KELSA_REDIRECT_URI", None)
         try:
             # Reimport to pick up the default
@@ -488,10 +491,20 @@ class TestRedirectUri:
             from tools import kelsa_auth
 
             importlib.reload(kelsa_auth)
-            assert kelsa_auth.REDIRECT_URI == "http://127.0.0.1:47562/callback"
+            assert kelsa_auth.REDIRECT_URI == "https://transcribe.ahfl.in/kelsa/auth/callback"
         finally:
             if old is not None:
                 os.environ["KELSA_REDIRECT_URI"] = old
+
+    def test_env_var_overrides_default_to_localhost_fallback(self, monkeypatch):
+        """KELSA_REDIRECT_URI can still force the old paste-back localhost
+        flow (e.g. for debugging if the HTTPS callback ever regresses)."""
+        monkeypatch.setenv("KELSA_REDIRECT_URI", "http://127.0.0.1:47562/callback")
+        import importlib
+        from tools import kelsa_auth
+
+        importlib.reload(kelsa_auth)
+        assert kelsa_auth.REDIRECT_URI == "http://127.0.0.1:47562/callback"
 
     def test_env_var_overrides_default(self, monkeypatch):
         monkeypatch.setenv("KELSA_REDIRECT_URI", "https://transcribe.ahfl.in/kelsa/auth/callback")
