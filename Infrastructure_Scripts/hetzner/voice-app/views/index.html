@@ -311,7 +311,7 @@
 
     <div class="model-toggle">
     <button id="nanoModelButton" class="format-button active"><i class="fas fa-bolt"></i> Universal-2</button>
-    <button id="standardModelButton" class="format-button"><i class="fas fa-brain"></i> Universal-3 Pro</button>
+    <button id="standardModelButton" class="format-button"><i class="fas fa-brain"></i> Universal-3.5 Pro</button>
     <button id="webApiButton" class="format-button"><i class="fas fa-globe"></i> Web API</button>
     <button id="whisperModelButton" class="format-button"><i class="fas fa-server"></i> Free Whisper</button>
     </div>
@@ -1001,7 +1001,7 @@
             log(`Submitting for transcription (${selectedModel})...`); statusElement.textContent = 'Submitting for transcription...';
             const transcriptOptions = { audio_url: audioUrl };
             if (selectedModel === 'universal2') transcriptOptions.speech_models = ['universal-2'];
-            else if (selectedModel === 'universal3pro') transcriptOptions.speech_models = ['universal-3-pro'];
+            else if (selectedModel === 'universal3pro') transcriptOptions.speech_models = ['universal-3-5-pro'];
             const assemblyaiLanguageCode = getAssemblyAILanguageCode(languageSelect.value);
             transcriptOptions.language_code = assemblyaiLanguageCode;
             const vocabWords = vocabTerms.map(t => t.word).filter(w => w.length > 0);
@@ -1154,7 +1154,7 @@
     }
 
     async function resubmitAudio() {
-        if (selectedModel === 'webapi') { log('Cannot resubmit with Web API.'); statusElement.textContent = 'Web API cannot resubmit. Switch to Universal-2/Universal-3 Pro/Free Whisper or record again.'; statusElement.className = 'status error'; return; }
+        if (selectedModel === 'webapi') { log('Cannot resubmit with Web API.'); statusElement.textContent = 'Web API cannot resubmit. Switch to Universal-2/Universal-3.5 Pro/Free Whisper or record again.'; statusElement.className = 'status error'; return; }
         if (audioBlob) {
             log('Resubmitting audio...'); statusElement.textContent = 'Resubmitting audio...'; statusElement.className = 'status processing';
             resubmitButton.disabled = true; resaveButton.disabled = true; copyTranscriptionButton.disabled = true; copyFormattedButton.disabled = true; reformatButton.disabled = true;
