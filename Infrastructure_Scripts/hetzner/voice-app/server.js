@@ -433,6 +433,17 @@ app.get('/api/assemblyai/transcript/:id', isAuthenticated, async (req, res) => {
       },
       null
     );
+    if (result.status === 200) {
+      try {
+        const parsed = JSON.parse(result.body.toString());
+        if (parsed.status === 'completed') {
+          console.log('[TRANSCRIPT-RESULT] id=' + req.params.id + ' text="' + (parsed.text || '').slice(0, 500) + '"');
+          if (parsed.word_boost_warning) {
+            console.log('[TRANSCRIPT-RESULT] word_boost_warning=' + parsed.word_boost_warning);
+          }
+        }
+      } catch (_) {}
+    }
     res.status(result.status).set('Content-Type', 'application/json').send(result.body);
   } catch (err) {
     res.status(502).json({ error: 'Transcript status proxy failed: ' + err.message });
@@ -451,15 +462,20 @@ app.post('/api/whisper/transcribe', isAuthenticated, async (req, res) => {
       try {
         const audioBuffer = Buffer.concat(chunks);
         const language = (req.query.language || '').toString();
+        const hotwords = (req.query.hotwords || '').toString();
+        const whisperHeaders = {
+          'Content-Type': req.headers['content-type'] || 'application/octet-stream',
+          'Content-Length': audioBuffer.length,
+          'X-Hermes-User-Email': req.user.email || 'unknown',
+          'X-Whisper-Language': language,
+        };
+        if (hotwords) {
+          whisperHeaders['X-Whisper-Hotwords'] = hotwords;
+        }
         const result = await proxyRequest(
           `${FREE_WHISPER_URL}/transcribe`,
           'POST',
-          {
-            'Content-Type': req.headers['content-type'] || 'application/octet-stream',
-            'Content-Length': audioBuffer.length,
-            'X-Hermes-User-Email': req.user.email || 'unknown',
-            'X-Whisper-Language': language,
-          },
+          whisperHeaders,
           audioBuffer
         );
         res.status(result.status).set('Content-Type', 'application/json').send(result.body);

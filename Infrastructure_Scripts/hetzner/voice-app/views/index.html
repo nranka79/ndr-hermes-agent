@@ -1004,6 +1004,17 @@
             else if (selectedModel === 'universal3pro') transcriptOptions.speech_models = ['universal-3-pro'];
             const assemblyaiLanguageCode = getAssemblyAILanguageCode(languageSelect.value);
             transcriptOptions.language_code = assemblyaiLanguageCode;
+            const vocabWords = vocabTerms.map(t => t.word).filter(w => w.length > 0);
+            if (vocabWords.length > 0) {
+                const boosted = [...new Set(vocabWords.flatMap(w => [w, w.toLowerCase()]))];
+                transcriptOptions.word_boost = boosted;
+                transcriptOptions.boost_param = "high";
+                transcriptOptions.custom_spelling = vocabWords.map(w => ({
+                    from: [w.toLowerCase(), w.toUpperCase(), w],
+                    to: w
+                }));
+                log(`Vocabulary boost enabled: ${boosted.length} terms, ${vocabWords.length} spelling rules`);
+            }
             log(`Language: ${languageSelect.value} -> AssemblyAI code: ${assemblyaiLanguageCode}`);
 
             const transcriptResponse = await fetchWithRetries(TRANSCRIPT_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(transcriptOptions) });
@@ -1025,7 +1036,10 @@
             statusElement.className = 'status processing';
             const languageCode = getAssemblyAILanguageCode(languageSelect.value);
             const contentType = (blobToTranscribe && blobToTranscribe.type) ? blobToTranscribe.type : 'application/octet-stream';
-            const url = `${WHISPER_TRANSCRIBE_URL}?language=${encodeURIComponent(languageCode)}`;
+            const vocabWords = vocabTerms.map(t => t.word).filter(w => w.length > 0);
+            let url = `${WHISPER_TRANSCRIBE_URL}?language=${encodeURIComponent(languageCode)}`;
+            const hotwordsStr = vocabWords.join(',');
+            if (hotwordsStr) url += `&hotwords=${encodeURIComponent(hotwordsStr)}`;
             log(`Language: ${languageSelect.value} -> Free Whisper code: ${languageCode}`);
 
             const response = await fetchWithRetries(
@@ -1278,6 +1292,7 @@
     log('Page loaded. Loading user info and checking microphone...');
     loadUserInfo();
     checkMicrophonePermission();
+    loadVocab();
     </script>
 </body>
 </html>
