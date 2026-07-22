@@ -6408,6 +6408,32 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _pending_clarify = None
         if _pending_clarify is not None:
             _raw_clarify_reply = (event.text or "").strip()
+            # Voice replies have no event.text yet — STT normally runs much
+            # later in this function, past the point where a pending clarify
+            # would already have fallen through to the PRIORITY interrupt
+            # path below and discarded the audio. Transcribe here so a
+            # spoken answer can resolve the clarify instead of being lost.
+            if not _raw_clarify_reply:
+                _clarify_media_urls = getattr(event, "media_urls", None) or []
+                _clarify_media_types = getattr(event, "media_types", None) or []
+                _clarify_audio_paths = [
+                    p for i, p in enumerate(_clarify_media_urls)
+                    if (
+                        event.message_type in (MessageType.VOICE, MessageType.AUDIO)
+                        or (i < len(_clarify_media_types) and _clarify_media_types[i].startswith("audio/"))
+                    )
+                ]
+                if _clarify_audio_paths:
+                    try:
+                        _clarify_transcribed, _ = await self._enrich_message_with_transcription(
+                            "", _clarify_audio_paths, user_id=source.user_id,
+                        )
+                        _raw_clarify_reply = (_clarify_transcribed or "").strip()
+                    except Exception as exc:
+                        logger.warning(
+                            "Clarify voice transcription failed for session %s: %s",
+                            _quick_key, exc,
+                        )
             # Skip slash commands — the user clearly wanted to issue a
             # command, not answer the clarify.  Leave the clarify pending
             # so the user can retry; if it times out, the agent unblocks
