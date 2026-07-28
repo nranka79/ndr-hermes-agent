@@ -67,12 +67,12 @@ def gws_fetch_token_tool(args, **kw):
     from tools.gws_auth import _current_telegram_id, _load_credentials_direct
 
     try:
-        tid = _current_telegram_id()
+        _current_telegram_id()  # verify session exists
     except ValueError as exc:
         return tool_error(str(exc))
 
     try:
-        creds = _load_credentials_direct(tid, service_name)
+        creds = _load_credentials_direct(service_name)
     except FileNotFoundError as exc:
         return tool_error(str(exc), needs_auth=True)
     except Exception as exc:
