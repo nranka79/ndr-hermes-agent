@@ -30,12 +30,12 @@ Usage from skill code (terminal or execute_code):
     from tools.gws_auth import build_service, get_auth_url
     svc = build_service("gmail", "v1")                   # default service
     svc = build_service("gmail", "v1", service_name="google-ahfl")
-    url = get_auth_url(telegram_id)                      # default service
-    url = get_auth_url(telegram_id, login_hint="ndr@ahfl.in",
-                       service_name="google-ahfl")
+    url = get_auth_url()                                 # default service
+    url = get_auth_url(login_hint="ndr@ahfl.in")
 
-The session telegram_id is read from HERMES_SESSION_USER_ID env var,
-which is injected into every subprocess by the gateway.
+The session user id is read from HERMES_SESSION_USER_ID env var,
+which is injected into every subprocess by the gateway. Callers must
+NEVER supply a user id -- identity comes from the session context ONLY.
 
 Sandboxed execute_code note (2026-07-18 vault impersonation fix): the
 execute_code sandbox no longer has direct socket access to gws-vault
@@ -313,17 +313,17 @@ def _detect_service_from_credentials(creds: Credentials) -> str | None:
     return None
 
 
-def load_credentials(telegram_id: str, service_name: str = _DEFAULT_SERVICE) -> Credentials:
+def load_credentials(service_name: str = _DEFAULT_SERVICE) -> Credentials:
     """Load stored OAuth credentials for the current session's user.
+
+    Identity is derived from the session context ONLY -- the session's
+    raw channel id (Telegram numeric id, etc.) is resolved to the canonical
+    vault user_id internally. Callers must never supply a user id.
 
     Raises :class:`FileNotFoundError` if no token exists -- caller should
     direct the user to authorize via :func:`get_auth_url`.
 
     Args:
-        telegram_id:  Session's raw channel id (Telegram numeric id, etc.).
-                      Resolved to the canonical vault user_id internally.
-                      Only used on the trusted (non-sandboxed) path -- see
-                      below.
         service_name: Vault service key (e.g. ``"google-draas"``).
 
     Sandboxed execute_code dispatch (2026-07-18 vault impersonation fix):
@@ -334,13 +334,9 @@ def load_credentials(telegram_id: str, service_name: str = _DEFAULT_SERVICE) -> 
     not passed into the sandbox's environment). Instead it routes through
     the ``gws_fetch_token`` RPC tool (tools/gws_fetch_token_tool.py) over the
     same sandbox<->gateway channel every other sandboxed tool call already
-    uses. That tool's handler runs in the TRUSTED main process and resolves
-    identity via :func:`_current_telegram_id` itself -- the *caller-supplied*
-    ``telegram_id`` argument is never sent across the RPC boundary at all,
-    so a sandboxed script cannot request anyone's token but the real
-    session's own. Outside the sandbox (the trusted main process -- e.g. a
-    Telegram-triggered tool call, the OAuth callback handler, or this RPC
-    tool's own handler), behavior is unchanged: talks to the vault directly.
+    uses. That tool's handler resolves identity via :func:`_current_telegram_id`
+    itself inside the trusted main process. Outside the sandbox (the trusted
+    main process), behavior is unchanged: talks to the vault directly.
     """
     if "HERMES_RPC_SOCKET" in os.environ:
         from hermes_tools import gws_fetch_token  # sandbox-generated stub
@@ -351,10 +347,10 @@ def load_credentials(telegram_id: str, service_name: str = _DEFAULT_SERVICE) -> 
             raise RuntimeError(resp["error"])
         token_json = resp["token_json"] if isinstance(resp, dict) else resp
         return Credentials.from_authorized_user_info(json.loads(token_json))
-    return _load_credentials_direct(telegram_id, service_name)
+    return _load_credentials_direct(service_name)
 
 
-def _load_credentials_direct(telegram_id: str, service_name: str = _DEFAULT_SERVICE) -> Credentials:
+def _load_credentials_direct(service_name: str = _DEFAULT_SERVICE) -> Credentials:
     """Load stored OAuth credentials directly from the gws-vault daemon.
 
     TRUSTED-PROCESS ONLY. Never call this from code that might run inside
@@ -381,7 +377,8 @@ def _load_credentials_direct(telegram_id: str, service_name: str = _DEFAULT_SERV
     current ``HERMES_GWS_SCOPES`` list, since that's a fresh consent grant).
     """
     from tools import gws_vault_client as vault
-    uid = canonical_uid(telegram_id)
+    tid = _current_telegram_id()
+    uid = canonical_uid(tid)
     token_json = vault.get_token(uid, service_name, session_uid=uid)
     creds = Credentials.from_authorized_user_info(json.loads(token_json))
     if creds.expired and creds.refresh_token:
@@ -402,28 +399,24 @@ def _load_credentials_direct(telegram_id: str, service_name: str = _DEFAULT_SERV
     return creds
 
 
-def save_credentials(user_id: str, creds: Credentials, service_name: str = _DEFAULT_SERVICE) -> None:
+def save_credentials(creds: Credentials, service_name: str = _DEFAULT_SERVICE) -> None:
     """Store OAuth credentials in the gws-vault daemon under the given service key.
 
-    ``user_id`` must already be the canonical vault user_id (callers resolve it
-    via :func:`canonical_uid` before storing).
+    The canonical vault user_id is derived from the session context.
     """
     from tools import gws_vault_client as vault
-    vault.set_token(str(user_id), service_name, creds.to_json())
+    from tools.gws_auth import canonical_uid
+    tid = _current_telegram_id()
+    uid = canonical_uid(tid)
+    vault.set_token(uid, service_name, creds.to_json())
 
 
-def build_service(api: str, version: str, telegram_id: str = None, service_name: str = _DEFAULT_SERVICE):
+def build_service(api: str, version: str, service_name: str = _DEFAULT_SERVICE):
     """
     Build a Google API client using the stored per-user OAuth token.
 
-    Identity comes from the SESSION ONLY (:func:`_current_telegram_id`). The
-    ``telegram_id`` parameter is retained for backward compatibility but no
-    longer selects the user: a caller-supplied value that differs from the
-    session identity is ignored with a warning. This closes the impersonation
-    hole where skill scripts / execute_code passed a hardcoded id (2026-07-13:
-    skill scripts hardcoding one user's telegram id both broke after the
-    canonical-uid migration and would have read that user's tokens from any
-    other user's session).
+    Identity comes from the SESSION ONLY (:func:`_current_telegram_id`).
+    Callers must never supply a user id.
 
     Works identically inside or outside the execute_code sandbox --
     :func:`load_credentials` handles the dispatch (direct vault call in the
@@ -433,37 +426,30 @@ def build_service(api: str, version: str, telegram_id: str = None, service_name:
     Args:
         api:          e.g. ``"gmail"``, ``"calendar"``, ``"drive"``, ``"sheets"``
         version:      e.g. ``"v1"``, ``"v3"``, ``"v4"``
-        telegram_id:  DEPRECATED — ignored unless equal to the session identity.
         service_name: vault service key (e.g. ``"google-draas"``).
     """
-    tid = _current_telegram_id()
-    if telegram_id and str(telegram_id).strip() != tid:
-        logger.warning(
-            "build_service: ignoring caller-supplied telegram_id=%r -- "
-            "identity always comes from the session (%r). Remove the "
-            "telegram_id argument from the caller.",
-            telegram_id, tid,
-        )
-    creds = load_credentials(tid, service_name)
+    creds = load_credentials(service_name)
     return build(api, version, credentials=creds)
 
 
-def get_auth_url(telegram_id: str, login_hint: str = None) -> str:
-    """Generate an OAuth authorization URL for a user.
+def get_auth_url(login_hint: str = None) -> str:
+    """Generate an OAuth authorization URL for the current session's user.
+
+    Identity is derived from the session context ONLY. The callback handler
+    will auto-detect which Google account the user authorizes and store the
+    token under the correct vault service key -- no need to encode anything
+    extra in the OAuth ``state``.
 
     Hermes is a confidential server-side client (client_secret never leaves
     the server), so PKCE is not needed and is explicitly disabled to avoid
     library-version quirks in the code_verifier exchange.
 
-    The callback handler will auto-detect which Google account the user
-    authorizes and store the token under the correct vault service key --
-    no need to encode anything extra in the OAuth ``state``.
-
     Args:
-        telegram_id:  Telegram numeric ID of the user authorizing.
         login_hint:   Email to pre-fill in Google's login form.  If omitted,
                       uses the user's registered email from the user registry.
     """
+    tid = _current_telegram_id()
+
     flow = Flow.from_client_config(
         _client_config(),
         scopes=HERMES_GWS_SCOPES,
@@ -474,7 +460,7 @@ def get_auth_url(telegram_id: str, login_hint: str = None) -> str:
     auth_kwargs = {
         "access_type": "offline",
         "prompt": "consent",
-        "state": str(telegram_id),
+        "state": str(tid),
     }
 
     if login_hint:
@@ -482,7 +468,7 @@ def get_auth_url(telegram_id: str, login_hint: str = None) -> str:
     else:
         try:
             from tools._user_registry import get_user_config
-            user = get_user_config(str(telegram_id))
+            user = get_user_config(str(tid))
             if user and user.get("email"):
                 auth_kwargs["login_hint"] = user["email"]
         except Exception:
@@ -492,13 +478,14 @@ def get_auth_url(telegram_id: str, login_hint: str = None) -> str:
     return url
 
 
-def exchange_and_store(telegram_id: str, code: str, service_name: str | None = None) -> str:
+def exchange_and_store(code: str, service_name: str | None = None) -> str:
     """Exchange an auth code for tokens and store them in the vault.
 
-    Tokens are keyed by the **canonical** vault user_id (resolved from the
-    session's raw channel id via :func:`canonical_uid`), so a token authorized
-    from any channel (Telegram, Open WebUI) is readable from every channel and
-    the read path can satisfy the vault's ``session_uid == user_id`` check.
+    Identity is derived from the session context ONLY. Tokens are keyed by
+    the **canonical** vault user_id (resolved from the session's raw channel
+    id via :func:`canonical_uid`), so a token authorized from any channel
+    (Telegram, Open Web UI) is readable from every channel and the read path
+    can satisfy the vault's ``session_uid == user_id`` check.
 
     The vault service key is chosen from the *authorized* Google account's
     email (decoded from the id_token) via ``EMAIL_TO_SERVICE`` — NOT from any
@@ -508,19 +495,21 @@ def exchange_and_store(telegram_id: str, code: str, service_name: str | None = N
     Returns the chosen service name (or ``UNKNOWN:{email}:{svc}`` for accounts
     not yet mapped in ``EMAIL_TO_SERVICE``).
     """
+    tid = _current_telegram_id()
+
     flow = Flow.from_client_config(
         _client_config(),
         scopes=HERMES_GWS_SCOPES,
         redirect_uri=_REDIRECT_URI,
-        state=str(telegram_id),
+        state=str(tid),
     )
     flow.fetch_token(code=code)
 
     # Resolve the session's raw channel id → canonical vault user_id.
-    uid = canonical_uid(telegram_id)
+    uid = canonical_uid(tid)
 
     if service_name is not None:
-        save_credentials(uid, flow.credentials, service_name)
+        save_credentials(flow.credentials, service_name)
         logger.info("GWS token stored user_id=%s service=%s", uid, service_name)
         return service_name
 
@@ -532,7 +521,7 @@ def exchange_and_store(telegram_id: str, code: str, service_name: str | None = N
     if email:
         svc = EMAIL_TO_SERVICE.get(email)
         if svc:
-            save_credentials(uid, flow.credentials, svc)
+            save_credentials(flow.credentials, svc)
             logger.info(
                 "GWS token stored user_id=%s service=%s (email=%s)", uid, svc, email
             )
@@ -542,7 +531,7 @@ def exchange_and_store(telegram_id: str, code: str, service_name: str | None = N
         # is never lost.  Service names must match ^[a-z][a-z0-9-]{0,49}$.
         local = re.sub(r"[^a-z0-9-]+", "-", email.split("@")[0].lower()).strip("-") or "acct"
         fallback_svc = f"google-{local}"
-        save_credentials(uid, flow.credentials, fallback_svc)
+        save_credentials(flow.credentials, fallback_svc)
         logger.info(
             "GWS token stored user_id=%s fallback_service=%s email=%s",
             uid, fallback_svc, email,
@@ -550,26 +539,29 @@ def exchange_and_store(telegram_id: str, code: str, service_name: str | None = N
         return f"UNKNOWN:{email}:{fallback_svc}"
 
     # No id_token at all — last resort default key.
-    save_credentials(uid, flow.credentials, _DEFAULT_SERVICE)
+    save_credentials(flow.credentials, _DEFAULT_SERVICE)
     logger.warning(
-        "No id_token for telegram_id=%s — stored user_id=%s service=%s",
-        telegram_id, uid, _DEFAULT_SERVICE,
+        "No id_token for user_id=%s — stored service=%s",
+        uid, _DEFAULT_SERVICE,
     )
     return _DEFAULT_SERVICE
 
 
-def has_token(telegram_id: str, service_name: str = _DEFAULT_SERVICE) -> bool:
-    """Check if a token exists for the given user and service in the vault."""
+def has_token(service_name: str = _DEFAULT_SERVICE) -> bool:
+    """Check if a token exists for the current session's user in the vault.
+    Identity is derived from the session context ONLY."""
     from tools import gws_vault_client as vault
-    uid = canonical_uid(telegram_id)
+    tid = _current_telegram_id()
+    uid = canonical_uid(tid)
     return vault.has_token(uid, service_name, session_uid=uid)
 
 
-def register_email_service(email: str, service_name: str, telegram_id: str) -> str:
+def register_email_service(email: str, service_name: str) -> str:
     """Register an email-to-service mapping and rename any fallback token.
 
     Call this when the user tells the agent what service name to use for an
     account that was authorized under a fallback key (``UNKNOWN:...`` result).
+    Identity is derived from the session context ONLY.
 
     1. Adds ``email -> service_name``  to ``EMAIL_TO_SERVICE``.
     2. If a fallback key ``google-{local}`` exists, moves the token
@@ -584,7 +576,8 @@ def register_email_service(email: str, service_name: str, telegram_id: str) -> s
 
     EMAIL_TO_SERVICE[email] = service_name
 
-    uid = canonical_uid(telegram_id)
+    tid = _current_telegram_id()
+    uid = canonical_uid(tid)
 
     # Check for a fallback key (must match the vault-valid form used above).
     local = re.sub(r"[^a-z0-9-]+", "-", email.split("@")[0].lower()).strip("-") or "acct"

@@ -52,6 +52,24 @@ def _fresh_cache():
 
 
 @pytest.fixture
+def kelsa_session(monkeypatch):
+    """Set session context + bypass kelsa_tool-only guard so tests can call
+    kelsa_auth functions directly (simulating an authenticated session)."""
+    from gateway.session_context import set_session_vars, clear_session_vars
+    tokens = set_session_vars(user_id="7449813913")
+    monkeypatch.setattr(
+        "tools.kelsa_auth._reject_if_not_called_from_kelsa_tool",
+        lambda op: None,
+    )
+    monkeypatch.setattr(
+        "tools.kelsa_auth._reject_if_sandboxed",
+        lambda op: None,
+    )
+    yield
+    clear_session_vars(tokens)
+
+
+@pytest.fixture
 def fake_vault(monkeypatch):
     """Install a fake gws_vault_client that stores tokens in a local dict.
     Mirrors the pattern from ``test_gws_auth_canonical.py``."""
@@ -137,26 +155,32 @@ def fake_dcr_client(monkeypatch, tmp_path):
 class TestAuthUrlCache:
     """Tests for the ``get_auth_url()`` cache (Layer 1)."""
 
-    def test_repeat_call_returns_same_url_within_cooldown(self, fake_dcr_client):
+    def test_repeat_call_returns_same_url_within_cooldown(self, kelsa_session, fake_dcr_client):
         from tools.kelsa_auth import get_auth_url
 
-        url1 = get_auth_url("7449813913")
-        url2 = get_auth_url("7449813913")
+        url1 = get_auth_url()
+        url2 = get_auth_url()
 
         assert url1 == url2, (
             "Second call within cooldown should return the same URL "
             "(same PKCE verifier + challenge)"
         )
 
-    def test_different_users_get_different_urls(self, fake_dcr_client):
+    def test_different_users_get_different_urls(self, kelsa_session, fake_dcr_client):
         from tools.kelsa_auth import get_auth_url
+        from gateway.session_context import set_session_vars, clear_session_vars
 
-        url_a = get_auth_url("7449813913")
-        url_b = get_auth_url("9999999999")
+        url_a = get_auth_url()
 
-        assert url_a != url_b, "Different users must get different URLs"
+        # Switch to a different user
+        tokens = set_session_vars(user_id="9999999999")
+        try:
+            url_b = get_auth_url()
+            assert url_a != url_b, "Different users must get different URLs"
+        finally:
+            clear_session_vars(tokens)
 
-    def test_cache_cleared_after_exchange(self, fake_dcr_client, fake_vault, monkeypatch):
+    def test_cache_cleared_after_exchange(self, kelsa_session, fake_dcr_client, fake_vault, monkeypatch):
         from tools.kelsa_auth import get_auth_url, exchange_and_store, _auth_url_cache, TOKEN_ENDPOINT
 
         # Stub the token exchange HTTP call so it doesn't hit Kelsa's real server.
@@ -183,23 +207,22 @@ class TestAuthUrlCache:
 
         monkeypatch.setattr(httpx, "post", _fake_post)
 
-        url1 = get_auth_url("7449813913")
-        assert "7449813913" in _auth_url_cache
+        url1 = get_auth_url()
+        assert len(_auth_url_cache) == 1
 
         exchange_and_store(
-            "7449813913",
             code="test-code-123",
             code_verifier="test-verifier",
         )
 
-        assert "7449813913" not in _auth_url_cache, (
+        assert len(_auth_url_cache) == 0, (
             "Cache should be cleared after a successful token exchange"
         )
 
-    def test_cache_expires_after_cooldown(self, fake_dcr_client, monkeypatch):
+    def test_cache_expires_after_cooldown(self, kelsa_session, fake_dcr_client, monkeypatch):
         from tools.kelsa_auth import get_auth_url, _auth_url_cache, _AUTH_URL_COOLDOWN_SECONDS
 
-        url1 = get_auth_url("7449813913")
+        url1 = get_auth_url()
 
         # Advance time past cooldown
         future = time.time() + _AUTH_URL_COOLDOWN_SECONDS + 10
@@ -209,66 +232,66 @@ class TestAuthUrlCache:
 
         monkeypatch.setattr("tools.kelsa_auth.time.time", _fake_time)
 
-        url2 = get_auth_url("7449813913")
+        url2 = get_auth_url()
         assert url1 != url2, (
             "After cooldown expires, a fresh URL with a new PKCE verifier "
             "should be generated"
         )
 
-    def test_clear_auth_url_cache_removes_entry(self, fake_dcr_client):
+    def test_clear_auth_url_cache_removes_entry(self, kelsa_session, fake_dcr_client):
         from tools.kelsa_auth import get_auth_url, _clear_auth_url_cache, _auth_url_cache
 
-        get_auth_url("7449813913")
-        assert "7449813913" in _auth_url_cache
+        get_auth_url()
+        assert len(_auth_url_cache) == 1
 
-        _clear_auth_url_cache("7449813913")
-        assert "7449813913" not in _auth_url_cache
+        _clear_auth_url_cache()
+        assert len(_auth_url_cache) == 0
 
-    def test_clear_auth_url_cache_noop_for_unknown(self):
+    def test_clear_auth_url_cache_noop_for_unknown(self, kelsa_session):
         from tools.kelsa_auth import _clear_auth_url_cache, _auth_url_cache
 
-        _clear_auth_url_cache("nonexistent")
+        _clear_auth_url_cache()
         assert True  # should not raise
 
-    def test_has_valid_cached_url_true_within_cooldown(self, fake_dcr_client):
+    def test_has_valid_cached_url_true_within_cooldown(self, kelsa_session, fake_dcr_client):
         from tools.kelsa_auth import get_auth_url, _has_valid_cached_url
 
-        get_auth_url("7449813913")
-        assert _has_valid_cached_url("7449813913") is True
+        get_auth_url()
+        assert _has_valid_cached_url() is True
 
-    def test_has_valid_cached_url_false_after_clear(self, fake_dcr_client):
+    def test_has_valid_cached_url_false_after_clear(self, kelsa_session, fake_dcr_client):
         from tools.kelsa_auth import get_auth_url, _has_valid_cached_url, _clear_auth_url_cache
 
-        get_auth_url("7449813913")
-        _clear_auth_url_cache("7449813913")
-        assert _has_valid_cached_url("7449813913") is False
+        get_auth_url()
+        _clear_auth_url_cache()
+        assert _has_valid_cached_url() is False
 
-    def test_has_valid_cached_url_false_never_called(self):
+    def test_has_valid_cached_url_false_never_called(self, kelsa_session):
         from tools.kelsa_auth import _has_valid_cached_url
 
-        assert _has_valid_cached_url("never-called") is False
+        assert _has_valid_cached_url() is False
 
-    def test_notify_context_set_and_get(self):
+    def test_notify_context_set_and_get(self, kelsa_session):
         from tools.kelsa_auth import set_notify_context, get_notify_context
 
-        set_notify_context("7449813913", "telegram", "7449813913")
-        ctx = get_notify_context("7449813913")
+        set_notify_context("telegram", "7449813913")
+        ctx = get_notify_context()
         assert ctx == {"platform": "telegram", "chat_id": "7449813913"}
 
-    def test_notify_context_returns_empty_for_unknown(self):
+    def test_notify_context_returns_empty_for_unknown(self, kelsa_session):
         from tools.kelsa_auth import get_notify_context
 
-        assert get_notify_context("nobody") == {}
+        assert get_notify_context() == {}
 
-    def test_notify_context_cleared_with_cache(self):
+    def test_notify_context_cleared_with_cache(self, kelsa_session):
         from tools.kelsa_auth import (
             set_notify_context, get_notify_context,
             _clear_auth_url_cache,
         )
 
-        set_notify_context("7449813913", "telegram", "7449813913")
-        _clear_auth_url_cache("7449813913")
-        assert get_notify_context("7449813913") == {}
+        set_notify_context("telegram", "7449813913")
+        _clear_auth_url_cache()
+        assert get_notify_context() == {}
 
     def test_notify_context_set_during_login(self, fake_dcr_client, fake_vault):
         """Verify that kelsa_login stores the notification context."""
@@ -284,7 +307,7 @@ class TestAuthUrlCache:
         try:
             kelsa_login_tool({})
 
-            ctx = get_notify_context("7449813913")
+            ctx = get_notify_context()
             assert "platform" in ctx
             # CLI puts the chat_id as empty string by default
             assert ctx.get("chat_id") == "session-1"
@@ -523,7 +546,7 @@ class TestRedirectUri:
 class TestDcrRegistration:
     """Tests that the DCR client re-registers when the redirect_uri changes."""
 
-    def test_re_registers_on_redirect_uri_change(self, fake_dcr_client, monkeypatch, tmp_path):
+    def test_re_registers_on_redirect_uri_change(self, kelsa_session, fake_dcr_client, monkeypatch, tmp_path):
         """When REDIRECT_URI changes, the cached DCR client should be
         discarded and a new one registered."""
         import tools.kelsa_auth as ka
@@ -534,7 +557,7 @@ class TestDcrRegistration:
         # Set a different redirect_uri
         monkeypatch.setattr(ka, "REDIRECT_URI", "https://transcribe.ahfl.in/kelsa/auth/callback")
 
-        url = ka.get_auth_url("7449813913")
+        url = ka.get_auth_url()
         # The redirect_uri is URL-encoded in the query string; decode and check.
         parsed = urlparse(url)
         params = parse_qs(parsed.query)
@@ -558,7 +581,7 @@ class TestDcrRegistration:
 class TestExchangeAndStore:
     """Tests for the token exchange and vault storage path."""
 
-    def test_exchange_stores_token_in_vault(self, fake_dcr_client, fake_vault, monkeypatch):
+    def test_exchange_stores_token_in_vault(self, kelsa_session, fake_dcr_client, fake_vault, monkeypatch):
         store, _ = fake_vault
 
         import tools.kelsa_auth as ka
@@ -588,7 +611,6 @@ class TestExchangeAndStore:
         monkeypatch.setattr(httpx, "post", _fake_post)
 
         ka.exchange_and_store(
-            "7449813913",
             code="test-code-123",
             code_verifier="test-verifier-abc",
         )
@@ -597,7 +619,7 @@ class TestExchangeAndStore:
             "Token should be stored in vault under the canonical uid"
         )
 
-    def test_exchange_failure_raises(self, fake_dcr_client, fake_vault, monkeypatch):
+    def test_exchange_failure_raises(self, kelsa_session, fake_dcr_client, fake_vault, monkeypatch):
         import tools.kelsa_auth as ka
 
         original_post = httpx.post
@@ -625,7 +647,6 @@ class TestExchangeAndStore:
 
         with pytest.raises(RuntimeError, match="Kelsa token exchange failed"):
             ka.exchange_and_store(
-                "7449813913",
                 code="bad-code",
                 code_verifier="bad-verifier",
             )

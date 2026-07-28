@@ -94,8 +94,7 @@ def _vault_credentials():
     gws-vault, keyed by the CURRENT session's user (HERMES_SESSION_USER_ID,
     same env var gws_auth.py reads everywhere else) + whichever service_name
     call() set for this dispatch."""
-    telegram_id = gws_auth._current_telegram_id()
-    return gws_auth.load_credentials(telegram_id, _current_service_name)
+    return gws_auth.load_credentials(_current_service_name)
 
 
 # The entire patch. Every one of the skill's 25 operation functions calls
@@ -326,9 +325,7 @@ _LIBRARY_API = "https://photoslibrary.googleapis.com/v1"
 def _photos_session(service_name: str = ""):
     """AuthorizedSession for one account — same vault path as everything else."""
     from google.auth.transport.requests import AuthorizedSession
-    creds = gws_auth.load_credentials(
-        gws_auth._current_telegram_id(), service_name or _current_service_name
-    )
+    creds = gws_auth.load_credentials(service_name or _current_service_name)
     return AuthorizedSession(creds)
 
 

@@ -138,7 +138,7 @@ def gws_resolve_account_tool(args, **kw):
         results = []
         for svc, email in seen_services.items():
             try:
-                has_tok = gws_auth.has_token(tid, svc)
+                has_tok = gws_auth.has_token(svc)
             except Exception as e:
                 results.append({
                     "email": email, "service_name": svc,
@@ -154,7 +154,7 @@ def gws_resolve_account_tool(args, **kw):
 
     svc = resolved["service_name"]
     try:
-        has_tok = gws_auth.has_token(tid, svc)
+        has_tok = gws_auth.has_token(svc)
     except Exception as e:
         return tool_error(f"Vault lookup failed for service_name={svc}: {e}")
 

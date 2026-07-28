@@ -46,8 +46,9 @@ CORRECT_OAUTH_URL = (
 )
 
 
-def _stub_get_auth_url(login_hint=None, telegram_id="1000000001"):
-    """Return a callable that mimics ``gws_auth.get_auth_url`` and records its args.
+def _stub_get_auth_url():
+    """Return a callable that mimics ``gws_auth.get_auth_url`` (now takes
+    login_hint only; identity comes from session context) and records its args.
 
     Use as ``patch("tools.gws_auth.get_auth_url", new=stub)`` (NOT ``wraps=``:
     a MagicMock's ``.calls`` attribute is an auto-created child mock, so the
@@ -55,8 +56,8 @@ def _stub_get_auth_url(login_hint=None, telegram_id="1000000001"):
     """
     calls = []
 
-    def _impl(tid, login_hint=None):
-        calls.append({"telegram_id": tid, "login_hint": login_hint})
+    def _impl(login_hint=None):
+        calls.append({"login_hint": login_hint})
         return CORRECT_OAUTH_URL
 
     _impl.calls = calls
@@ -308,7 +309,7 @@ class TestChannelRouting:
         mock_md.assert_called_once()
 
     def test_passes_login_hint_to_url_builder(self, patched_env):
-        """The URL builder is called with telegram_id + login_hint."""
+        """The URL builder is called with login_hint (identity from session)."""
         from tools import send_oauth_url
 
         stub = _stub_get_auth_url()
@@ -322,9 +323,8 @@ class TestChannelRouting:
                 login_hint="ndr@draas.com",
             )
 
-        # The URL builder was called with the session user id + login hint
+        # The URL builder was called with login_hint; identity from session
         assert len(stub.calls) == 1
-        assert stub.calls[0]["telegram_id"] == "1000000001"
         assert stub.calls[0]["login_hint"] == "ndr@draas.com"
 
 
@@ -401,7 +401,7 @@ class TestSessionIdentityOnly:
         assert schema["parameters"]["required"] == []
 
     def test_stray_telegram_id_in_args_is_ignored(self, patched_env):
-        """Handler drops a model-supplied telegram_id; state uses session id."""
+        """Handler ignores a model-supplied telegram_id; identity from session."""
         from tools import send_oauth_url
         from tools.registry import registry
 
@@ -416,8 +416,8 @@ class TestSessionIdentityOnly:
                      "login_hint": "psingh@draas.com"})
 
         assert len(stub.calls) == 1
-        # Session user (1000000001 in the stub), NOT the model-supplied id.
-        assert stub.calls[0]["telegram_id"] == "1000000001"
+        # get_auth_url takes no telegram_id param; identity comes from session
+        assert "telegram_id" not in stub.calls[0]
 
     def test_no_session_user_returns_error_without_building_url(self, monkeypatch):
         monkeypatch.setenv("HERMES_OAUTH_CLIENT_ID", "x")
@@ -448,7 +448,8 @@ class TestSessionIdentityOnly:
             send_oauth_url.send_oauth_url()
 
         assert len(stub.calls) == 1
-        assert stub.calls[0]["telegram_id"] == "2000000002"
+        # get_auth_url takes no telegram_id; identity resolved from session
+        assert stub.calls[0]["login_hint"] is None
 
 
 # ---------------------------------------------------------------------------

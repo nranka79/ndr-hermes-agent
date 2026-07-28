@@ -4165,10 +4165,14 @@ class APIServerAdapter(BasePlatformAdapter):
 
         telegram_id = raw_state.strip()
 
+        # Set session context so exchange_and_store can derive identity
+        # from the session rather than from a caller-supplied parameter.
+        from gateway.session_context import set_session_vars, clear_session_vars
+        tokens = set_session_vars(user_id=telegram_id)
         try:
             from tools.gws_auth import exchange_and_store as _exchange_and_store
 
-            result = _exchange_and_store(telegram_id, code)
+            result = _exchange_and_store(code)
 
             if result.startswith("UNKNOWN:"):
                 # result = "UNKNOWN:{email}:{fallback_service}"
@@ -4210,6 +4214,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 content_type="text/html",
                 text=f"<h1>Error</h1><p>Authorization failed: {exc}</p>",
             )
+        finally:
+            clear_session_vars(tokens)
 
     async def _handle_kelsa_auth_callback(self, request: "web.Request") -> "web.Response":
         """GET /kelsa/auth/callback — receives OAuth code from Kelsa, stores token.
@@ -4248,6 +4254,11 @@ class APIServerAdapter(BasePlatformAdapter):
         telegram_id = telegram_id.strip()
         code_verifier = code_verifier.strip()
 
+        # Set session context so exchange_and_store / _clear_auth_url_cache /
+        # get_notify_context derive identity from the session rather than
+        # from a caller-supplied parameter.
+        from gateway.session_context import set_session_vars, clear_session_vars
+        tokens = set_session_vars(user_id=telegram_id)
         try:
             from tools.kelsa_auth import (
                 exchange_and_store,
@@ -4255,8 +4266,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 get_notify_context,
             )
 
-            exchange_and_store(telegram_id, code, code_verifier)
-            _clear_auth_url_cache(telegram_id)
+            exchange_and_store(code, code_verifier)
+            _clear_auth_url_cache()
 
             # Clear the kelsa_tool pending-auth guard too. Previously only
             # kelsa_complete_login_tool (the manual paste-back path) cleared
@@ -4282,7 +4293,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
             # Route the success notification through the same channel the
             # user initiated from (Telegram, Open Web UI, WhatsApp, etc.).
-            notify_ctx = get_notify_context(telegram_id)
+            notify_ctx = get_notify_context()
             init_platform = notify_ctx.get("platform", "")
             init_chat_id = notify_ctx.get("chat_id", "")
 
@@ -4320,6 +4331,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 content_type="text/html",
                 text=f"<h1>Error</h1><p>Authorization failed: {exc}</p>",
             )
+        finally:
+            clear_session_vars(tokens)
 
     async def _notify_telegram_user(self, telegram_id: str, text: str) -> None:
         bot_token = os.environ.get("TELEGRAM_BOT_TOKEN", "")

@@ -87,11 +87,11 @@ mcp:design) -- every user authorizes full scope, no partial grants.
 
 Usage:
     from tools.kelsa_auth import get_auth_url, exchange_and_store, has_token, get_valid_access_token, parse_callback_paste
-    url = get_auth_url(telegram_id)                            # send to user
+    url = get_auth_url()                                        # send to user (identity from session)
     code, state = parse_callback_paste(pasted_text)             # from kelsa_complete_login
-    exchange_and_store(telegram_id, code, code_verifier)        # code_verifier extracted from state
-    has_token(telegram_id)                                      # bool
-    token = get_valid_access_token(telegram_id)                 # refreshes if needed
+    exchange_and_store(code, code_verifier)                     # identity from session
+    has_token()                                                 # bool
+    token = get_valid_access_token()                            # refreshes if needed
 """
 
 from __future__ import annotations
@@ -175,23 +175,45 @@ _AUTH_URL_COOLDOWN_SECONDS = 300
 _notify_context: dict[str, dict[str, str]] = {}
 
 
+def _session_telegram_id() -> str:
+    """Get the raw channel id of the active session user — session context ONLY.
+
+    Uses ``gateway.session_context.get_gws_identity_env`` (per-task ContextVar
+    with os.environ fallback for subprocess/cron contexts, plus the cron
+    job-owner fallback). This is the single source of user identity for
+    every Kelsa token operation; callers must never supply their own id.
+    """
+    try:
+        from gateway.session_context import get_gws_identity_env
+        tid = get_gws_identity_env().strip()
+    except Exception:
+        tid = os.environ.get("HERMES_SESSION_USER_ID", "").strip()
+    if not tid:
+        raise ValueError(
+            "No session user context (HERMES_SESSION_USER_ID not set). "
+            "Cannot determine which user's token to load."
+        )
+    return tid
+
+
 def _client_info_path():
     from tools.mcp_oauth import _get_token_dir
     return _get_token_dir() / _CLIENT_INFO_FILENAME
 
 
-def _clear_auth_url_cache(telegram_id: str) -> None:
+def _clear_auth_url_cache() -> None:
     """Remove the cached auth URL for this user, forcing the next call to
     ``get_auth_url()`` to generate a fresh PKCE challenge + URL.
 
     Called after a successful token exchange (the cached URL is one-time use)
     or when a cooldown timeout is desired (e.g. user wants a fresh URL).
     """
-    _auth_url_cache.pop(telegram_id, None)
-    _notify_context.pop(telegram_id, None)
+    tid = _session_telegram_id()
+    _auth_url_cache.pop(tid, None)
+    _notify_context.pop(tid, None)
 
 
-def _has_valid_cached_url(telegram_id: str) -> bool:
+def _has_valid_cached_url() -> bool:
     """Return True if there is a non-expired cached auth URL for this user.
 
     Used by ``kelsa_tool._pending_auth`` guard to avoid blocking a fresh
@@ -199,30 +221,33 @@ def _has_valid_cached_url(telegram_id: str) -> bool:
     the ``_pending_auth`` set still has the user's id (e.g. the user
     abandoned the first attempt and came back later).
     """
-    cached = _auth_url_cache.get(telegram_id)
+    tid = _session_telegram_id()
+    cached = _auth_url_cache.get(tid)
     if cached is None:
         return False
     return (time.time() - cached[0]) < _AUTH_URL_COOLDOWN_SECONDS
 
 
-def set_notify_context(telegram_id: str, platform: str, chat_id: str) -> None:
+def set_notify_context(platform: str, chat_id: str) -> None:
     """Record which platform + chat the user initiated the Kelsa auth from.
 
     The callback handler (api_server.py) reads this to send the success
     notification back through the same channel (Telegram, Open Web UI,
     CLI, WhatsApp, Slack, etc.) instead of always using Telegram.
     """
-    _notify_context[telegram_id] = {"platform": platform, "chat_id": chat_id}
-    logger.debug("notify_context set for %s: platform=%s chat_id=%s", telegram_id, platform, chat_id)
+    tid = _session_telegram_id()
+    _notify_context[tid] = {"platform": platform, "chat_id": chat_id}
+    logger.debug("notify_context set for %s: platform=%s chat_id=%s", tid, platform, chat_id)
 
 
-def get_notify_context(telegram_id: str) -> dict[str, str]:
+def get_notify_context() -> dict[str, str]:
     """Return the notification context for this user, or an empty dict.
 
     Called by the callback handler after a successful token exchange to
     determine where to send the "authorized" message.
     """
-    return _notify_context.get(telegram_id, {})
+    tid = _session_telegram_id()
+    return _notify_context.get(tid, {})
 
 
 def _get_or_register_client() -> str:
@@ -356,10 +381,10 @@ def _reject_if_sandboxed(op_name: str) -> None:
         )
 
 
-def get_auth_url(telegram_id: str) -> str:
-    """Build a Kelsa OAuth authorization URL for a user.
+def get_auth_url() -> str:
+    """Build a Kelsa OAuth authorization URL for the current session's user.
 
-    **Idempotent:** if called again for the same ``telegram_id`` within
+    **Idempotent:** if called again for the same user within
     ``_AUTH_URL_COOLDOWN_SECONDS`` (5 minutes), returns the **same** URL
     with the **same** PKCE code_challenge. This prevents the LLM from
     generating multiple auth buttons per user (Layer 1 of the
@@ -374,20 +399,21 @@ def get_auth_url(telegram_id: str) -> str:
     base64 (no ':'), so splitting on the first ':' when parsing is safe.
     """
     _reject_if_not_called_from_kelsa_tool("get_auth_url")
+    tid = _session_telegram_id()
     now = time.time()
-    cached = _auth_url_cache.get(telegram_id)
+    cached = _auth_url_cache.get(tid)
     if cached and (now - cached[0]) < _AUTH_URL_COOLDOWN_SECONDS:
         logger.info(
             "Reusing cached Kelsa auth URL for user %s "
             "(%.0f seconds remaining in cooldown)",
-            telegram_id,
+            tid,
             _AUTH_URL_COOLDOWN_SECONDS - (now - cached[0]),
         )
         return cached[1]
 
     client_id = _get_or_register_client()
     verifier, challenge = _generate_pkce()
-    state = f"{telegram_id}:{verifier}"
+    state = f"{tid}:{verifier}"
 
     params = {
         "response_type": "code",
@@ -406,10 +432,10 @@ def get_auth_url(telegram_id: str) -> str:
         "resource": MCP_URL,
     }
     url = f"{AUTHORIZATION_ENDPOINT}?{urlencode(params)}"
-    _auth_url_cache[telegram_id] = (time.time(), url)
+    _auth_url_cache[tid] = (time.time(), url)
     logger.info(
         "Generated fresh Kelsa auth URL for user %s (cache expires in %ds)",
-        telegram_id, _AUTH_URL_COOLDOWN_SECONDS,
+        tid, _AUTH_URL_COOLDOWN_SECONDS,
     )
     return url
 
@@ -446,19 +472,22 @@ def parse_callback_paste(pasted: str) -> tuple[str, str]:
     return code, state
 
 
-def _store_token_payload(telegram_id: str, payload: dict) -> None:
+def _store_token_payload(payload: dict) -> None:
     from tools import gws_vault_client as vault
     from tools.gws_auth import canonical_uid
 
-    uid = canonical_uid(telegram_id)
+    tid = _session_telegram_id()
+    uid = canonical_uid(tid)
     record = dict(payload)
     record["obtained_at"] = time.time()
     vault.set_token(uid, SERVICE_NAME, json.dumps(record))
 
 
-def exchange_and_store(telegram_id: str, code: str, code_verifier: str) -> None:
-    """Exchange an authorization code for tokens and store them in the vault."""
+def exchange_and_store(code: str, code_verifier: str) -> None:
+    """Exchange an authorization code for tokens and store them in the vault.
+    Identity is derived from the session context, never from a caller-supplied id."""
     _reject_if_sandboxed("exchange_and_store")
+    tid = _session_telegram_id()
     client_id = _get_or_register_client()
     resp = httpx.post(
         TOKEN_ENDPOINT,
@@ -482,22 +511,24 @@ def exchange_and_store(telegram_id: str, code: str, code_verifier: str) -> None:
         raise RuntimeError(f"Kelsa token response missing access_token: {payload}")
 
     from tools.gws_auth import canonical_uid
-    uid = canonical_uid(telegram_id)
-    _store_token_payload(telegram_id, payload)
-    _clear_auth_url_cache(telegram_id)
+    uid = canonical_uid(tid)
+    _store_token_payload(payload)
+    _clear_auth_url_cache()
     logger.info("Kelsa token stored user_id=%s service=%s", uid, SERVICE_NAME)
 
 
-def has_token(telegram_id: str) -> bool:
+def has_token() -> bool:
     from tools import gws_vault_client as vault
     from tools.gws_auth import canonical_uid
 
-    uid = canonical_uid(telegram_id)
+    tid = _session_telegram_id()
+    uid = canonical_uid(tid)
     return vault.has_token(uid, SERVICE_NAME, session_uid=uid)
 
 
-def _refresh(telegram_id: str, refresh_token: str) -> dict:
+def _refresh(refresh_token: str) -> dict:
     _reject_if_sandboxed("_refresh")
+    tid = _session_telegram_id()
     client_id = _get_or_register_client()
     resp = httpx.post(
         TOKEN_ENDPOINT,
@@ -521,21 +552,24 @@ def _refresh(telegram_id: str, refresh_token: str) -> dict:
     # "keep using the same one" (it wasn't rotated).
     if not payload.get("refresh_token"):
         payload["refresh_token"] = refresh_token
-    _store_token_payload(telegram_id, payload)
+    _store_token_payload(payload)
     return payload
 
 
-def get_valid_access_token(telegram_id: str) -> str:
-    """Return a valid Kelsa access token for the user, refreshing if needed.
+def get_valid_access_token() -> str:
+    """Return a valid Kelsa access token for the current session's user,
+    refreshing if needed.
 
-    Raises ``tools.gws_vault_client.VaultNoTokenError`` if the user has
+    Identity comes from the session context ONLY. Raises
+    ``tools.gws_vault_client.VaultNoTokenError`` if the user has
     never authorized -- callers should catch that and direct the user to
     :func:`get_auth_url`.
     """
     from tools import gws_vault_client as vault
     from tools.gws_auth import canonical_uid
 
-    uid = canonical_uid(telegram_id)
+    tid = _session_telegram_id()
+    uid = canonical_uid(tid)
     raw = vault.get_token(uid, SERVICE_NAME, session_uid=uid)
     record = json.loads(raw)
 
@@ -548,7 +582,7 @@ def get_valid_access_token(telegram_id: str) -> str:
         is_expired = (obtained_at + float(expires_in) - 60) <= time.time()  # 60s skew
 
     if is_expired and record.get("refresh_token"):
-        record = _refresh(telegram_id, record["refresh_token"])
+        record = _refresh(record["refresh_token"])
         access_token = record.get("access_token")
 
     if not access_token:

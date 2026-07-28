@@ -146,7 +146,7 @@ def _build_svc(account_email: str | None = None):
             )
 
     return gws_auth.build_service(
-        "sheets", "v4", telegram_id=session_uid, service_name=service_name
+        "sheets", "v4", service_name=service_name
     )
 
 

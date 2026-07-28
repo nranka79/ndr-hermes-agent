@@ -250,7 +250,7 @@ def send_oauth_url(
 
     # 1) Compute the URL server-side. The URL never leaves this function
     #    except via the channel-specific delivery (button / print / JSON).
-    url = gws_auth.get_auth_url(user_id, login_hint=login_hint)
+    url = gws_auth.get_auth_url(login_hint=login_hint)
 
     # 2) Detect the current session's channel and deliver accordingly.
     platform, chat_id = _detect_session()

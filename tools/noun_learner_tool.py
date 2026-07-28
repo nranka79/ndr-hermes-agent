@@ -136,7 +136,7 @@ def _build_service():
             f"User {session_uid!r} has no gws_service configured in their profile."
         )
 
-    return gws_auth.build_service("sheets", "v4", telegram_id=session_uid, service_name=gws_service)
+    return gws_auth.build_service("sheets", "v4", service_name=gws_service)
 
 
 def _cell(tab: str, col: str, row: int) -> str:

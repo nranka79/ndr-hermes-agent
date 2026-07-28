@@ -33,24 +33,32 @@ def _clear_rpc_env(monkeypatch):
     monkeypatch.delenv("HERMES_RPC_SOCKET", raising=False)
 
 
+@pytest.fixture
+def _gws_session(monkeypatch):
+    """Set session context so gws_auth functions can derive identity from it."""
+    import os
+    os.environ["HERMES_SESSION_USER_ID"] = "1234567890"
+    yield
+    os.environ.pop("HERMES_SESSION_USER_ID", None)
+
+
 class TestNonSandboxedDispatch:
     """Outside the sandbox: unchanged direct-vault behavior."""
 
-    def test_calls_load_credentials_direct(self, monkeypatch):
+    def test_calls_load_credentials_direct(self, _gws_session, monkeypatch):
         import tools.gws_auth as gws_auth
 
         monkeypatch.delenv("HERMES_RPC_SOCKET", raising=False)
         called = {}
 
-        def fake_direct(tid, service_name):
-            called["tid"] = tid
+        def fake_direct(service_name):
             called["service_name"] = service_name
             return Credentials.from_authorized_user_info(_fake_creds_info())
 
         monkeypatch.setattr(gws_auth, "_load_credentials_direct", fake_direct)
-        creds = gws_auth.load_credentials("1234567890", "google-draas")
+        creds = gws_auth.load_credentials("google-draas")
 
-        assert called == {"tid": "1234567890", "service_name": "google-draas"}
+        assert called == {"service_name": "google-draas"}
         assert isinstance(creds, Credentials)
 
 
@@ -86,7 +94,7 @@ class TestSandboxedDispatch:
             )
 
         monkeypatch.setattr(gws_auth, "_load_credentials_direct", fail_if_called)
-        creds = gws_auth.load_credentials("1234567890", "google-draas")
+        creds = gws_auth.load_credentials("google-draas")
         assert isinstance(creds, Credentials)
 
     def test_sandboxed_routes_through_rpc_tool(self, monkeypatch):
@@ -96,12 +104,12 @@ class TestSandboxedDispatch:
         calls = self._install_fake_hermes_tools(
             monkeypatch, {"token_json": json.dumps(_fake_creds_info())}
         )
-        gws_auth.load_credentials("1234567890", "google-draas")
+        gws_auth.load_credentials("google-draas")
         assert calls == ["google-draas"]
 
-    def test_sandboxed_caller_supplied_telegram_id_never_reaches_rpc_call(self, monkeypatch):
+    def test_sandboxed_caller_supplied_user_id_never_reaches_rpc_call(self, monkeypatch):
         """The RPC stub's signature is service_name only -- a caller-supplied
-        telegram_id must never be threaded into the RPC request, since the
+        user_id must never be threaded into the RPC request, since the
         whole point is that identity is resolved server-side, not by
         whatever id this process (sandboxed, untrusted) happens to pass."""
         import tools.gws_auth as gws_auth
@@ -117,7 +125,7 @@ class TestSandboxedDispatch:
         fake.gws_fetch_token = gws_fetch_token
         monkeypatch.setitem(sys.modules, "hermes_tools", fake)
 
-        gws_auth.load_credentials("some-other-user-id", "google-draas")
+        gws_auth.load_credentials("google-draas")
         assert "telegram_id" not in received_kwargs
         assert "user_id" not in received_kwargs
         assert "session_uid" not in received_kwargs
@@ -131,7 +139,7 @@ class TestSandboxedDispatch:
             monkeypatch, {"error": "No google-draas token for this user.", "needs_auth": True}
         )
         with pytest.raises(FileNotFoundError):
-            gws_auth.load_credentials("1234567890", "google-draas")
+            gws_auth.load_credentials("google-draas")
 
     def test_sandboxed_other_error_raises_runtime_error(self, monkeypatch):
         import tools.gws_auth as gws_auth
@@ -139,30 +147,29 @@ class TestSandboxedDispatch:
         monkeypatch.setenv("HERMES_RPC_SOCKET", "/tmp/fake.sock")
         self._install_fake_hermes_tools(monkeypatch, {"error": "vault unreachable"})
         with pytest.raises(RuntimeError):
-            gws_auth.load_credentials("1234567890", "google-draas")
+            gws_auth.load_credentials("google-draas")
 
 
 class TestBuildServiceUnaffectedBySandboxDetail:
     """build_service()'s own caller-facing contract is unchanged either way
     -- it just delegates to load_credentials()."""
 
-    def test_build_service_still_ignores_mismatched_caller_telegram_id(self, monkeypatch):
+    def test_build_service_uses_session_identity(self, _gws_session, monkeypatch):
         import tools.gws_auth as gws_auth
 
         monkeypatch.delenv("HERMES_RPC_SOCKET", raising=False)
-        monkeypatch.setattr(gws_auth, "_current_telegram_id", lambda: "REAL_SESSION_ID")
         captured = {}
 
-        def fake_load(tid, service_name):
-            captured["tid"] = tid
+        def fake_load(service_name):
+            captured["service_name"] = service_name
             return Credentials.from_authorized_user_info(_fake_creds_info())
 
         monkeypatch.setattr(gws_auth, "load_credentials", fake_load)
         monkeypatch.setattr(gws_auth, "build", lambda api, version, credentials: "built-service")
 
-        result = gws_auth.build_service("gmail", "v1", telegram_id="SOMEONE_ELSE")
+        result = gws_auth.build_service("gmail", "v1")
         assert result == "built-service"
-        assert captured["tid"] == "REAL_SESSION_ID"
+        assert captured["service_name"] == "google-draas"
 
 
 if __name__ == "__main__":

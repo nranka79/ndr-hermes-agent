@@ -11,6 +11,8 @@ to the same canonical vault ``user_id`` and the read passes ``session_uid`` ==
 ``user_id`` (which the vault requires).
 """
 
+import os
+import pytest
 import tools.gws_vault_client as vault_module
 
 CANON = "ndr-1000000001"
@@ -57,6 +59,15 @@ class _FakeCreds:
         return "{}"
 
 
+@pytest.fixture
+def _gws_session():
+    """Set HERMES_SESSION_USER_ID so gws_auth functions can derive identity
+    from the session context."""
+    os.environ["HERMES_SESSION_USER_ID"] = "1000000001"
+    yield
+    os.environ.pop("HERMES_SESSION_USER_ID", None)
+
+
 def test_canonical_uid_resolves_every_channel_id(monkeypatch):
     _install_fake_vault(monkeypatch, {})
     from tools import gws_auth
@@ -74,17 +85,16 @@ def test_canonical_uid_falls_back_to_raw_when_unresolved(monkeypatch):
     assert gws_auth.canonical_uid("9999999999") == "9999999999"
 
 
-def test_write_then_read_use_the_same_canonical_key(monkeypatch):
+def test_write_then_read_use_the_same_canonical_key(monkeypatch, _gws_session):
     store = {}
     _install_fake_vault(monkeypatch, store)
     from tools import gws_auth
 
-    # Write path (callback) stores under the canonical uid.
-    uid = gws_auth.canonical_uid("1000000001")
-    gws_auth.save_credentials(uid, _FakeCreds(), "google-draas")
+    # Write path (callback) stores under the canonical uid (identity from session).
+    gws_auth.save_credentials(_FakeCreds(), "google-draas")
 
-    # Read path resolves the *raw* telegram id to the same canonical uid.
-    assert gws_auth.has_token("1000000001", "google-draas") is True
+    # Read path resolves identity from session to the same canonical uid.
+    assert gws_auth.has_token("google-draas") is True
     assert (CANON, "google-draas") in store
     # And nothing was written under the raw telegram id or the slug.
     assert ("1000000001", "google-draas") not in store
