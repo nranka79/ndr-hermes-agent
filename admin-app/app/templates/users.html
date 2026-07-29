@@ -21,7 +21,13 @@
             <td>{{ u.email or "-" }}</td>
             <td>{{ u.role or "employee" }}</td>
             <td>{{ u.telegram or "-" }}</td>
-            <td><a href="/users/{{ u.user_id }}" class="btn btn-sm btn-outline-secondary">View</a></td>
+            <td>
+                <a href="/users/{{ u.user_id }}" class="btn btn-sm btn-outline-secondary">View</a>
+                <form method="post" action="/users/{{ u.user_id }}/delete" style="display:inline"
+                      onsubmit="return confirm('Delete this user and all their tokens permanently?')">
+                    <button type="submit" class="btn btn-sm btn-outline-danger">Delete</button>
+                </form>
+            </td>
         </tr>
         {% else %}
         <tr><td colspan="6" class="text-muted">No users found</td></tr>

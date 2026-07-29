@@ -1,26 +1,14 @@
 """Tests for the Telegram vault-direct authorization check in authz_mixin.py.
 
-Background: ``_is_user_authorized`` used to resolve Telegram identity via the
-shared ``find_user_by_identity()`` helper, which falls back to scanning the
-raw ``users.json`` file whenever ``vault.resolve()`` doesn't return a
-user_id -- and it does that identically whether vault genuinely has no
-record for the identity, or vault is simply unreachable. Since users.json is
-writable by the same OS user that runs write_file/execute_code/terminal, a
-raw file edit (bypassing manage_user's permissions.manage_users gate
-entirely) could resolve as "vault has no record, fall back to file, found
-it, authorized."
-
-The fix checks ``tools.gws_vault_client.resolve()`` directly inside
-``_is_user_authorized`` and branches on its three real outcomes:
+The vault is the single source of truth for Telegram identity authorization.
+``_is_user_authorized`` checks vault directly:
 
   1. vault resolves the identity           -> authorized (subject to the
      vault-native App Access toggle).
   2. vault reached fine, cleanly not found -> NOT authorized via this check,
-     and users.json is never consulted -- falls through to the env-allowlist
-     checks below, same as the long-standing "not registered at all" path.
-  3. vault raises (unreachable/crash-loop) -> falls back to the pre-existing
-     file-registry check, unchanged, so a vault outage can't lock out real
-     employees.
+     falls through to the env-allowlist checks.
+  3. vault raises (unreachable/crash-loop) -> passes through to env-allowlist
+     checks, no file fallback.
 
 Directly monkeypatches functions on the real ``tools.gws_vault_client`` /
 ``tools._user_registry`` modules (rather than swapping sys.modules entries)
@@ -119,23 +107,14 @@ class TestVaultResolvesIdentity:
 
 
 class TestVaultCleanNotFound:
-    """Case 2: the actual security fix. A raw users.json injection (never
-    registered through manage_user/vault) must NOT grant access, even
-    though the file itself would resolve the identity."""
+    """Case 2: vault reached fine, cleanly not found. Must not authorize,
+    falls through to env-allowlist checks."""
 
-    def test_fake_users_json_entry_alone_does_not_authorize(self, monkeypatch):
+    def test_not_in_vault_does_not_authorize(self, monkeypatch):
         runner = _make_runner()
         monkeypatch.setattr(vault_module, "resolve", MagicMock(return_value=None))
 
-        # Simulate a raw file injection: find_user_by_identity WOULD find
-        # this if it were consulted. It must not be consulted at all.
-        find_mock = MagicMock(
-            return_value=("fake@attacker.com", {"permissions": {"manage_users": True}})
-        )
-        monkeypatch.setattr(registry_module, "find_user_by_identity", find_mock)
-
         assert runner._is_user_authorized(_source(user_id="999999999")) is False
-        find_mock.assert_not_called()
 
     def test_falls_through_to_env_allowlist_when_not_in_vault(self, monkeypatch):
         """A user authorized purely via TELEGRAM_ALLOWED_USERS (never
@@ -155,39 +134,20 @@ class TestVaultCleanNotFound:
 
 
 class TestVaultUnreachable:
-    """Case 3: vault raises -- fall back to the pre-existing file-registry
-    check, unchanged, so an infra blip doesn't lock out real employees."""
+    """Case 3: vault raises -- passes through to env-allowlist checks, no
+    file-registry fallback (users.json was eliminated 2026-07-29)."""
 
-    def test_falls_back_to_file_registry_on_vault_error(self, monkeypatch):
+    def test_denied_when_vault_down_and_no_allowlist(self, monkeypatch):
         runner = _make_runner()
         monkeypatch.setattr(
             vault_module, "resolve", MagicMock(side_effect=RuntimeError("vault socket unreachable"))
         )
-        find_mock = MagicMock(return_value=("testuser@example.com", {"permissions": {}}))
-        monkeypatch.setattr(registry_module, "find_user_by_identity", find_mock)
-
-        assert runner._is_user_authorized(_source()) is True
-        find_mock.assert_called_once_with("telegram", "1234567890")
-
-    def test_file_registry_app_access_toggle_still_honored_on_outage(self, monkeypatch):
-        runner = _make_runner()
-        monkeypatch.setattr(vault_module, "resolve", MagicMock(side_effect=RuntimeError("down")))
-        monkeypatch.setattr(
-            registry_module,
-            "find_user_by_identity",
-            MagicMock(
-                return_value=("testuser@example.com", {"permissions": {"apps": {"telegram": False}}})
-            ),
-        )
 
         assert runner._is_user_authorized(_source()) is False
 
-    def test_falls_through_to_allowlist_when_vault_down_and_not_in_file(self, monkeypatch):
+    def test_falls_through_to_allowlist_when_vault_down(self, monkeypatch):
         runner = _make_runner()
         monkeypatch.setattr(vault_module, "resolve", MagicMock(side_effect=RuntimeError("down")))
-        monkeypatch.setattr(
-            registry_module, "find_user_by_identity", MagicMock(return_value=(None, None))
-        )
         monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "1234567890")
 
         assert runner._is_user_authorized(_source()) is True

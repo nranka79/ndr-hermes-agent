@@ -189,7 +189,7 @@ data is small/cheap and the channel is markdown-only and a verbatim
 |---|---|
 | `/opt/hermes/hermes-data/` | Hermes persistent data (mounted as `/data/hermes` in container) |
 | `/opt/hermes/hermes-data/users/` | Per-user GBrain dirs |
-| `/opt/hermes/hermes-data/users.json` | Allowed users list |
+| ~~`/opt/hermes/hermes-data/users.json`~~ | (eliminated — vault is the single source of truth) |
 | `/opt/hermes/n8n-data/` | n8n persistent data |
 | `/opt/hermes/postgres-data/` | postgres DB files |
 | `/opt/hermes/redis-data/` | redis AOF |
@@ -211,16 +211,17 @@ read). This file is loaded into every agent session's system prompt, and on
 an OAuth flow (`send_oauth_url`), which filed one user's Google token under
 another user's vault entry and overwrote the original token. User ids must
 come from the session context only, inside the tools that need them
-(`send_oauth_url`, `gws_auth`). The id ↔ user mapping lives in
-`/opt/hermes/hermes-data/users.json` (not loaded into the model prompt).
+(`send_oauth_url`, `gws_auth`). The id ↔ user mapping lives in the
+gws-vault (not loaded into the model prompt) — see the vault server section
+above.
 
 Per-user GBrain dir (in container): `/data/hermes/users/{draas_user_id}/`. Each dir is owned by UID `10000` so the agent (running as that UID inside the container) can read + write per-user data.
 
-Source of truth: `/opt/hermes/hermes-data/users.json` on the VPS — see **Local-VPS Sync Policy** below.
+Source of truth: the gws-vault daemon — see the **GWS Vault** section above. users.json is eliminated.
 
 ### Local-VPS Sync Policy (Hetzner)
 
-**The local `hermes-data/users.json` (and any other file under `hermes-data/` in any Hermes project checkout) is a one-way mirror of the VPS.** The VPS is the source of truth.
+**Any file under `hermes-data/` in a Hermes project checkout is a one-way mirror of the VPS.** The VPS is the source of truth.
 
 > **Before reading, writing, or referencing any file under `hermes-data/` that mirrors VPS state, run `scripts/sync-from-vps.ps1` to pull the latest version from the VPS.**
 
@@ -230,17 +231,10 @@ The local copy is never the source of truth. The VPS is.
 
 | File | Purpose |
 |---|---|
-| `users.json` | User identity + access registry |
+| ~~`users.json`~~ | (eliminated — vault is the single source of truth for identity) |
 | `SOUL.md` | Agent persona / system-of-record prompt |
 
 **How the sync works:** one-way pull (VPS → local), SHA-256 hash compare first, auto-backup of any local file that differs (`<file>.bak.<timestamp>`), preflight check on SSH key + VPS reachability. To push local changes to the VPS, do it explicitly via `ssh` + `scp` — never silently.
-
-**Manual fallback** (one-off, no script):
-```powershell
-ssh -i $env:USERPROFILE\.ssh\hetzner_new root@178.105.35.94 `
-  cat /opt/hermes/hermes-data/users.json `
-  > hermes-data/users.json
-```
 
 ### Google Sheets Registry
 
@@ -315,7 +309,7 @@ docker compose ps
 - **Update this section** when the infra changes (new service, new env var, new user, new tab, new workflow ID, port change, etc.). Bump the `Last updated` line at the top.
 - **Secrets stay out of this file.** All `(secret)` values live only in `docker-compose.yml` (or a `.env` it sources) on the server. Never paste a real token into this file.
 - **Keep `hermes-data/connections/hetzner.md` in sync** with this inlined copy. Edit the file first, then copy the changed block here.
-- **Mirrored files under `hermes-data/`** (e.g. `users.json`) come from the VPS, not this file. To update them, change them on the VPS first, then `pwsh scripts/sync-from-vps.ps1` to pull.
+- **Mirrored files under `hermes-data/`** (e.g. `SOUL.md`) come from the VPS, not this file. To update them, change them on the VPS first, then `pwsh scripts/sync-from-vps.ps1` to pull. (`users.json` was eliminated 2026-07-29 — the vault is the single source of truth.)
 
 ## Development Environment
 

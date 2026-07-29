@@ -12,7 +12,7 @@ from .tokens import router as tokens_router
 from .vocab import router as vocab_router
 from .health import router as health_router
 from .jinja_env import env
-from .vault_client import VaultClient
+from .vault_client import VaultClient, MANAGED_APPS
 
 logger = logging.getLogger("admin-app")
 
@@ -55,5 +55,6 @@ def create_app() -> FastAPI:
 
     app.state.vault = vault
     app.state.jinja_env = env
+    app.state.hermes_home = os.environ.get("HERMES_HOME", "")
 
     return app

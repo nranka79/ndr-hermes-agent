@@ -150,13 +150,9 @@ def is_write_denied(path: str) -> bool:
     # writable -- letting a prompt-injected write_file overwrite the global
     # files that every profile inherits from (same shape as #15981).
     #
-    # users.json is the identity/authorization registry (Telegram ID <->
-    # email <-> permissions.manage_users mapping). It has a legitimate
-    # writer -- the manage_user tool, gated on the caller's own
-    # permissions.manage_users flag resolved from the trusted session
-    # context -- but write_file/patch must never be able to touch it
-    # directly, since that would let a prompt-injected instruction add or
-    # promote a user with zero authorization check in the loop.
+    # users.json was removed 2026-07-29 — vault is the single source of
+    # truth for identity. The name stays in the block list so any stale
+    # pre-vault files left on disk by old deployments can't be injected.
     control_file_names = ("auth.json", "config.yaml", "webhook_subscriptions.json", "users.json")
     mcp_tokens_dir_name = "mcp-tokens"
 

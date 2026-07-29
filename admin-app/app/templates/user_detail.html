@@ -1,6 +1,12 @@
 {% extends "base.html" %}
 {% block content %}
-<h2>User: {{ user_data.get('name') or user_data.get('user_id') }}</h2>
+<div class="d-flex justify-content-between align-items-start">
+    <h2>User: {{ user_data.get('name') or user_data.get('user_id') }}</h2>
+    <form method="post" action="/users/{{ user_data.user_id }}/delete"
+          onsubmit="return confirm('Delete this user and all their tokens permanently?')">
+        <button type="submit" class="btn btn-danger btn-sm">Delete User</button>
+    </form>
+</div>
 
 <div class="row mt-3">
     <div class="col-md-6">
@@ -23,9 +29,52 @@
                     <dt class="col-sm-4">Telegram</dt>
                     <dd class="col-sm-8">{{ telegram_display }}</dd>
 
+                    <dt class="col-sm-4">Phone</dt>
+                    <dd class="col-sm-8">{{ phone_display }}</dd>
+
+                    <dt class="col-sm-4">GBrain Home</dt>
+                    <dd class="col-sm-8"><code>{{ user_data.get('gbrain_home', '-') }}</code></dd>
+
                     <dt class="col-sm-4">Permissions</dt>
-                    <dd class="col-sm-8"><code>{{ user_data.get('permissions', {}) }}</code></dd>
+                    <dd class="col-sm-8"><code>{{ full_permissions }}</code></dd>
                 </dl>
+            </div>
+        </div>
+
+        <!-- Edit profile form -->
+        <div class="card mt-3">
+            <div class="card-header">Edit Profile</div>
+            <div class="card-body">
+                <form method="post" action="/users/{{ user_data.user_id }}/permissions">
+                    <div class="mb-2">
+                        <label class="form-label">Name</label>
+                        <input type="text" name="name" class="form-control" value="{{ user_data.get('name', '') }}">
+                    </div>
+                    <div class="mb-2">
+                        <label class="form-label">Phone</label>
+                        <input type="text" name="phone" class="form-control" value="{{ user_data.get('phone', '') }}">
+                    </div>
+                    <div class="mb-2">
+                        <label class="form-label">Role</label>
+                        <select name="role" class="form-select">
+                            <option value="employee" {% if user_data.get('role') == 'employee' %}selected{% endif %}>Employee</option>
+                            <option value="admin" {% if user_data.get('role') == 'admin' %}selected{% endif %}>Admin</option>
+                        </select>
+                    </div>
+                    <div class="form-check form-switch mb-2">
+                        <input class="form-check-input" type="checkbox" role="switch"
+                               id="cross_message_allowed" name="cross_message_allowed"
+                               {% if full_permissions.get('cross_message_allowed') %}checked{% endif %}>
+                        <label class="form-check-label" for="cross_message_allowed">Cross-message allowed</label>
+                    </div>
+                    <div class="form-check form-switch mb-2">
+                        <input class="form-check-input" type="checkbox" role="switch"
+                               id="multi_google" name="multi_google"
+                               {% if full_permissions.get('multi_google') %}checked{% endif %}>
+                        <label class="form-check-label" for="multi_google">Multi-Google</label>
+                    </div>
+                    <button type="submit" class="btn btn-primary btn-sm">Save profile</button>
+                </form>
             </div>
         </div>
 
@@ -46,10 +95,35 @@
             </div>
         </div>
 
+        <!-- Identities list -->
         <div class="card mt-3">
-            <div class="card-header">Identities</div>
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span>Identities</span>
+                <button class="btn btn-sm btn-outline-primary" type="button" data-bs-toggle="collapse" data-bs-target="#addIdentityForm">
+                    + Add
+                </button>
+            </div>
             <div class="card-body">
-                <p class="text-muted small">All aliases (email/telegram/etc) this user_id resolves from. Each can be individually removed.</p>
+                <div class="collapse mb-3" id="addIdentityForm">
+                    <form method="post" action="/users/{{ user_data.user_id }}/add-identity" class="row g-2">
+                        <div class="col-4">
+                            <select name="identity_type" class="form-select form-select-sm">
+                                <option value="email">email</option>
+                                <option value="telegram">telegram</option>
+                                <option value="phone">phone</option>
+                                <option value="slack">slack</option>
+                                <option value="draas_user_id">draas_user_id</option>
+                            </select>
+                        </div>
+                        <div class="col-5">
+                            <input type="text" name="identity_value" class="form-control form-control-sm" placeholder="Value">
+                        </div>
+                        <div class="col-3">
+                            <button type="submit" class="btn btn-sm btn-success">Add</button>
+                        </div>
+                    </form>
+                </div>
+
                 {% for t, values in identities_map.items() %}
                     {% for val in values %}
                     <form method="post" action="/users/{{ user_data.user_id }}/delete-identity" style="display:inline">

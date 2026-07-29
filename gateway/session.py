@@ -334,8 +334,8 @@ def build_session_context_prompt(
             uid = _hash_sender_id(uid)
         lines.append(f"**User ID:** {uid}")
 
-    # Inject per-user profile from users.json.
-    # Works for any platform where user_id is a Telegram numeric ID — which
+    # Inject per-user profile from vault (single source of truth).
+    # Works for any platform where user_id is a Telegram numeric ID -- which
     # includes Telegram natively and API server sessions after identity
     # resolution injects the Telegram ID via set_session_vars(user_id=...).
     _user_cfg: dict = {}

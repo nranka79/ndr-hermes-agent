@@ -173,6 +173,22 @@ class VaultClient:
         resp = self._call({"op": "delete", "user_id": user_id, "service": service, "vault_secret": self.secret})
         return resp.get("ok", False)
 
+    def delete_user(self, user_id: str) -> bool:
+        """Delete a user's entire identity record and all tokens.
+
+        Requires vault_secret. Returns True if the user existed.
+        """
+        resp = self._call({
+            "op": "delete_user",
+            "user_id": user_id,
+            "vault_secret": self.secret,
+        })
+        if resp.get("ok"):
+            return True
+        if resp.get("not_found"):
+            return False
+        raise VaultError(resp.get("error", "delete_user failed"))
+
     def health(self) -> dict:
         try:
             self._call({"op": "list_services", "user_id": "health-check", "session_uid": "health-check"})

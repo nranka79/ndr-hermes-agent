@@ -390,6 +390,35 @@ def get_identity(user_id: str, *, session_uid: Optional[str] = None) -> Optional
     return resp.get("identity")
 
 
+def list_identities() -> List[Dict[str, Any]]:
+    """Return all identity records (admin-only, requires ``GWS_VAULT_SECRET``).
+
+    Each record contains ``user_id``, ``name``, ``email``, ``telegram``,
+    ``slug``, ``role``, ``permissions``.
+    """
+    resp = _send_recv({
+        "op": "list_identities",
+        "vault_secret": VAULT_SECRET,
+    })
+    _raise_for_response(resp)
+    return list(resp.get("identities", []))
+
+
+def delete_user(user_id: str) -> bool:
+    """Delete a user's entire identity record and all tokens.
+
+    Requires ``GWS_VAULT_SECRET``. Returns True if the user existed and was deleted.
+    Raises ``VaultError`` if the user doesn't exist.
+    """
+    resp = _send_recv({
+        "op": "delete_user",
+        "user_id": str(user_id).strip(),
+        "vault_secret": VAULT_SECRET,
+    })
+    _raise_for_response(resp)
+    return bool(resp.get("deleted"))
+
+
 def remove_identity(
     user_id: str,
     identity_type: str,

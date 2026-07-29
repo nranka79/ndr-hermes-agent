@@ -461,7 +461,7 @@ def _handle_send(args):
     # UNLESS:
     #   - The recipient was resolved from the identity registry via
     #     recipient_name/recipient_phone (authorized person-to-person send), OR
-    #   - Both the sender and target have cross_message_allowed=true in users.json.
+    #   - Both the sender and target have permissions.cross_message_allowed=true in vault.
     # Cron and CLI contexts have no HERMES_SESSION_CHAT_ID -- unaffected.
     if not _resolved_from_identity:
         from gateway.session_context import get_session_env as _gse
@@ -478,7 +478,9 @@ def _handle_send(args):
                     from tools._user_registry import get_user_config
                     _sender_cfg = get_user_config(_sess_chat)
                     _target_cfg = get_user_config(chat_id)
-                    if _sender_cfg.get("cross_message_allowed") and _target_cfg.get("cross_message_allowed"):
+                    _sender_perms = _sender_cfg.get("permissions", {}) or {}
+                    _target_perms = _target_cfg.get("permissions", {}) or {}
+                    if _sender_perms.get("cross_message_allowed") and _target_perms.get("cross_message_allowed"):
                         _cross_ok = True
                         logger.info(
                             "send_message cross-user ALLOWED (allowlist): session %s (chat %s) -> %s:%s",
