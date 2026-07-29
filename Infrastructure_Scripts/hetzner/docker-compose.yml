@@ -484,4 +484,4 @@ services:
       GWS_VAULT_SOCKET: /run/gws-vault/vault.sock
       GWS_VAULT_SECRET: ${GWS_VAULT_SECRET}
     volumes:
-      - /run/gws-vault/vault.sock:/run/gws-vault/vault.sock
+      - /run/gws-vault:/run/gws-vault
