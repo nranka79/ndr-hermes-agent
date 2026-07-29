@@ -127,9 +127,14 @@ SEND_MESSAGE_SCHEMA = {
     "name": "send_message",
     "description": (
         "Send a message to a connected messaging platform, or list available targets.\n\n"
-        "IMPORTANT: When the user asks to send to a specific channel or person "
-        "(not just a bare platform name), call send_message(action='list') FIRST to see "
-        "available targets, then send to the correct one.\n"
+        "TO SEND TO A PERSON: use recipient_name or recipient_phone with a platform. "
+        "Example: recipient_name='Bharat', platform='telegram', message='Hi there!'. "
+        "The tool resolves the person's platform IDs from the identity registry — "
+        "you NEVER need to supply a raw chat_id or user ID.\n\n"
+        "TO SEND TO A CHANNEL: use target='platform:#channel-name' for public "
+        "channels, or 'platform' to use the home channel.\n\n"
+        "When in doubt about a person's exact name, call send_message(action='list') "
+        "first.\n"
         "If the user just says a platform name like 'send to telegram', send directly "
         "to the home channel without listing first."
     ),
@@ -141,9 +146,21 @@ SEND_MESSAGE_SCHEMA = {
                 "enum": ["send", "list"],
                 "description": "Action to perform. 'send' (default) sends a message. 'list' returns all available channels/contacts across connected platforms."
             },
+            "recipient_name": {
+                "type": "string",
+                "description": "Name of the person to send to. Resolved via the identity registry — do NOT supply a raw chat_id or user ID. Use with 'platform'. Examples: 'Bharat Hawaldar', 'Prakash Singh'."
+            },
+            "recipient_phone": {
+                "type": "string",
+                "description": "Phone number of the person to send to (e.g. '+919876543210'). Resolved via the identity registry. Use with 'platform'."
+            },
+            "platform": {
+                "type": "string",
+                "description": "Target platform when using recipient_name/recipient_phone. Examples: 'telegram', 'signal', 'whatsapp', 'discord'. Required when addressing a person by name/phone."
+            },
             "target": {
                 "type": "string",
-                "description": "Delivery target. Format: 'platform' (uses home channel), 'platform:#channel-name', 'platform:chat_id', or 'platform:chat_id:thread_id' for Telegram topics and Discord threads. Examples: 'telegram', 'telegram:-1001234567890:17585', 'discord:999888777:555444333', 'discord:#bot-home', 'slack:#engineering', 'signal:+155****4567', 'matrix:!roomid:server.org', 'matrix:@user:server.org', 'ntfy:alerts-channel' (explicit ntfy topic), 'yuanbao:direct:<account_id>' (DM), 'yuanbao:group:<group_code>' (group chat)"
+                "description": "Delivery target for CHANNEL ADDRESSING ONLY (not for person-to-person). Format: 'platform' (uses home channel) or 'platform:#channel-name'. Examples: 'telegram', 'discord:#bot-home', 'slack:#engineering'. Do NOT use raw chat_id or user_id in target — use recipient_name/recipient_phone for person-to-person messages."
             },
             "message": {
                 "type": "string",
@@ -174,41 +191,193 @@ def _handle_list():
         return json.dumps(_error(f"Failed to load channel directory: {e}"))
 
 
+def _resolve_recipient(
+    name: str, phone: str, platform_name: str,
+) -> tuple[str | None, str | None]:
+    """Resolve a person's name or phone to a platform chat_id.
+
+    Uses the vault's ``search_identities`` (for name) or ``resolve`` (for phone)
+    to look up the person. Returns ``(chat_id, error)``. On success, ``error``
+    is None and ``chat_id`` is the platform-specific ID (e.g. Telegram numeric
+    ID). On failure, ``chat_id`` is None and ``error`` describes the issue.
+    """
+    try:
+        from tools import gws_vault_client as vault
+    except Exception as exc:
+        return None, f"Vault access unavailable: {exc}"
+
+    recs = None
+    matched_field = None
+
+    if name:
+        try:
+            raw = vault.search_identities(name, identity_type="name")
+            recs = raw
+            matched_field = "name"
+        except Exception as exc:
+            return None, f"Identity lookup failed: {exc}"
+
+    if phone and (recs is None or not recs):
+        try:
+            uid = vault.resolve_by_phone(phone)
+            if uid:
+                recs = [{
+                    "user_id": uid,
+                    "name": "",
+                    "phone": phone,
+                    "telegram_ids": [],
+                    "emails": [],
+                    "matched_field": "phone",
+                    "_raw_phone_resolve": True,
+                }]
+                matched_field = "phone"
+        except Exception as exc:
+            return None, f"Phone lookup failed: {exc}"
+
+    if not recs:
+        if name and phone:
+            return None, f"No user found matching name '{name}' or phone '{phone}'."
+        if name:
+            return None, f"No user found matching name '{name}'."
+        if phone:
+            return None, f"No user found matching phone '{phone}'."
+        return None, "No recipient information provided."
+
+    if len(recs) > 1:
+        candidates = []
+        for r in recs:
+            candidates.append({
+                "user_id": r.get("user_id", ""),
+                "name": r.get("name", ""),
+                "phone": r.get("phone", ""),
+                "emails": r.get("emails", []),
+            })
+        return None, (
+            f"Found {len(candidates)} matching users. Please specify which one:\n"
+            + "\n".join(
+                f"  {c['name'] or c['user_id']} — phone: {c.get('phone', 'N/A')}"
+                for c in candidates
+            )
+        )
+
+    rec = recs[0]
+
+    # Extract the platform-specific ID from the identity record.
+    # For name-resolved results, the record already has platform IDs.
+    # For phone-resolved results, we need to fetch the full identity.
+    if rec.get("_raw_phone_resolve"):
+        uid = rec["user_id"]
+        resolved_name = rec.get("name", "") or uid
+        try:
+            identity = vault.get_identity(uid, session_uid=uid)
+            if not identity:
+                return None, f"User '{uid}' has no identity record on file."
+            platform_ids = identity.get("identities", {}).get(platform_name, [])
+            name = identity.get("name", "") or uid
+        except Exception as exc:
+            return None, f"Could not load identity for user '{uid}': {exc}"
+    else:
+        platform_ids = rec.get("telegram_ids" if platform_name == "telegram" else f"{platform_name}_ids", [])
+        if not platform_ids and platform_name == "telegram":
+            platform_ids = rec.get("telegram_ids", [])
+        resolved_name = rec.get("name", "") or rec.get("user_id", "")
+        # For non-telegram platforms, fetch identity for platform-specific IDs
+        if not platform_ids and platform_name != "telegram":
+            uid = rec.get("user_id", "")
+            if uid:
+                try:
+                    identity = vault.get_identity(uid, session_uid=uid)
+                    if identity:
+                        platform_ids = identity.get("identities", {}).get(platform_name, [])
+                except Exception:
+                    pass
+
+    if not platform_ids:
+        return None, (
+            f"User '{resolved_name}' was found but has no {platform_name} ID "
+            f"registered. They may not have connected {platform_name} to their account."
+        )
+
+    chat_id = platform_ids[0]
+    logger.info(
+        "send_message: resolved recipient '%s' → %s:%s (from %s)",
+        resolved_name, platform_name, chat_id, matched_field or "unknown",
+    )
+    return chat_id, None
+
+
 def _handle_send(args):
-    """Send a message to a platform target."""
+    """Send a message to a platform target.
+
+    Supports two addressing modes:
+    1. Person-to-person: recipient_name or recipient_phone + platform
+    2. Channel addressing: target='platform' or 'platform:#channel-name'
+    """
     target = args.get("target", "")
     message = args.get("message", "")
-    if not target or not message:
-        return tool_error("Both 'target' and 'message' are required when action='send'")
+    recipient_name = (args.get("recipient_name") or "").strip()
+    recipient_phone = (args.get("recipient_phone") or "").strip()
+    platform_param = (args.get("platform") or "").strip().lower()
 
-    parts = target.split(":", 1)
-    platform_name = parts[0].strip().lower()
-    target_ref = parts[1].strip() if len(parts) > 1 else None
-    chat_id = None
-    thread_id = None
+    # ── Person-to-person: resolve recipient via identity registry ────────
+    _resolved_from_identity = False
+    if recipient_name or recipient_phone:
+        if not platform_param:
+            return tool_error(
+                "platform is required when using recipient_name or recipient_phone. "
+                "E.g. platform='telegram', recipient_name='Bharat'."
+            )
+        if not message:
+            return tool_error("message is required when action='send'")
 
-    if target_ref:
-        chat_id, thread_id, is_explicit = _parse_target_ref(platform_name, target_ref)
+        platform_name = platform_param
+        chat_id_resolved, err = _resolve_recipient(
+            recipient_name, recipient_phone, platform_name,
+        )
+        if err:
+            return json.dumps({"error": err})
+
+        chat_id = chat_id_resolved
+        thread_id = None
+        is_explicit = True
+        _resolved_from_identity = True
+
+    # ── Channel addressing (target-based) ────────────────────────────────
     else:
-        is_explicit = False
+        if not target or not message:
+            return tool_error(
+                "Provide either (recipient_name or recipient_phone + platform + message) "
+                "for person-to-person, or (target + message) for channel addressing."
+            )
 
-    # Resolve human-friendly channel names to numeric IDs
-    if target_ref and not is_explicit:
-        try:
-            from gateway.channel_directory import resolve_channel_name
-            resolved = resolve_channel_name(platform_name, target_ref)
-            if resolved:
-                chat_id, thread_id, _ = _parse_target_ref(platform_name, resolved)
-            else:
+        parts = target.split(":", 1)
+        platform_name = parts[0].strip().lower()
+        target_ref = parts[1].strip() if len(parts) > 1 else None
+        chat_id = None
+        thread_id = None
+
+        if target_ref:
+            chat_id, thread_id, is_explicit = _parse_target_ref(platform_name, target_ref)
+        else:
+            is_explicit = False
+
+        # Resolve human-friendly channel names to numeric IDs
+        if target_ref and not is_explicit:
+            try:
+                from gateway.channel_directory import resolve_channel_name
+                resolved = resolve_channel_name(platform_name, target_ref)
+                if resolved:
+                    chat_id, thread_id, _ = _parse_target_ref(platform_name, resolved)
+                else:
+                    return json.dumps({
+                        "error": f"Could not resolve '{target_ref}' on {platform_name}. "
+                        f"Use send_message(action='list') to see available targets."
+                    })
+            except Exception:
                 return json.dumps({
                     "error": f"Could not resolve '{target_ref}' on {platform_name}. "
-                    f"Use send_message(action='list') to see available targets."
+                    f"Try using a numeric channel ID instead."
                 })
-        except Exception:
-            return json.dumps({
-                "error": f"Could not resolve '{target_ref}' on {platform_name}. "
-                f"Try using a numeric channel ID instead."
-            })
 
     from tools.interrupt import is_interrupted
     if is_interrupted():
@@ -289,42 +458,46 @@ def _handle_send(args):
 
     # Security: enforce session user boundary.
     # Model cannot route a live user's results to a different user's chat,
-    # UNLESS both the sender and target have cross_message_allowed=true in users.json.
+    # UNLESS:
+    #   - The recipient was resolved from the identity registry via
+    #     recipient_name/recipient_phone (authorized person-to-person send), OR
+    #   - Both the sender and target have cross_message_allowed=true in users.json.
     # Cron and CLI contexts have no HERMES_SESSION_CHAT_ID -- unaffected.
-    from gateway.session_context import get_session_env as _gse
-    _sess_chat = _gse("HERMES_SESSION_CHAT_ID", "").strip()
-    _sess_plat = _gse("HERMES_SESSION_PLATFORM", "").strip()
-    if (
-        _sess_chat
-        and _sess_plat == platform_name
-        and str(chat_id).strip() != str(_sess_chat).strip()
-    ):
-        _cross_ok = False
-        if platform_name == "telegram":
-            try:
-                from tools._user_registry import get_user_config
-                _sender_cfg = get_user_config(_sess_chat)
-                _target_cfg = get_user_config(chat_id)
-                if _sender_cfg.get("cross_message_allowed") and _target_cfg.get("cross_message_allowed"):
-                    _cross_ok = True
-                    logger.info(
-                        "send_message cross-user ALLOWED (allowlist): session %s (chat %s) -> %s:%s",
-                        _gse("HERMES_SESSION_USER_ID", "?"), _sess_chat, platform_name, chat_id,
-                    )
-            except Exception as _cm_err:
-                logger.warning("send_message: cross-message allowlist check failed: %s", _cm_err)
-        if not _cross_ok:
-            logger.warning(
-                "send_message BLOCKED cross-user: session %s (chat %s) -> %s:%s",
-                _gse("HERMES_SESSION_USER_ID", "?"), _sess_chat, platform_name, chat_id,
-            )
-            return json.dumps({
-                "error": (
-                    "Cross-user send blocked. Deliver results to the requesting user only. "
-                    "Use target='telegram' (no explicit ID) or target='origin' -- "
-                    "the gateway routes it to the correct session chat automatically."
+    if not _resolved_from_identity:
+        from gateway.session_context import get_session_env as _gse
+        _sess_chat = _gse("HERMES_SESSION_CHAT_ID", "").strip()
+        _sess_plat = _gse("HERMES_SESSION_PLATFORM", "").strip()
+        if (
+            _sess_chat
+            and _sess_plat == platform_name
+            and str(chat_id).strip() != str(_sess_chat).strip()
+        ):
+            _cross_ok = False
+            if platform_name == "telegram":
+                try:
+                    from tools._user_registry import get_user_config
+                    _sender_cfg = get_user_config(_sess_chat)
+                    _target_cfg = get_user_config(chat_id)
+                    if _sender_cfg.get("cross_message_allowed") and _target_cfg.get("cross_message_allowed"):
+                        _cross_ok = True
+                        logger.info(
+                            "send_message cross-user ALLOWED (allowlist): session %s (chat %s) -> %s:%s",
+                            _gse("HERMES_SESSION_USER_ID", "?"), _sess_chat, platform_name, chat_id,
+                        )
+                except Exception as _cm_err:
+                    logger.warning("send_message: cross-message allowlist check failed: %s", _cm_err)
+            if not _cross_ok:
+                logger.warning(
+                    "send_message BLOCKED cross-user: session %s (chat %s) -> %s:%s",
+                    _gse("HERMES_SESSION_USER_ID", "?"), _sess_chat, platform_name, chat_id,
                 )
-            })
+                return json.dumps({
+                    "error": (
+                        "Cross-user send blocked. Deliver results to the requesting user only. "
+                        "Use target='telegram' (no explicit ID) or target='origin' -- "
+                        "the gateway routes it to the correct session chat automatically."
+                    )
+                })
 
     # Slack: resolve user IDs (U...) to DM channel IDs via conversations.open
     if platform_name == "slack" and chat_id and chat_id.startswith("U"):
