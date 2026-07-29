@@ -469,6 +469,32 @@ def handle_request(req: dict, peer_uid: int) -> dict:
 
 
 
+    elif op == "delete_user":
+        if not _check_secret(req):
+            logger.warning("Denied delete_user: invalid secret (peer_uid=%d)", peer_uid)
+            return {"ok": False, "error": "Unauthorized: invalid vault secret"}
+        if not _valid_uid(user_id):
+            return {"ok": False, "error": "Invalid or missing user_id"}
+
+        identity = _load_identity(user_id)
+        if not identity:
+            return {"ok": False, "error": f"No identity record for user {user_id}", "not_found": True}
+
+        # Remove identity file
+        _identity_path(user_id).unlink(missing_ok=True)
+
+        # Remove all token files for this user
+        user_token_dir = pathlib.Path(VAULT_TOKEN_DIR) / user_id
+        if user_token_dir.exists():
+            import shutil
+            shutil.rmtree(user_token_dir)
+
+        logger.info(
+            "User deleted: user=%s (peer_uid=%d)",
+            user_id, peer_uid,
+        )
+        return {"ok": True, "deleted": True}
+
     elif op == "list_identities":
         if not _check_secret(req):
             logger.warning("Denied list_identities: invalid secret (peer_uid=%d)", peer_uid)
