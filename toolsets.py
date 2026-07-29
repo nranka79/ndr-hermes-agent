@@ -85,8 +85,10 @@ _HERMES_CORE_TOOLS = [
     "browser_use_cloud",
     # OpenRouter ad-hoc model routing (explicit-trigger only)
     "call_openrouter_model",
-    # User management (admin-only, gated inside the handler)
-    "manage_user",
+    # User management is removed from LLM-accessible tools.
+    # Admin user management is handled via admin.ahfl.in.
+    # The manage_user module at tools/user_mgmt_tool.py is preserved
+    # for the admin app to import directly (admin-app/app/vault_client.py).
     # WhatsApp deep-link generator -- sole sanctioned way to build wa.me URLs
     "whatsapp_link",
     # GWS multi-account resolver -- maps account email/label -> vault service_name

@@ -153,6 +153,27 @@ def gws_resolve_account_tool(args, **kw):
         return tool_error(resolved["error"])
 
     svc = resolved["service_name"]
+    resolved_email = resolved.get("email") or account
+
+    # Security: verify the requested account belongs to the session user.
+    # The vault's own read-path already enforces session_uid == user_id,
+    # but this explicit ownership check prevents the LLM from probing
+    # whether another user has a token for any service.
+    if not gws_auth.verify_email_ownership(resolved_email, tid):
+        # For the listing path above (no account arg), we intentionally
+        # skip ownership verification because the vault's own
+        # session-scoped token path already gags on cross-user lookups,
+        # and listing "what tokens do I have" from a session-scoped store
+        # cannot leak other users' data. This single-account resolution
+        # path, however, does leak knowledge of WHICH service names exist
+        # for emails the session user does NOT own — the ownership check
+        # closes that.
+        return tool_error(
+            f"Account '{resolved_email}' is not associated with your "
+            f"session user. You can only query accounts linked to your "
+            f"own user profile."
+        )
+
     try:
         has_tok = gws_auth.has_token(svc)
     except Exception as e:

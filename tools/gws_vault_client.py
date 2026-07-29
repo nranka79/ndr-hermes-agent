@@ -49,6 +49,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import socket
 from typing import Any, Dict, List, Optional
 
@@ -278,6 +279,48 @@ def resolve(identity_type: str, identity_value: str) -> Optional[str]:
             return None
         _raise_for_response(resp)
     return resp.get("user_id")
+
+
+def resolve_by_phone(phone: str) -> Optional[str]:
+    """Resolve a phone number to a canonical user_id.
+
+    Strips all non-digit characters before lookup. Returns ``None`` if no match.
+    """
+    clean = re.sub(r"\D", "", phone)
+    if not clean:
+        return None
+    return resolve("phone", clean)
+
+
+def search_identities(
+    query: str,
+    identity_type: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """Search identity records by name or phone.
+
+    No auth required (only returns public identity info — user_id, name,
+    phone, telegram IDs — never tokens). Used by the send_message tool
+    to resolve user-supplied names/phones to platform IDs.
+
+    Args:
+        query: Search string (name partial match or phone digits).
+        identity_type: Optional filter — ``"name"``, ``"phone"``, or
+                       ``None`` (both). Defaults to None.
+
+    Returns:
+        List of matching identity records. Each record contains:
+        ``user_id``, ``name``, ``phone``, ``telegram_ids``, ``emails``,
+        ``matched_field``.
+    """
+    payload: Dict[str, Any] = {
+        "op": "search_identities",
+        "query": query,
+    }
+    if identity_type:
+        payload["identity_type"] = identity_type
+    resp = _send_recv(payload)
+    _raise_for_response(resp)
+    return list(resp.get("results", []))
 
 
 def add_identity(

@@ -387,10 +387,14 @@ def handle_request(req: dict, peer_uid: int) -> dict:
             existing["gbrain_home"] = gbrain_home
         if phone is not None:
             existing["phone"] = phone
+            # Also add phone as a searchable identity type for resolve("phone", ...).
+            existing.setdefault("identities", {}).setdefault("phone", [])
+            if phone not in existing["identities"]["phone"]:
+                existing["identities"]["phone"].append(phone)
         if contacts_sheet_id is not None:
             existing["contacts_sheet_id"] = contacts_sheet_id
 
-        existing["identities"].setdefault(identity_type, [])
+        existing.setdefault("identities", {}).setdefault(identity_type, [])
         if identity_value not in existing["identities"][identity_type]:
             existing["identities"][identity_type].append(identity_value)
 
@@ -491,6 +495,56 @@ def handle_request(req: dict, peer_uid: int) -> dict:
         except Exception as exc:
             logger.error("list_identities failed: %s", exc)
             return {"ok": False, "error": str(exc)}
+
+    elif op == "search_identities":
+        query = str(req.get("query", "")).strip().lower()
+        if not query:
+            return {"ok": False, "error": "query is required"}
+        identity_type = str(req.get("identity_type", "")).strip().lower() or None
+        try:
+            identities = _scan_identities()
+            results = []
+            for rec in identities:
+                name_raw = rec.get("name", "") or ""
+                phones_raw = rec.get("identities", {}).get("phone", [])
+                user_id = rec.get("user_id", "")
+                ql = query.lower()
+                # Match by name (partial, case-insensitive)
+                if (not identity_type or identity_type == "name") and ql in name_raw.lower():
+                    ids = rec.get("identities", {})
+                    results.append({
+                        "user_id": user_id,
+                        "name": name_raw,
+                        "phone": rec.get("phone", ""),
+                        "telegram_ids": ids.get("telegram", []),
+                        "emails": ids.get("email", []),
+                        "matched_field": "name",
+                    })
+                    continue
+                # Match by phone
+                if (not identity_type or identity_type == "phone"):
+                    clean_query = re.sub(r"\D", "", query)
+                    for p in phones_raw:
+                        if clean_query and clean_query == re.sub(r"\D", "", p):
+                            ids = rec.get("identities", {})
+                            results.append({
+                                "user_id": user_id,
+                                "name": name_raw,
+                                "phone": rec.get("phone", ""),
+                                "telegram_ids": ids.get("telegram", []),
+                                "emails": ids.get("email", []),
+                                "matched_field": "phone",
+                            })
+                            break
+            logger.info(
+                "search_identities: query=%r returned %d matches (peer_uid=%d)",
+                query, len(results), peer_uid,
+            )
+            return {"ok": True, "results": results}
+        except Exception as exc:
+            logger.error("search_identities failed: %s", exc)
+            return {"ok": False, "error": str(exc)}
+
     else:
         return {"ok": False, "error": f"Unknown operation: {op!r}"}
 

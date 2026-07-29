@@ -478,6 +478,64 @@ def get_auth_url(login_hint: str = None) -> str:
     return url
 
 
+def verify_email_ownership(
+    account_email: str,
+    session_raw_id: str,
+) -> bool:
+    """Verify that *account_email* belongs to the session user.
+
+    Checks the vault identity record for *session_raw_id*'s canonical uid
+    and looks for *account_email* in the record's email list. Returns True
+    if the email is associated with the session user, False otherwise.
+
+    This prevents the LLM from using account_email to request another
+    user's OAuth token (belt-and-suspenders on top of the vault's own
+    session_uid == user_id enforcement at read time).
+    """
+    try:
+        uid = canonical_uid(session_raw_id)
+        if not uid:
+            return False
+        from tools import gws_vault_client as vault
+        identity = vault.get_identity(uid, session_uid=uid)
+        if not identity:
+            return False
+        emails = identity.get("identities", {}).get("email", [])
+        return account_email in emails
+    except Exception:
+        logger.debug(
+            "verify_email_ownership failed for email=%s session=%s",
+            account_email, session_raw_id,
+        )
+        return False
+
+
+def _ensure_email_in_identity(uid: str, email: str) -> None:
+    """Add *email* to the user's identity record if not already present.
+
+    This ensures secondary authorized emails are linked to the user's
+    identity record, which enables ownership checks in tools like
+    contact_resolver and gws_resolve_account. Silently skips if the
+    vault secret is unavailable (non-admin process).
+    """
+    if not email or email == uid:
+        return
+    try:
+        from tools import gws_vault_client as vault
+        identity = vault.get_identity(uid, session_uid=uid)
+        if identity:
+            emails = identity.get("identities", {}).get("email", [])
+            if email not in emails:
+                vault.add_identity(uid, "email", email)
+                logger.info(
+                    "Linked authorized email %s to user %s", email, uid
+                )
+    except Exception:
+        logger.debug(
+            "Could not link email %s to user %s (non-fatal)", email, uid,
+        )
+
+
 def exchange_and_store(code: str, service_name: str | None = None) -> str:
     """Exchange an auth code for tokens and store them in the vault.
 
@@ -508,20 +566,26 @@ def exchange_and_store(code: str, service_name: str | None = None) -> str:
     # Resolve the session's raw channel id → canonical vault user_id.
     uid = canonical_uid(tid)
 
+    # Extract the authorized email from the credentials for ownership tracking.
+    authorized_email = _account_email(flow.credentials)
+
     if service_name is not None:
         save_credentials(flow.credentials, service_name)
         logger.info("GWS token stored user_id=%s service=%s", uid, service_name)
+        if authorized_email:
+            _ensure_email_in_identity(uid, authorized_email)
         return service_name
 
     # Service is chosen from the AUTHORIZED account's email so a second
     # account never clobbers the first.  Uses id_token when the openid scope
     # is present, else falls back to the Gmail profile (gmail.modify scope).
-    email = _account_email(flow.credentials)
+    email = authorized_email
 
     if email:
         svc = EMAIL_TO_SERVICE.get(email)
         if svc:
             save_credentials(flow.credentials, svc)
+            _ensure_email_in_identity(uid, email)
             logger.info(
                 "GWS token stored user_id=%s service=%s (email=%s)", uid, svc, email
             )
@@ -532,6 +596,7 @@ def exchange_and_store(code: str, service_name: str | None = None) -> str:
         local = re.sub(r"[^a-z0-9-]+", "-", email.split("@")[0].lower()).strip("-") or "acct"
         fallback_svc = f"google-{local}"
         save_credentials(flow.credentials, fallback_svc)
+        _ensure_email_in_identity(uid, email)
         logger.info(
             "GWS token stored user_id=%s fallback_service=%s email=%s",
             uid, fallback_svc, email,

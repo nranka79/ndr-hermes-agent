@@ -442,12 +442,16 @@ def manage_user_tool(args, **kw):
     return json.dumps({"error": f"Unknown action '{action}'. Use: add, update, delete, list"})
 
 
-from tools.registry import registry
-
-registry.register(
-    name="manage_user",
-    toolset="admin",
-    schema=MANAGE_USER_SCHEMA,
-    handler=manage_user_tool,
-    emoji="👤",
-)
+# registry.register() for manage_user is intentionally commented out.
+# User management is removed from LLM-accessible tools as of 2026-07-29.
+# Admin user management is handled via admin.ahfl.in which imports this
+# module directly. The LLM must never have a manage_user tool.
+#
+# from tools.registry import registry
+# registry.register(
+#     name="manage_user",
+#     toolset="admin",
+#     schema=MANAGE_USER_SCHEMA,
+#     handler=manage_user_tool,
+#     emoji="👤",
+# )

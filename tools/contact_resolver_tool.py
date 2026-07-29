@@ -134,6 +134,17 @@ def _build_svc(account_email: str | None = None):
         if "error" in resolved:
             raise RuntimeError(resolved["error"])
         service_name = resolved["service_name"]
+        # Security: verify the requested account_email belongs to the session
+        # user. The vault's read-path (session_uid == user_id) already prevents
+        # cross-user token access, but this explicit check makes the policy clear
+        # and prevents future refactoring errors.
+        resolved_email = resolved.get("email") or account_email
+        if not gws_auth.verify_email_ownership(resolved_email, session_uid):
+            raise RuntimeError(
+                f"Account email '{resolved_email}' is not associated with "
+                f"your session user. You can only use accounts linked to "
+                f"your own user profile."
+            )
     else:
         from tools._user_registry import get_user_config
         cfg = get_user_config(session_uid) or {}
