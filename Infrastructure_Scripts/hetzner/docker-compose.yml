@@ -222,6 +222,9 @@ services:
       - ./hermes-data/users:/data/hermes/users
       - ./hermes-data/honcho.json:/data/hermes/honcho.json:ro
       - ./hermes-data/bin:/data/hermes/bin:ro
+      # Shared .env (API keys) and memories/ (MEMORY.md, USER.md).
+      - ./hermes-data/.env:/data/hermes/.env:ro
+      - ./hermes-data/memories:/data/hermes/memories
       # Kelsa OAuth DCR client registration MUST be shared, not per-bot:
       # the public callback (/kelsa/auth/callback) is only ever handled by
       # the primary `hermes` service (API_SERVER_ENABLED=false here), so an
@@ -290,6 +293,9 @@ services:
       - ./hermes-data/users:/data/hermes/users
       - ./hermes-data/honcho.json:/data/hermes/honcho.json:ro
       - ./hermes-data/bin:/data/hermes/bin:ro
+      # Shared .env (API keys) and memories/ (MEMORY.md, USER.md).
+      - ./hermes-data/.env:/data/hermes/.env:ro
+      - ./hermes-data/memories:/data/hermes/memories
       # Shared Kelsa OAuth DCR client registration -- see hermes-bot2's
       # matching mount comment above for why this must not be per-bot.
       - ./hermes-data/mcp-tokens/kelsa-read-dcr-client-v2.json:/data/hermes/mcp-tokens/kelsa-read-dcr-client-v2.json:ro
