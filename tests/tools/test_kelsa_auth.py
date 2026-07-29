@@ -14,10 +14,10 @@ Layer 3 — pending guard: ``kelsa_login`` refuses to generate a new URL
 when ``kelsa_login_tool._pending_auth`` already contains the user's id;
 ``kelsa_complete_login`` clears it on success.
 
-Configurable redirect_uri: ``REDIRECT_URI`` reads from ``KELSA_REDIRECT_URI``
-env var, falling back to the public HTTPS callback
-``https://transcribe.ahfl.in/kelsa/auth/callback`` (2026-07-20). The DCR
-client cache detects stale redirect_uris and re-registers automatically.
+DCR client registration: stored in the vault under the synthetic system
+user ``hermes-system`` / ``kelsa-dcr`` (formerly on-disk at
+``mcp-tokens/kelsa-read-dcr-client-v2.json``). The vault is the single
+source of truth, shared across all hermes containers.
 """
 
 from __future__ import annotations
@@ -108,19 +108,9 @@ def fake_vault(monkeypatch):
 
 @pytest.fixture
 def fake_dcr_client(monkeypatch, tmp_path):
-    """Point the DCR client cache to a temp directory and stub the httpx
-    registration call. Returns (client_id, dcr_cache_path)."""
+    """Stub the vault DCR read and the httpx registration call so tests don't
+    need a real vault socket. Returns (client_id, service_name)."""
     import tools.kelsa_auth as ka
-    from tools.mcp_oauth import _get_token_dir
-
-    # Redirect the DCR cache dir to temp
-    token_dir = tmp_path / "mcp-tokens"
-    token_dir.mkdir(parents=True, exist_ok=True)
-
-    def _fake_token_dir():
-        return token_dir
-
-    monkeypatch.setattr("tools.mcp_oauth._get_token_dir", _fake_token_dir)
 
     # Stub httpx.post for DCR registration
     original_post = httpx.post
@@ -144,7 +134,29 @@ def fake_dcr_client(monkeypatch, tmp_path):
 
     monkeypatch.setattr(httpx, "post", _fake_post)
 
-    return "dcr-client-test-001", token_dir / "kelsa-read-dcr-client-v2.json"
+    # Stub vault calls to return the DCR payload when asked
+    _dcr_cache: dict = {}
+
+    def _fake_get_token(uid, svc, **kw):
+        if uid == ka._DCR_USER_ID and svc == ka.DCR_SERVICE_NAME:
+            cached = _dcr_cache.get("payload")
+            if cached is None:
+                raise type("FakeVaultNoToken", (Exception,), {})(f"No {svc} token for {uid}. Authorize first.")
+            return json.dumps(cached)
+        raise Exception(f"Unexpected vault read: {uid}/{svc}")
+
+    def _fake_set_token(uid, svc, token_json, **kw):
+        if uid == ka._DCR_USER_ID and svc == ka.DCR_SERVICE_NAME:
+            _dcr_cache["payload"] = json.loads(token_json)
+        else:
+            raise Exception(f"Unexpected vault write: {uid}/{svc}")
+
+    # Get the vault module path used by kelsa_auth
+    import tools.gws_vault_client as vc
+    monkeypatch.setattr(vc, "get_token", _fake_get_token)
+    monkeypatch.setattr(vc, "set_token", _fake_set_token)
+
+    return "dcr-client-test-001", ka.DCR_SERVICE_NAME, _dcr_cache
 
 
 # ---------------------------------------------------------------------------
@@ -566,11 +578,11 @@ class TestDcrRegistration:
             f"Auth URL should use the new redirect_uri, got {actual_redirect}"
         )
 
-        # The cached file should now contain the new redirect_uri
-        _, cache_path = fake_dcr_client
-        if cache_path.exists():
-            cached = json.loads(cache_path.read_text(encoding="utf-8"))
-            assert cached.get("redirect_uri") == "https://transcribe.ahfl.in/kelsa/auth/callback"
+        # The cached DCR in vault should now contain the new redirect_uri
+        _, _, dcr_cache = fake_dcr_client
+        cached = dcr_cache.get("payload")
+        assert cached is not None, "DCR should have been cached in vault"
+        assert cached.get("redirect_uri") == "https://transcribe.ahfl.in/kelsa/auth/callback"
 
 
 # ---------------------------------------------------------------------------

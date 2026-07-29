@@ -146,15 +146,10 @@ SERVICE_NAME = "mcp-kelsa-read"
 
 # DCR client registration is an app-level credential (one Hermes-wide OAuth
 # client, shared across all users -- like a Google client_id/secret pair),
-# NOT a per-user secret, so it is cached on disk next to (but distinct from)
-# the flat-file MCP OAuth token cache, not in the vault. Kelsa issues a
-# client_id only (public client, no client_secret -- see module docstring).
-#
-# Filename bumped to v2 (2026-07-13) -- the v1 file cached a client
-# registered against the old, non-working public HTTPS redirect_uri. Rather
-# than migrate/validate the old file, just start clean under a new name so
-# there's no chance of silently reusing a stale registration.
-_CLIENT_INFO_FILENAME = "kelsa-read-dcr-client-v2.json"
+# stored in the vault under a synthetic system user so every container that
+# has vault access reads the same registration.
+DCR_SERVICE_NAME = "kelsa-dcr"
+_DCR_USER_ID = "hermes-system"
 
 # Auth URL idempotency cache (Layer 1 of the duplicate-button fix).
 # Maps telegram_id -> (generated_at_timestamp, url). Prevents
@@ -196,9 +191,25 @@ def _session_telegram_id() -> str:
     return tid
 
 
-def _client_info_path():
-    from tools.mcp_oauth import _get_token_dir
-    return _get_token_dir() / _CLIENT_INFO_FILENAME
+def _get_or_register_client_from_vault() -> dict | None:
+    """Read cached DCR client registration from vault.
+
+    Returns the full payload dict if found, or None if missing.
+    """
+    from tools import gws_vault_client as vault
+
+    try:
+        raw = vault.get_token(_DCR_USER_ID, DCR_SERVICE_NAME)
+        return json.loads(raw)
+    except (vault.VaultNoTokenError, vault.VaultError, json.JSONDecodeError):
+        return None
+
+
+def _store_dcr_in_vault(payload: dict) -> None:
+    """Write DCR client registration payload to vault under the system user."""
+    from tools import gws_vault_client as vault
+
+    vault.set_token(_DCR_USER_ID, DCR_SERVICE_NAME, json.dumps(payload))
 
 
 def _clear_auth_url_cache() -> None:
@@ -253,30 +264,24 @@ def get_notify_context() -> dict[str, str]:
 def _get_or_register_client() -> str:
     """Return the cached DCR client_id, registering a new one if needed.
 
-    If the cached client was registered with a different redirect_uri than
-    the current ``REDIRECT_URI`` (e.g. after switching from the 127.0.0.1
-    placeholder to a public HTTPS callback), the stale cache is discarded
-    and a new DCR registration is performed automatically.
+    The DCR registration is an app-level credential stored in the vault under
+    a synthetic system user (``hermes-system`` / ``kelsa-dcr``). If the cached
+    client was registered with a different redirect_uri than the current
+    ``REDIRECT_URI``, the stale cache is discarded and a new DCR registration
+    is performed automatically.
     """
-    path = _client_info_path()
-    try:
-        if path.exists():
-            data = json.loads(path.read_text(encoding="utf-8"))
-            client_id = data.get("client_id")
-            cached_redirect = data.get("redirect_uri", "")
-            if client_id and cached_redirect == REDIRECT_URI:
-                return client_id
-            if client_id and cached_redirect != REDIRECT_URI:
-                logger.info(
-                    "Kelsa DCR: cached redirect_uri %r differs from current %r "
-                    "-- discarding stale client_id %s and re-registering",
-                    cached_redirect, REDIRECT_URI, client_id,
-                )
-    except Exception:
-        logger.warning(
-            "Kelsa DCR client info at %s unreadable -- re-registering",
-            path, exc_info=True,
-        )
+    cached = _get_or_register_client_from_vault()
+    if cached:
+        client_id = cached.get("client_id")
+        cached_redirect = cached.get("redirect_uri", "")
+        if client_id and cached_redirect == REDIRECT_URI:
+            return client_id
+        if client_id and cached_redirect != REDIRECT_URI:
+            logger.info(
+                "Kelsa DCR: cached redirect_uri %r differs from current %r "
+                "-- discarding stale client_id %s and re-registering",
+                cached_redirect, REDIRECT_URI, client_id,
+            )
 
     resp = httpx.post(
         REGISTRATION_ENDPOINT,
@@ -295,13 +300,8 @@ def _get_or_register_client() -> str:
     if not client_id:
         raise RuntimeError(f"Kelsa DCR response missing client_id: {payload}")
 
-    path.parent.mkdir(parents=True, exist_ok=True)
     payload["redirect_uri"] = REDIRECT_URI
-    path.write_text(json.dumps(payload), encoding="utf-8")
-    try:
-        path.chmod(0o600)
-    except Exception:
-        pass
+    _store_dcr_in_vault(payload)
     logger.info("Kelsa DCR: registered new client_id=%s", client_id)
     return client_id
 

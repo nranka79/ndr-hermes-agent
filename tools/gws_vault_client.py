@@ -13,7 +13,7 @@ object terminated with a single ``\\n``. The server is
 ``/usr/local/bin/gws-vault-server`` on the host.
 
 Operations:
-  get          {"op":"get","user_id":"...","service":"...","session_uid":"..."}
+  get          {"op":"get","user_id":"...","service":"...","session_uid":"..."|"vault_secret":"..."}
   set          {"op":"set","user_id":"...","service":"...","token_json":"...","vault_secret":"..."}
   has_token    {"op":"has_token","user_id":"...","service":"...","session_uid":"..."|"vault_secret":"..."}
   delete       {"op":"delete","user_id":"...","service":"...","vault_secret":"..."}
@@ -23,8 +23,10 @@ Operations:
   get_identity {"op":"get_identity","user_id":"...","session_uid":"..."}
 
 Authorization:
-  * Read ops (``get``, ``list_services``, ``get_identity``) — ``session_uid``
-    MUST equal ``user_id``. The server enforces this via ``SO_PEERCRED``.
+  * ``get`` accepts either ``session_uid`` (self-read) or ``vault_secret``
+    (admin read, e.g. for app-level credentials under a system user).
+  * ``list_services``, ``get_identity`` — ``session_uid`` must equal
+    ``user_id`` (no cross-user reads).
   * ``has_token`` accepts either ``session_uid`` (self) or ``vault_secret``
     (admin).
   * Write ops (``set``, ``delete``, ``add_identity``) — ``vault_secret`` MUST
@@ -149,21 +151,32 @@ def _raise_for_response(resp: dict) -> None:
 def get_token(user_id: str, service: str, *, session_uid: Optional[str] = None) -> str:
     """Return the full stored token JSON string for user_id/service.
 
-    Authorization: ``session_uid`` MUST equal ``user_id`` (enforced server-side
-    via ``SO_PEERCRED``). If ``session_uid`` is not provided, ``user_id`` is
-    used as the session — i.e. each user reads their own tokens.
+    Authorization: by default ``session_uid`` must equal ``user_id`` (self-read,
+    enforced server-side via ``SO_PEERCRED``). If ``session_uid`` is not
+    provided, ``user_id`` is used — i.e. each user reads their own tokens.
+
+    For admin reads (e.g. app-level credentials stored under a system user),
+    either pass ``session_uid=user_id`` for a synthetic system user that has
+    no real session, or rely on ``GWS_VAULT_SECRET`` being set in the env
+    (the server accepts vault_secret as an alternative to session_uid).
 
     Raises ``VaultNoTokenError`` if the token doesn't exist (and the response
     carries ``needs_auth=True`` so the caller can drive the OAuth flow).
     """
     uid = str(user_id).strip()
-    sess = str(session_uid).strip() if session_uid else uid
-    resp = _send_recv({
+    payload = {
         "op": "get",
         "user_id": uid,
         "service": str(service).strip(),
-        "session_uid": sess,
-    })
+    }
+    if session_uid:
+        payload["session_uid"] = str(session_uid).strip()
+    elif VAULT_SECRET:
+        payload["vault_secret"] = VAULT_SECRET
+    else:
+        payload["session_uid"] = uid
+
+    resp = _send_recv(payload)
     _raise_for_response(resp)
     return resp.get("token_json", "")
 

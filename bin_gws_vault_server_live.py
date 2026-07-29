@@ -25,9 +25,10 @@ Protocol: newline-delimited JSON over Unix domain socket.
 
 Token operations:
 
-  get       {"op":"get","user_id":"...","service":"...","session_uid":"..."}
+  get       {"op":"get","user_id":"...","service":"...","session_uid":"..."|"vault_secret":"..."}
             → {"ok":true,"token_json":"..."}
-            Authorization: session_uid MUST equal user_id (no cross-user reads).
+            Authorization: session_uid must match user_id (self-read) OR vault_secret
+            (admin read, e.g. for app-level credentials stored under a system user).
 
   set       {"op":"set","user_id":"...","service":"...","token_json":"...","vault_secret":"..."}
             → {"ok":true}
@@ -209,19 +210,20 @@ def handle_request(req: dict, peer_uid: int) -> dict:
         return {"ok": False, "error": f"Invalid or missing service name: {service!r}"}
 
     if op == "get":
-        session_uid = str(req.get("session_uid", "")).strip()
         if not _valid_uid(user_id):
             return {"ok": False, "error": "Invalid or missing user_id"}
-        # Strict: only the session user can read their own token
-        if not session_uid or session_uid != user_id:
-            logger.warning(
-                "Denied get: session_uid=%r != user_id=%r (peer_uid=%d)",
-                session_uid, user_id, peer_uid,
-            )
-            return {
-                "ok": False,
-                "error": "Unauthorized: session user does not match requested token owner",
-            }
+        # Allow either matching session_uid (self-read) or vault_secret (admin read)
+        if not _check_secret(req):
+            session_uid = str(req.get("session_uid", "")).strip()
+            if not session_uid or session_uid != user_id:
+                logger.warning(
+                    "Denied get: session_uid=%r != user_id=%r (peer_uid=%d)",
+                    session_uid, user_id, peer_uid,
+                )
+                return {
+                    "ok": False,
+                    "error": "Unauthorized: session user does not match requested token owner",
+                }
         try:
             token_json = _token_path(user_id, service).read_text(encoding="utf-8")
             logger.info(
