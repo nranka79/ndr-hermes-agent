@@ -48,7 +48,9 @@ From Git Bash: `ssh root@178.105.35.94`. If non-default key, check `~/.ssh/confi
 | redis | `redis:7-alpine` | internal | — |
 | n8n | custom `./n8n-custom/Dockerfile` | `127.0.0.1:5678` | https://transcribe.ahfl.in |
 | n8n-worker | same image, `cmd: worker` | internal | — |
-| hermes | `./hermes-agent/Dockerfile` | internal | Telegram @NDRHermes_bot |
+| hermes | `./hermes-agent/Dockerfile` | internal | Telegram @NDRHermes_bot (primary) |
+| hermes-bot2 | `./hermes-agent/Dockerfile` (separate image tag: `hermes-hermes-bot2`) | internal | Telegram, secondary bot |
+| hermes-bot3 | `./hermes-agent/Dockerfile` (separate image tag: `hermes-hermes-bot3`) | internal | Telegram, tertiary bot |
 | smart-browser | `./smart-browser/Dockerfile` | internal | — |
 | voice | `./voice-app/Dockerfile` | `127.0.0.1:3000` | https://voice.ahfl.in |
 | admin-app | `./admin-app/Dockerfile` | `127.0.0.1:8081` | https://admin.ahfl.in |
@@ -71,6 +73,58 @@ python3 setup_oauth_credentials.py && exec hermes gateway run -v
 - `…/hermes-agent/gateway/platforms/api_server.py` → `/opt/hermes/gateway/platforms/api_server.py` (ro)
 
 **Logging:** `json-file`, 50MB × 5 files, tag=`hermes`
+
+### Deployment — MANDATORY: use `deploy_bots.sh`, never a bare `--build hermes`
+
+`hermes`, `hermes-bot2`, and `hermes-bot3` (see "Multi-bot Telegram setup"
+below) each build and tag their **own separate Docker image**
+(`hermes-hermes`, `hermes-hermes-bot2`, `hermes-hermes-bot3`) from the
+identical `./hermes-agent` build context — there is no shared `image:` key
+in `docker-compose.yml`. **Rebuilding one does NOT rebuild the others,
+silently, with no warning or error.**
+
+Always deploy any `hermes-agent` code change with:
+```bash
+/opt/hermes/deploy_bots.sh
+# == cd /opt/hermes && docker compose up -d --build hermes hermes-bot2 hermes-bot3
+```
+(local mirror of the script: `Infrastructure_Scripts/hetzner/deploy_bots.sh`)
+
+**NEVER** run `docker compose up -d --build hermes` alone for a real code
+change — bot1 gets the fix, bot2/bot3 silently keep running whatever was
+last built for them.
+
+**Real incident this caused (diagnosed 2026-07-29, fixed 2026-07-30):**
+bot2/bot3 drifted ~12 days behind bot1's code because someone (human or
+agent) had been running bare `--build hermes` deploys. The drift window
+swallowed two Kelsa CRM fixes:
+- `kelsa_login`/`kelsa_complete_login`/`kelsa_list_tools`/`kelsa_call_tool`
+  toolset registration fix (2026-07-19, `toolsets.py`)
+- Kelsa OAuth HTTPS-callback fix (2026-07-20, `tools/kelsa_auth.py`
+  `REDIRECT_URI` default changed from a `127.0.0.1` placeholder to
+  `https://transcribe.ahfl.in/kelsa/auth/callback`)
+
+Effect: bot3 (stalest image) reported "Kelsa MCP/OAuth not found" — the
+tools were never registered on its running process at all. Separately, a
+user's Kelsa OAuth flow run from bot1 (which had *also* not been rebuilt
+recently enough) produced a broken `http://127.0.0.1:<port>/callback` URL:
+finding no `kelsa_login` tool available, the agent fell back to the legacy
+`hermes mcp add Kelsa-Read --auth oauth` CLI command, whose OAuth flow
+(`tools/mcp_oauth.py`) is designed for a human running the CLI locally with
+a real localhost listener — meaningless inside a headless container.
+
+**Fix + verification pattern:** run `deploy_bots.sh` (rebuild + restart all
+3 together), then confirm the fix actually landed in the *running* process
+(not just in source on disk / bind mounts) with something like:
+```bash
+docker exec <container> python3 -c "
+from tools.registry import registry
+print(sorted(e.name for e in registry._tools.values() if 'kelsa' in e.name))
+import tools.kelsa_auth as ka
+print(ka.REDIRECT_URI)
+"
+```
+on ALL THREE containers, not just one.
 
 ### Environment Variables — hermes service
 

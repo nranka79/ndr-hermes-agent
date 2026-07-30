@@ -109,11 +109,12 @@ Briefing") — check there first, keep both in sync.
 Connect: `ssh root@178.105.35.94` (key: `~/.ssh/hetzner_new` or check `~/.ssh/config`).
 
 ### Services (docker compose)
-postgres, redis, n8n, n8n-worker, hermes, smart-browser, voice, free-whisper,
-loki, promtail, grafana, oauth2-proxy, open-webui, oauth2-proxy-chat.
+postgres, redis, n8n, n8n-worker, hermes, hermes-bot2, hermes-bot3,
+smart-browser, voice, free-whisper, loki, promtail, grafana, oauth2-proxy,
+open-webui, oauth2-proxy-chat.
 
-Bot: @NDRHermes_bot (Telegram). Chat UI: https://chat.ahfl.in (Open WebUI,
-behind Google-SSO oauth2-proxy-chat).
+Bot: @NDRHermes_bot (Telegram, primary). Chat UI: https://chat.ahfl.in (Open
+WebUI, behind Google-SSO oauth2-proxy-chat).
 
 ### Hermes container
 - Startup: `python3 setup_oauth_credentials.py && exec hermes gateway run -v`
@@ -122,13 +123,47 @@ behind Google-SSO oauth2-proxy-chat).
   `/run/gws-vault/vault.sock` (bind-mounted into the hermes container),
   gated by `GWS_VAULT_SECRET`. Hermes never reads token files directly.
 
+### Deployment — MANDATORY: use `deploy_bots.sh`, never a bare `--build hermes`
+
+`hermes`, `hermes-bot2`, and `hermes-bot3` each build and tag their **own
+separate Docker image** (`hermes-hermes`, `hermes-hermes-bot2`,
+`hermes-hermes-bot3`) from the identical `./hermes-agent` build context —
+there's no shared `image:` key in `docker-compose.yml`. **Rebuilding one
+does NOT rebuild the others, silently, with no warning.**
+
+Always deploy any `hermes-agent` code change with:
+```bash
+/opt/hermes/deploy_bots.sh
+# == docker compose up -d --build hermes hermes-bot2 hermes-bot3 (run from /opt/hermes)
+```
+**NEVER** run `docker compose up -d --build hermes` alone for a real code
+change — it looks like it worked (bot1 gets the fix) but leaves bot2/bot3
+frozen on old code with zero error.
+
+**Real incident this caused (found + fixed 2026-07-30):** bot2/bot3 drifted
+~12 days behind bot1's code (first diagnosed 2026-07-29, which is why
+`Infrastructure_Scripts/hetzner/deploy_bots.sh` exists at all). The drift
+window silently swallowed two Kelsa CRM fixes — the `kelsa_login` toolset
+registration fix (2026-07-19) and the OAuth HTTPS-callback fix (2026-07-20)
+— so bot3 reported "Kelsa MCP/OAuth not found" (tools never registered on
+its stale image) while a user's Kelsa OAuth flow, run from a similarly
+stale bot1 process that hadn't itself been rebuilt since before those
+fixes, produced a broken `http://127.0.0.1:<port>/callback` URL (the agent,
+finding no `kelsa_login` tool, fell back to the legacy `hermes mcp add
+--auth oauth` CLI flow, which is designed for a human running it locally,
+not a headless container). Fixed by running `deploy_bots.sh` (rebuild +
+restart all 3 together) and verifying `kelsa_login`/`kelsa_list_tools`/
+`kelsa_call_tool` are actually registered and `tools/kelsa_auth.py`'s
+`REDIRECT_URI` resolves to `https://transcribe.ahfl.in/kelsa/auth/callback`
+on all three running containers, not just source on disk.
+
 ### Useful commands (run on the server)
 ```bash
 cd /opt/hermes
-docker compose logs -f hermes
-docker compose restart hermes
-docker compose up -d --build hermes
-docker compose exec hermes bash
+docker compose logs -f hermes            # or hermes-bot2 / hermes-bot3
+docker compose restart hermes            # or hermes-bot2 / hermes-bot3
+./deploy_bots.sh                          # rebuild + restart ALL 3 bots together — use this, not --build hermes
+docker compose exec hermes bash          # or hermes-bot2 / hermes-bot3
 ```
 
 ### Multi-bot Telegram setup (2026-07)
@@ -146,6 +181,12 @@ DB) — no chat-history bleed between bots for the same user:
 Each `config.yaml` is a **runtime file only — NOT git-tracked, not in this
 repo** (the `hermes-data/` folder tracked in the repo is a seed copy with
 just `SOUL.md` + `users.json`, distinct from the live runtime dirs above).
+
+All 3 bots share the SAME `hermes-agent` source (bind-mounted `tools/`,
+`skills/`, `toolsets.py`, etc.) but run it inside 3 SEPARATE, independently
+built images — see "Deployment" above. Code being right in git/on disk does
+NOT mean a given bot's running process has it; only a rebuild of that
+specific bot's image does.
 
 ### Default Model — Telegram Bots (2026-07-14)
 All 3 bots' `config.yaml` top-level `model:` block set to:
@@ -179,6 +220,8 @@ telegram-triggered gateway restart.
 | `tools/contact_resolver_tool.py` | Agent tool: ranked contact lookup (3-signal: name+context+compound) |
 | `tools/noun_learner_tool.py` | Writes corrections/associations back to sheets |
 | `tools/gws_auth.py` | Per-user OAuth2 token management (vault-backed, multi-account): `build_service()`, `get_auth_url()` — used by `gws_resolve_account` tool for account resolution only, NOT Gmail/Calendar/Sheets operations. |
+| `tools/kelsa_auth.py` | Per-user OAuth2.1 (PKCE, DCR) token manager for Kelsa CRM MCP (mirrors `gws_auth.py`'s shape). `REDIRECT_URI` defaults to `https://transcribe.ahfl.in/kelsa/auth/callback`; only overridden by `KELSA_REDIRECT_URI` env (not set on any of the 3 bots as of 2026-07-30). Guarded by `_reject_if_not_called_from_kelsa_tool` / `_reject_if_sandboxed` — never call this module directly from `execute_code` or a shelled-out script; always go through the `kelsa_login` tool (`tools/kelsa_tool.py`). |
+| `tools/kelsa_tool.py` | Registers the `kelsa_login` / `kelsa_complete_login` (deprecated) / `kelsa_list_tools` / `kelsa_call_tool` tools (toolset `oauth`, resolved into every messaging platform's core toolset via `toolsets.py`). If these don't show up in the agent's tool list on a given bot, that bot's image is stale — see "Deployment" above, do NOT fall back to `hermes mcp add ... --auth oauth` (legacy local-interactive OAuth flow, produces an unreachable `127.0.0.1` callback for anyone but a human running the CLI locally). |
 | `model_tools.py` | Tool discovery/registration list |
 | `toolsets.py` | Tool groupings by capability |
 
