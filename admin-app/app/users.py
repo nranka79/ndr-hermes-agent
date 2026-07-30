@@ -22,6 +22,17 @@ VAULT_SERVICE_NAMES = {
 }
 
 
+def _pretty_service(svc: str) -> str:
+    """Return a human-readable label for a vault service key."""
+    if svc in VAULT_SERVICE_NAMES:
+        return VAULT_SERVICE_NAMES[svc]
+    if svc.startswith("google-"):
+        return f"Google ({svc.removeprefix('google-')})"
+    if svc.startswith("mcp-"):
+        return f"MCP {svc.removeprefix('mcp-')}"
+    return svc
+
+
 def _slug_from_email(email: str) -> str:
     return "".join(c for c in email.split("@")[0] if c.isalnum() or c in "._-")
 
@@ -118,6 +129,9 @@ async def view_user(request: Request, user_id: str):
     app_states = {app: apps_perms.get(app, True) for app in MANAGED_APPS}
 
     full_permissions = identity.get("permissions", {}) or {}
+    oauth_providers = full_permissions.get("oauth_providers", {}) or {}
+    oauth_google_emails = oauth_providers.get("google", []) or []
+    oauth_kelsa = oauth_providers.get("kelsa", False)
 
     return HTMLResponse(env.get_template("user_detail.html").render(
         user=request.session.get("user"), user_data=identity,
@@ -126,8 +140,12 @@ async def view_user(request: Request, user_id: str):
         telegram_display=", ".join(telegrams) if telegrams else "-",
         phone_display=", ".join(phones) if phones else "-",
         services=services, VAULT_SERVICE_NAMES=VAULT_SERVICE_NAMES,
+        pretty_service=_pretty_service,
         managed_apps=MANAGED_APPS, app_states=app_states,
         full_permissions=full_permissions,
+        oauth_providers=oauth_providers,
+        oauth_google_emails=oauth_google_emails,
+        oauth_kelsa=oauth_kelsa,
     ))
 
 
@@ -178,6 +196,44 @@ async def update_user_permissions(request: Request, user_id: str):
             permissions=permissions,
             phone=phone or None,
         )
+    except Exception as e:
+        return HTMLResponse(env.get_template("error.html").render(
+            user=request.session.get("user"), error=str(e)
+        ), status_code=500)
+    return RedirectResponse(url=f"/users/{user_id}", status_code=303)
+
+
+@router.post("/{user_id}/oauth-providers")
+async def update_oauth_providers(request: Request, user_id: str):
+    """Update the oauth_providers permission block for a user.
+
+    Accepts form fields:
+      - google_emails: comma-separated list of authorized Google emails
+      - kelsa: "on" or missing (checkbox)
+      - Any future provider as a checkbox or comma-separated list
+    """
+    vault: VaultClient = request.app.state.vault
+    form = await request.form()
+
+    try:
+        identity = vault.get_identity(user_id)
+        if not identity:
+            return HTMLResponse(env.get_template("error.html").render(
+                user=request.session.get("user"), error=f"User {user_id} not found"
+            ), status_code=404)
+
+        google_raw = form.get("google_emails", "").strip()
+        google_emails = [e.strip() for e in google_raw.split(",") if e.strip()]
+
+        kelsa = "kelsa" in form
+
+        permissions = dict(identity.get("permissions", {}) or {})
+        permissions["oauth_providers"] = {
+            "google": google_emails,
+            "kelsa": kelsa,
+        }
+
+        vault.update_permissions(user_id, {"oauth_providers": permissions["oauth_providers"]})
     except Exception as e:
         return HTMLResponse(env.get_template("error.html").render(
             user=request.session.get("user"), error=str(e)

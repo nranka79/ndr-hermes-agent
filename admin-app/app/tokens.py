@@ -11,6 +11,29 @@ router = APIRouter()
 logger = logging.getLogger("admin-app.tokens")
 
 
+def _pretty_service(svc: str) -> str:
+    """Return a human-readable label for a vault service key."""
+    known = {
+        "gmail": "Gmail",
+        "calendar": "Calendar",
+        "docs": "Google Docs",
+        "sheets": "Google Sheets",
+        "tasks": "Google Tasks",
+        "contacts": "Google Contacts",
+        "drive": "Google Drive",
+        "vocab": "STT Vocabulary",
+    }
+    if svc in known:
+        return known[svc]
+    if svc.startswith("google-"):
+        return f"Google ({svc.removeprefix('google-')})"
+    if svc.startswith("mcp-"):
+        return f"MCP {svc.removeprefix('mcp-')}"
+    if svc.startswith("kelsa"):
+        return "Kelsa CRM"
+    return svc
+
+
 @router.get("")
 async def list_tokens(request: Request):
     vault: VaultClient = request.app.state.vault
@@ -37,6 +60,7 @@ async def list_tokens(request: Request):
                     "name": u.get("name", uid),
                     "email": u.get("email", ""),
                     "service": svc,
+                    "label": _pretty_service(svc),
                 })
 
     return HTMLResponse(env.get_template("tokens.html").render(

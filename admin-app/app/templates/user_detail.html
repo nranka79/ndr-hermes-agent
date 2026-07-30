@@ -10,12 +10,14 @@
 
 <div class="row mt-3">
     <div class="col-md-6">
+
+        <!-- Identity card -->
         <div class="card">
             <div class="card-header">Identity</div>
             <div class="card-body">
-                <dl class="row">
+                <dl class="row mb-0">
                     <dt class="col-sm-4">User ID</dt>
-                    <dd class="col-sm-8">{{ user_data.user_id }}</dd>
+                    <dd class="col-sm-8"><code>{{ user_data.user_id }}</code></dd>
 
                     <dt class="col-sm-4">Name</dt>
                     <dd class="col-sm-8">{{ user_data.get('name', '-') }}</dd>
@@ -23,7 +25,7 @@
                     <dt class="col-sm-4">Role</dt>
                     <dd class="col-sm-8">{{ user_data.get('role', 'employee') }}</dd>
 
-                    <dt class="col-sm-4">Email</dt>
+                    <dt class="col-sm-4">Emails</dt>
                     <dd class="col-sm-8">{{ email_display }}</dd>
 
                     <dt class="col-sm-4">Telegram</dt>
@@ -32,11 +34,8 @@
                     <dt class="col-sm-4">Phone</dt>
                     <dd class="col-sm-8">{{ phone_display }}</dd>
 
-                    <dt class="col-sm-4">GBrain Home</dt>
+                    <dt class="col-sm-4">GBrain</dt>
                     <dd class="col-sm-8"><code>{{ user_data.get('gbrain_home', '-') }}</code></dd>
-
-                    <dt class="col-sm-4">Permissions</dt>
-                    <dd class="col-sm-8"><code>{{ full_permissions }}</code></dd>
                 </dl>
             </div>
         </div>
@@ -78,6 +77,58 @@
             </div>
         </div>
 
+        <!-- Identities list -->
+        <div class="card mt-3">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span>Identities</span>
+            </div>
+            <div class="card-body">
+                <!-- Inline add form -->
+                <form method="post" action="/users/{{ user_data.user_id }}/add-identity" class="row g-2 mb-3">
+                    <div class="col-4">
+                        <select name="identity_type" class="form-select form-select-sm">
+                            <option value="email">email</option>
+                            <option value="telegram">telegram</option>
+                            <option value="phone">phone</option>
+                            <option value="slack">slack</option>
+                            <option value="draas_user_id">draas_user_id</option>
+                            <option value="slug">slug</option>
+                        </select>
+                    </div>
+                    <div class="col-5">
+                        <input type="text" name="identity_value" class="form-control form-control-sm" placeholder="Value">
+                    </div>
+                    <div class="col-3">
+                        <button type="submit" class="btn btn-sm btn-success w-100">Add</button>
+                    </div>
+                </form>
+
+                {% if identities_map %}
+                <table class="table table-sm table-borderless mb-0">
+                    {% for t, values in identities_map.items() %}
+                        {% for val in values %}
+                        <tr>
+                            <td class="col-3"><span class="badge bg-secondary">{{ t }}</span></td>
+                            <td class="col-6"><code>{{ val }}</code></td>
+                            <td class="col-3 text-end">
+                                <form method="post" action="/users/{{ user_data.user_id }}/delete-identity" style="display:inline">
+                                    <input type="hidden" name="identity_type" value="{{ t }}">
+                                    <input type="hidden" name="identity_value" value="{{ val }}">
+                                    <button type="submit" class="btn btn-sm btn-outline-danger"
+                                            onclick="return confirm('Remove this identity?')">Remove</button>
+                                </form>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    {% endfor %}
+                </table>
+                {% else %}
+                    <p class="text-muted mb-0">No identities on record.</p>
+                {% endif %}
+            </div>
+        </div>
+
+        <!-- App Access -->
         <div class="card mt-3">
             <div class="card-header">App Access</div>
             <div class="card-body">
@@ -95,60 +146,18 @@
             </div>
         </div>
 
-        <!-- Identities list -->
-        <div class="card mt-3">
-            <div class="card-header d-flex justify-content-between align-items-center">
-                <span>Identities</span>
-                <button class="btn btn-sm btn-outline-primary" type="button" data-bs-toggle="collapse" data-bs-target="#addIdentityForm">
-                    + Add
-                </button>
-            </div>
-            <div class="card-body">
-                <div class="collapse mb-3" id="addIdentityForm">
-                    <form method="post" action="/users/{{ user_data.user_id }}/add-identity" class="row g-2">
-                        <div class="col-4">
-                            <select name="identity_type" class="form-select form-select-sm">
-                                <option value="email">email</option>
-                                <option value="telegram">telegram</option>
-                                <option value="phone">phone</option>
-                                <option value="slack">slack</option>
-                                <option value="draas_user_id">draas_user_id</option>
-                            </select>
-                        </div>
-                        <div class="col-5">
-                            <input type="text" name="identity_value" class="form-control form-control-sm" placeholder="Value">
-                        </div>
-                        <div class="col-3">
-                            <button type="submit" class="btn btn-sm btn-success">Add</button>
-                        </div>
-                    </form>
-                </div>
-
-                {% for t, values in identities_map.items() %}
-                    {% for val in values %}
-                    <form method="post" action="/users/{{ user_data.user_id }}/delete-identity" style="display:inline">
-                        <input type="hidden" name="identity_type" value="{{ t }}">
-                        <input type="hidden" name="identity_value" value="{{ val }}">
-                        <span class="badge bg-secondary">{{ t }}</span> {{ val }}
-                        <button type="submit" class="btn btn-sm btn-outline-danger" onclick="return confirm('Remove this identity?')">Remove</button>
-                        <br>
-                    </form>
-                    {% endfor %}
-                {% else %}
-                    <p class="text-muted mb-0">No identities on record.</p>
-                {% endfor %}
-            </div>
-        </div>
     </div>
 
     <div class="col-md-6">
+
+        <!-- Stored Tokens -->
         <div class="card">
             <div class="card-header">Stored Tokens</div>
             <div class="card-body">
                 <ul class="list-group list-group-flush">
                     {% for svc in services %}
                     <li class="list-group-item d-flex justify-content-between align-items-center">
-                        {{ VAULT_SERVICE_NAMES.get(svc, svc) }}
+                        {{ pretty_service(svc) }}
                         <span class="text-muted small">{{ svc }}</span>
                     </li>
                     {% else %}
@@ -158,6 +167,7 @@
             </div>
         </div>
 
+        <!-- STT Vocabulary -->
         <div class="card mt-3">
             <div class="card-header">STT Vocabulary</div>
             <div class="card-body">
@@ -165,6 +175,89 @@
                 <a href="/vocab/{{ user_data.user_id }}" class="btn btn-outline-primary btn-sm">View / edit vocabulary</a>
             </div>
         </div>
+
+        <!-- OAuth Providers -->
+        <div class="card mt-3">
+            <div class="card-header">OAuth Providers</div>
+            <div class="card-body">
+                <p class="text-muted small">Which SSO providers this user can connect. Token status shown per account.</p>
+
+                <form method="post" action="/users/{{ user_data.user_id }}/oauth-providers">
+
+                    <!-- Google -->
+                    <div class="mb-3">
+                        <label class="fw-semibold">
+                            <span style="font-size:1.1rem;">🔵</span> Google
+                        </label>
+                        <div class="mt-1">
+                            <input type="text" name="google_emails" class="form-control form-control-sm"
+                                   value="{{ oauth_google_emails | join(', ') }}"
+                                   placeholder="e.g. user@gmail.com, user@domain.com">
+                            <div class="form-text">Comma-separated email addresses the user may authorize.</div>
+                        </div>
+                        {% if oauth_google_emails %}
+                        <div class="mt-2">
+                            {% for email in oauth_google_emails %}
+                            {% set g_token_key = 'google-' + email.split('@')[0] %}
+                            <div class="d-flex align-items-center mb-1">
+                                {% if g_token_key in services %}
+                                <span class="badge bg-success me-1">Connected</span>
+                                {% else %}
+                                <span class="badge bg-secondary me-1">No token</span>
+                                {% endif %}
+                                <small><code>{{ email }}</code></small>
+                            </div>
+                            {% endfor %}
+                        </div>
+                        {% endif %}
+                    </div>
+
+                    <!-- Kelsa MCP -->
+                    <div class="mb-3">
+                        <div class="form-check form-switch">
+                            <input class="form-check-input" type="checkbox" role="switch"
+                                   id="kelsa" name="kelsa" {% if oauth_kelsa %}checked{% endif %}>
+                            <label class="form-check-label fw-semibold" for="kelsa">
+                                <span style="font-size:1.1rem;">🔴</span> Kelsa MCP
+                            </label>
+                        </div>
+                        {% if oauth_kelsa %}
+                        <div class="mt-1 ms-4">
+                            {% if 'mcp-kelsa-read' in services or 'kelsa' in services %}
+                            <span class="badge bg-success">Connected</span>
+                            {% else %}
+                            <span class="badge bg-secondary">No token</span>
+                            {% endif %}
+                        </div>
+                        {% endif %}
+                    </div>
+
+                    <!-- Future providers -->
+                    <div class="mb-3 text-muted">
+                        <div class="form-check form-switch">
+                            <input class="form-check-input" type="checkbox" role="switch" disabled>
+                            <label class="form-check-label fw-semibold">
+                                <span style="font-size:1.1rem;">⚪</span> Microsoft 365
+                            </label>
+                        </div>
+                        <small class="ms-4">Coming soon</small>
+                    </div>
+
+                    <div class="mb-3 text-muted">
+                        <div class="form-check form-switch">
+                            <input class="form-check-input" type="checkbox" role="switch" disabled>
+                            <label class="form-check-label fw-semibold">
+                                <span style="font-size:1.1rem;">⚪</span> Twitter / X
+                            </label>
+                        </div>
+                        <small class="ms-4">Coming soon</small>
+                    </div>
+
+                    <button type="submit" class="btn btn-primary btn-sm">Save OAuth providers</button>
+                </form>
+            </div>
+        </div>
+
     </div>
 </div>
 
