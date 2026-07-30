@@ -37,28 +37,17 @@
 #
 services:
 
-  gws-vault:
-    build: /opt/hermes-gws-vault
-    image: hermes-gws-vault:latest
-    container_name: hermes-gws-vault-1
-    restart: unless-stopped
-    network_mode: host
-    env_file:
-      - /opt/hermes/.env
-    environment:
-      - TOKEN_DIR=/data/private-tokens
-    volumes:
-      # RW: identity data + tokens + audit log live here
-      - /opt/hermes-gws-vault-data:/data
-    # Healthcheck: hits the in-process health endpoint.
-    # The override file replaces the image's HEALTHCHECK because
-    # network_mode: host means 127.0.0.1 in the container = 127.0.0.1 on host.
-    healthcheck:
-      test: ["CMD", "curl", "-fsS", "-H", "X-Vault-Secret: ${VAULT_SECRET}", "http://127.0.0.1:8000/v1/health"]
-      interval: 30s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
+  # gws-vault (Docker/FastAPI rewrite) REMOVED 2026-07-30 -- was a parallel,
+  # never-actually-used reimplementation in a separate repo
+  # (github.com/nranka79/hermes-gws-vault), built once 2026-07-07 and never
+  # updated again. The REAL vault every service actually talks to
+  # (GWS_VAULT_SOCKET=/run/gws-vault/vault.sock) is the systemd service
+  # `gws-vault.service` running /usr/local/bin/gws-vault-server, a deployed
+  # copy of this repo's bin_gws_vault_server_live.py -- unrelated to this
+  # Docker service. Confirmed nothing pointed at this container's port 8000
+  # before removing it. Source repo/checkout at /opt/hermes-gws-vault also
+  # deleted from the host; data volume /opt/hermes-gws-vault-data left in
+  # place pending a separate decision.
 
   gws-service:
     build: /opt/hermes-draas-tools/gws_service
