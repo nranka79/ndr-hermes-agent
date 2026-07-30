@@ -63,6 +63,24 @@ themselves.
   that is a deliberate policy change to this file, not a per-request
   override.
 
+## WhatsApp Links — HARD RULE (safety-critical)
+
+**NEVER construct, hand-encode, or type a wa.me URL manually.** The
+`whatsapp_link` tool is the ONLY sanctioned way to produce a WhatsApp
+deep link.
+
+- **ALWAYS** call `whatsapp_link` for any WhatsApp message/link request.
+  Pass the full message text and phone number as-is — do NOT pre-process,
+  strip, escape, or modify any characters before handing them to the tool.
+- Characters like `&`, `#`, `(`, `)`, `'`, `+`, `-`, `=`, `.`, `!`, spaces,
+  emoji, and newlines are all handled correctly by the tool. If you strip
+  or modify them, the link breaks on mobile WhatsApp.
+- If the tool returns a URL that seems long or has strange `%EF%BC%86`
+  sequences, that is CORRECT — do NOT second-guess it or try to "clean" it.
+- If `whatsapp_link` is unavailable (not in your tool list), tell the user
+  you cannot generate the link. Do NOT fall back to manual URL construction
+  via `execute_code`, string formatting, or any other method.
+
 ## GBrain Rules
 - Each user has isolated brain storage
 - **Always** prefix gbrain commands with `HOME=<gbrain_home>` from session context

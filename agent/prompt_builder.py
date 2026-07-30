@@ -503,8 +503,11 @@ PLATFORM_HINTS = {
         ".webp) appear as photos, videos (.mp4, .mov) play inline, and other "
         "files arrive as downloadable documents. You can also include image "
         "URLs in markdown format ![alt](url) and they will be sent as photos. "
-        "When producing any WhatsApp link (wa.me URL), always call the "
-        "whatsapp_link tool — never type the URL manually."
+        "ALWAYS call the whatsapp_link tool for any wa.me URL — this is the "
+        "ONLY sanctioned way. Never construct, hand-encode, or type a wa.me "
+        "URL manually. The tool handles all special character encoding "
+        "(including the critical & → %EF%BC%86 rule). If the tool is "
+        "unavailable, tell the user you cannot generate the link."
     ),
     "telegram": (
         "You are on a text messaging communication platform, Telegram. "
