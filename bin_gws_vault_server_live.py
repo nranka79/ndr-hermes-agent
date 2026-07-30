@@ -252,7 +252,15 @@ def handle_request(req: dict, peer_uid: int) -> dict:
     service = str(req.get("service", "")).strip().lower()
 
     # Ops that don't need a service name
-    _NO_SVC_OPS = frozenset(("list_services", "resolve", "add_identity", "get_identity", "remove_identity", "list_identities"))
+    # 2026-07-30: delete_user and search_identities were missing here --
+    # neither op uses/needs a `service` param, but the guard below was
+    # rejecting both with "Invalid or missing service name: ''" before
+    # they ever reached their own handlers. Found while cleaning up test
+    # data from the phone-uniqueness fix's live smoke test.
+    _NO_SVC_OPS = frozenset((
+        "list_services", "resolve", "add_identity", "get_identity",
+        "remove_identity", "list_identities", "delete_user", "search_identities",
+    ))
     if op not in _NO_SVC_OPS and not _valid_svc(service):
         return {"ok": False, "error": f"Invalid or missing service name: {service!r}"}
 
