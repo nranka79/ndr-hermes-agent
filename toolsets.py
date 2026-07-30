@@ -93,6 +93,12 @@ _HERMES_CORE_TOOLS = [
     "whatsapp_link",
     # GWS multi-account resolver -- maps account email/label -> vault service_name
     "gws_resolve_account",
+    # GWS token fetch -- internal plumbing for tools.gws_auth.load_credentials()
+    # when called from inside the execute_code sandbox. The tool's handler runs
+    # in the trusted main process; sandbox scripts never call it directly.
+    # Must be in _HERMES_CORE_TOOLS so every session's sandbox stub includes it,
+    # otherwise gws_auth.load_credentials() fails with ImportError in sandbox.
+    "gws_fetch_token",
     # Kelsa MCP (Kelsa-Read) -- per-user OAuth login + generic tool
     # list/call, since Kelsa cannot use the generic mcp_servers auto-connect
     # path (headless gateway can't complete Kelsa's local-interactive OAuth

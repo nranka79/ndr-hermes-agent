@@ -101,12 +101,9 @@ def _detect_session() -> tuple[str, str]:
         return "", ""
 
 
-_PASTE_BACK_INSTRUCTIONS = (
-    "After you tap Authorize, your browser will try to load a "
-    "127.0.0.1 address and show a connection error / \"can't reach this "
-    "page\" — that's expected, nothing is actually listening there. "
-    "Copy the FULL URL from your browser's address bar at that point "
-    "(it contains the authorization code) and paste it back here."
+_AUTH_FAILURE_CONTACT = (
+    "If authorization keeps failing, copy all messages in this chat "
+    "and share them with @ndr_ra — do not retry on your own."
 )
 
 
@@ -134,7 +131,9 @@ def _deliver_kelsa_auth_link(url: str) -> dict:
             "Click the button below to authorize Kelsa CRM.\n\n"
             "This lets Hermes read your Kelsa leads/pipeline on your behalf. "
             "You can revoke access any time from your Kelsa account settings.\n\n"
-            f"{_PASTE_BACK_INSTRUCTIONS}"
+            "After authorizing, you'll see an 'Authorization successful!' "
+            "page — close it and return here. "
+            f"{_AUTH_FAILURE_CONTACT}"
         )
         keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("Authorize Kelsa CRM", url=url)]])
 
@@ -165,7 +164,8 @@ def _deliver_kelsa_auth_link(url: str) -> dict:
         sys.stderr.write(
             f"\n{sep}\nKelsa CRM Authorization Required\n{sep}\n"
             f"Open this URL in a browser to authorize:\n\n  {url}\n\n"
-            f"{_PASTE_BACK_INSTRUCTIONS}\n\n{sep}\n\n"
+            f"After authorizing, check for 'Authorization successful!' "
+            f"in the browser. {_AUTH_FAILURE_CONTACT}\n\n{sep}\n\n"
         )
         sys.stderr.flush()
         return {"success": True, "delivery": "cli_printed"}
@@ -177,7 +177,9 @@ def _deliver_kelsa_auth_link(url: str) -> dict:
         "_instruction": (
             "Embed the markdown_link value VERBATIM in your response. "
             "Do not retype or paraphrase it. Also tell the user: "
-            f"{_PASTE_BACK_INSTRUCTIONS}"
+            "After authorizing, look for an 'Authorization successful!' "
+            "page in the browser and return here. "
+            f"{_AUTH_FAILURE_CONTACT}"
         ),
     }
 
@@ -194,13 +196,19 @@ KELSA_LOGIN_SCHEMA = {
         "URL yourself, and NEVER use send_oauth_url for Kelsa -- that tool "
         "is hardcoded to Google Workspace and will silently send a Google "
         "link instead, mislabeled.\n\n"
-        "IMPORTANT: Kelsa's OAuth server only accepts a 127.0.0.1 redirect, "
-        "so after the user taps Authorize their browser will show a "
-        "connection-error page at a 127.0.0.1 address -- this is EXPECTED, "
-        "not a failure. Tell the user to copy that URL from their address "
-        "bar and paste it back to you, then call kelsa_complete_login with "
-        "that pasted text. Do not tell the user something went wrong when "
-        "they report a broken-looking 127.0.0.1 page after authorizing."
+        "After the user taps Authorize, the browser will show "
+        "'Authorization successful!' -- the HTTPS callback completes "
+        "automatically and the token is stored directly in the vault. "
+        "The token NEVER reaches you. Once the user confirms success, "
+        "just call kelsa_list_tools to proceed. Do NOT ask the user for "
+        "any pasted URL or authorization code.\n\n"
+        "If authorization fails (no success page), tell the user to "
+        "try kelsa_login again. If it keeps failing, ask them to share "
+        "the chat history with @ndr_ra for investigation. Do NOT suggest "
+        "pasting any URL or code from the browser's address bar.\n\n"
+        "IMPORTANT: NEVER try to read the Kelsa token from the vault via "
+        "terminal() or execute_code() -- use kelsa_list_tools / "
+        "kelsa_call_tool instead. They handle token lookup automatically."
     ),
     "parameters": {"type": "object", "properties": {}, "required": []},
 }
@@ -208,26 +216,13 @@ KELSA_LOGIN_SCHEMA = {
 KELSA_COMPLETE_LOGIN_SCHEMA = {
     "name": "kelsa_complete_login",
     "description": (
-        "Finish a Kelsa CRM authorization after the user has tapped "
-        "Authorize and pasted back the resulting URL (or just the "
-        "code=...&state=... portion) from their browser's address bar. "
-        "Call this as soon as the user provides that pasted text following "
-        "a kelsa_login prompt -- do not ask them to do anything else first."
+        "DEPRECATED — do NOT use this tool. The HTTPS callback handles "
+        "authorization automatically. Never ask the user to paste an "
+        "authorization code or URL — OAuth codes must never pass through "
+        "the LLM. If authorization failed, call kelsa_login again or "
+        "ask the user to contact @ndr_ra."
     ),
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "pasted": {
-                "type": "string",
-                "description": (
-                    "The full URL or query string the user pasted back "
-                    "(e.g. 'http://127.0.0.1:47562/callback?code=...&state=...' "
-                    "or just 'code=...&state=...')."
-                ),
-            },
-        },
-        "required": ["pasted"],
-    },
+    "parameters": {"type": "object", "properties": {}, "required": []},
 }
 
 KELSA_LIST_TOOLS_SCHEMA = {
@@ -238,6 +233,10 @@ KELSA_LIST_TOOLS_SCHEMA = {
         "schema. Call this BEFORE kelsa_call_tool whenever you don't "
         "already know the exact tool name from a prior call in this "
         "session -- never guess a Kelsa tool name.\n\n"
+        "This tool loads the Kelsa token from the vault automatically. "
+        "Do NOT try to read the token yourself or call the Kelsa API "
+        "directly via terminal() or execute_code() -- use this tool or "
+        "kelsa_call_tool.\n\n"
         "IMPORTANT: If the user is not authorized yet, this tool returns an "
         "error telling you to call kelsa_login first. It does NOT silently "
         "generate an auth URL on its own."
@@ -251,6 +250,10 @@ KELSA_CALL_TOOL_SCHEMA = {
         "Call one tool on the Kelsa MCP server on behalf of the current "
         "authorized user (e.g. to check leads). Use kelsa_list_tools first "
         "to get the exact tool_name and its expected arguments schema.\n\n"
+        "This tool loads the Kelsa token from the vault and opens an "
+        "ephemeral MCP connection automatically. Do NOT try to build a "
+        "direct MCP connection or call the Kelsa API via terminal() or "
+        "execute_code() -- use this tool instead.\n\n"
         "IMPORTANT: If the user is not authorized yet, this tool returns an "
         "error telling you to call kelsa_login first. It does NOT silently "
         "generate an auth URL on its own."
@@ -289,9 +292,12 @@ def _not_authorized_result(caller: str) -> str:
         caller, tid,
     )
     return tool_error(
-        "Not authorized with Kelsa yet. You must call kelsa_login first to "
-        "send the user an authorization button/link, then call "
-        "kelsa_complete_login after they paste back the URL."
+        "Not authorized with Kelsa yet. Call kelsa_login first to send the "
+        "user an authorization button/link. After they authorize, the "
+        "browser should show 'Authorization successful!' and the token is "
+        "stored automatically in the vault -- then retry this tool. "
+        "If authorization keeps failing, tell the user to share chat "
+        "history with @ndr_ra for investigation."
     )
 
 
@@ -344,15 +350,13 @@ def kelsa_login_tool(args, **kw):
             return tool_result(
                 message=(
                     "A Kelsa authorization is already pending. I already sent "
-                    "you a button — tap it, authorize, and paste back the URL "
-                    "you see after authorizing (it will be a broken-looking "
-                    "127.0.0.1 page — that's expected)."
+                    "you a button — tap it and authorize in the browser. "
+                    "After 'Authorization successful!' appears, return here."
                 ),
                 instructions=(
                     "There is already a pending Kelsa authorization for this "
-                    "user. Do NOT call kelsa_login again. Tell them to complete "
-                    "the pending authorization by pasting back the URL, then "
-                    "call kelsa_complete_login with the pasted text."
+                    "user. Do NOT call kelsa_login again. Wait for them to "
+                    "authorize and confirm, then use kelsa_list_tools."
                 ),
             )
         # Cache expired but _pending_auth still has the tid (user abandoned
@@ -386,62 +390,24 @@ def kelsa_login_tool(args, **kw):
     return tool_result(
         **delivery,
         message=(
-            "Sent the Kelsa authorization button/link to the user. After "
-            "they authorize, they'll land on a broken-looking 127.0.0.1 "
-            "page -- that's expected. Tell them to paste that URL back, "
-            "then call kelsa_complete_login with it."
+            "Sent the Kelsa authorization button/link to the user. "
+            "After they authorize in the browser, the HTTPS callback stores "
+            "the token directly in the vault. Once the user confirms success, "
+            "call kelsa_list_tools to verify and proceed. "
+            "Do NOT try to read the token from the vault via terminal or "
+            "execute_code -- use kelsa_list_tools / kelsa_call_tool instead. "
+            "NEVER ask the user to paste an authorization code or URL."
         ),
     )
 
 
 def kelsa_complete_login_tool(args, **kw):
-    tid = _current_telegram_id()
-    if not tid:
-        return tool_error("No session user context -- cannot complete a Kelsa login.")
-
-    pasted = (args.get("pasted") or "").strip()
-    if not pasted:
-        return tool_error("pasted is required -- the URL or code=...&state=... the user gave you.")
-
-    from tools.kelsa_auth import (
-        parse_callback_paste,
-        exchange_and_store,
-        _clear_auth_url_cache,
+    return tool_error(
+        "This tool is DEPRECATED. The HTTPS callback handles authorization "
+        "automatically — OAuth codes must never pass through the LLM. "
+        "Call kelsa_login again if the user needs to re-authorize, or "
+        "ask them to share chat history with @ndr_ra if auth keeps failing."
     )
-
-    try:
-        code, state = parse_callback_paste(pasted)
-    except ValueError as exc:
-        return tool_error(str(exc))
-
-    if ":" not in state:
-        return tool_error("Malformed state in the pasted URL -- ask the user to start a fresh kelsa_login.")
-    state_tid, code_verifier = state.split(":", 1)
-    state_tid = state_tid.strip()
-
-    if state_tid != str(tid):
-        return tool_error(
-            "This authorization link belongs to a different user session. "
-            "Ask the user to run kelsa_login themselves and paste back "
-            "their own link's result."
-        )
-
-    try:
-        exchange_and_store(code, code_verifier)
-    except Exception as exc:
-        logger.warning(
-            "kelsa_complete_login: exchange failed for user %s: %s", tid, exc,
-        )
-        return tool_error(f"Kelsa token exchange failed: {exc}")
-
-    _pending_auth.discard(tid)
-    _clear_auth_url_cache()
-    logger.info(
-        "kelsa_complete_login: token stored for user %s (pending_set=%s)",
-        tid, len(_pending_auth),
-    )
-
-    return tool_result(message="Kelsa CRM authorized successfully. You can now use kelsa_list_tools / kelsa_call_tool.")
 
 
 def kelsa_list_tools_tool(args, **kw):

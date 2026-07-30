@@ -218,9 +218,22 @@ def _clear_auth_url_cache() -> None:
 
     Called after a successful token exchange (the cached URL is one-time use)
     or when a cooldown timeout is desired (e.g. user wants a fresh URL).
+
+    Does NOT clear the notification context -- callers that need to read
+    ``get_notify_context()`` must do so *before* this function, or use
+    ``_clear_notify_context()`` independently.
     """
     tid = _session_telegram_id()
     _auth_url_cache.pop(tid, None)
+
+
+def _clear_notify_context() -> None:
+    """Remove the stored notification context for this user.
+
+    Called after the OAuth callback handler has successfully read the
+    notification context and delivered the success message.
+    """
+    tid = _session_telegram_id()
     _notify_context.pop(tid, None)
 
 

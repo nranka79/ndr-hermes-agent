@@ -4263,11 +4263,23 @@ class APIServerAdapter(BasePlatformAdapter):
             from tools.kelsa_auth import (
                 exchange_and_store,
                 _clear_auth_url_cache,
+                _clear_notify_context,
                 get_notify_context,
             )
 
             exchange_and_store(code, code_verifier)
+            logger.info("Kelsa token stored for telegram_id=%s", telegram_id)
+
+            # Read notification context BEFORE clearing caches -- 
+            # _clear_auth_url_cache must not destroy the context
+            # that get_notify_context returns (see _clear_auth_url_cache
+            # docstring: notification context is now managed separately).
+            notify_ctx = get_notify_context()
+            init_platform = notify_ctx.get("platform", "")
+            init_chat_id = notify_ctx.get("chat_id", "")
+
             _clear_auth_url_cache()
+            _clear_notify_context()
 
             # Clear the kelsa_tool pending-auth guard too. Previously only
             # kelsa_complete_login_tool (the manual paste-back path) cleared
@@ -4282,8 +4294,6 @@ class APIServerAdapter(BasePlatformAdapter):
             except Exception:
                 logger.debug("Kelsa callback: could not clear _pending_auth for %s", telegram_id, exc_info=True)
 
-            logger.info("Kelsa token stored for telegram_id=%s", telegram_id)
-
             try:
                 from tools._user_registry import get_user_config
                 uconf = get_user_config(telegram_id)
@@ -4293,9 +4303,6 @@ class APIServerAdapter(BasePlatformAdapter):
 
             # Route the success notification through the same channel the
             # user initiated from (Telegram, Open Web UI, WhatsApp, etc.).
-            notify_ctx = get_notify_context()
-            init_platform = notify_ctx.get("platform", "")
-            init_chat_id = notify_ctx.get("chat_id", "")
 
             if init_platform == "telegram" and init_chat_id:
                 asyncio.create_task(self._notify_telegram_user(
