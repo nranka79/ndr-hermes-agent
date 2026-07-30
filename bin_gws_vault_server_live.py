@@ -187,6 +187,53 @@ def _scan_identities() -> list[dict]:
     return results
 
 
+def _normalize_phone(raw: str) -> str:
+    """Normalize a phone number to a digits-only key for UNIQUENESS
+    COMPARISON only -- the value as typed by the admin is still what gets
+    stored/displayed verbatim; this is never written back.
+
+    2026-07-30 product decision: phone numbers must be globally unique
+    across every user's profile ``phone`` field AND every user's
+    ``identities.phone`` list (see ``add_identity``'s phone-conflict check
+    below). Since the same real-world number can be entered with or
+    without the ISD/country code (e.g. "9876543210" vs "+919876543210" vs
+    "919876543210"), compare a normalized form instead of the raw string:
+    strip everything but digits, and if what's left is a bare 10-digit
+    number (no country code), assume India and prepend "91". Anything
+    else (already has a country code, or an unexpected length) is left
+    as-is -- this is a deliberately simple heuristic, not full E.164
+    validation for every country.
+    """
+    digits = re.sub(r"\D", "", raw or "")
+    if len(digits) == 10:
+        digits = "91" + digits
+    return digits
+
+
+def _phone_conflict_owner(user_id: str, phone_value: str) -> str | None:
+    """Return the OTHER user_id that already owns *phone_value* (as their
+    profile ``phone`` field or an entry in their ``identities.phone``
+    list), comparing normalized numbers per ``_normalize_phone``.
+
+    Returns None if the number is unclaimed, or if it's only claimed by
+    *user_id* itself (a user may legitimately have the same number in both
+    their profile phone and their identities.phone list).
+    """
+    target = _normalize_phone(phone_value)
+    if not target:
+        return None
+    for rec in _scan_identities():
+        other_uid = rec.get("user_id")
+        if other_uid == user_id:
+            continue
+        if _normalize_phone(rec.get("phone") or "") == target:
+            return other_uid
+        for p in (rec.get("identities", {}).get("phone") or []):
+            if _normalize_phone(p) == target:
+                return other_uid
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Request handler
 # ---------------------------------------------------------------------------
@@ -359,6 +406,31 @@ def handle_request(req: dict, peer_uid: int) -> dict:
         gbrain_home = req.get("gbrain_home")
         phone = req.get("phone")
         contacts_sheet_id = req.get("contacts_sheet_id")
+
+        # Phone numbers must be globally unique across the entire system --
+        # both as a user's profile `phone` field AND as an identities.phone
+        # entry -- for any user OTHER than this one. Same user may have the
+        # same number in both slots. Checked here (ahead of the generic
+        # identity_type/identity_value loop below) so it covers BOTH ways a
+        # phone number can be submitted: identity_type=="phone" (the
+        # generic "add identity" form) and the special `phone` app-metadata
+        # field (create/edit user forms) -- the generic loop below only
+        # covers the former and only against other users' identities.phone
+        # lists, not their profile phone field.
+        if identity_type == "phone":
+            owner = _phone_conflict_owner(user_id, identity_value)
+            if owner:
+                return {
+                    "ok": False,
+                    "error": f"Conflict: phone={identity_value} already belongs to user {owner}",
+                }
+        if phone is not None:
+            owner = _phone_conflict_owner(user_id, phone)
+            if owner:
+                return {
+                    "ok": False,
+                    "error": f"Conflict: phone={phone} already belongs to user {owner}",
+                }
 
         # Check that identity_value doesn't already belong to another user
         for rec in _scan_identities():
