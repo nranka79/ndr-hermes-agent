@@ -1,6 +1,18 @@
 {% extends "base.html" %}
+{% block title %}Error{% endblock %}
+{% block heading %}Error{% endblock %}
 {% block content %}
-<h2>Error</h2>
-<div class="alert alert-danger">{{ error }}</div>
-<a href="/" class="btn btn-secondary">Back to Dashboard</a>
+<div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-8 text-center max-w-lg mx-auto">
+  <div class="w-16 h-16 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-4">
+    <svg class="w-8 h-8 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z"/></path></svg>
+  </div>
+  <h2 class="text-lg font-semibold text-gray-900 mb-2">Something went wrong</h2>
+  <p class="text-sm text-red-600 bg-red-50 rounded-lg px-4 py-3 inline-block">{{ error }}</p>
+  <div class="mt-6">
+    <a href="/" class="inline-flex items-center gap-1.5 text-sm font-medium text-indigo-600 hover:text-indigo-800 transition">
+      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"/></svg>
+      Back to Dashboard
+    </a>
+  </div>
+</div>
 {% endblock %}

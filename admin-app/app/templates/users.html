@@ -1,37 +1,71 @@
 {% extends "base.html" %}
+{% block title %}Users{% endblock %}
+{% block heading %}Users{% endblock %}
 {% block content %}
-<h2>Users <a href="/users/new" class="btn btn-primary btn-sm">+ New</a></h2>
+<div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+  <div class="flex items-center justify-between px-6 py-4 border-b border-gray-100">
+    <div class="relative">
+      <svg class="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+      <input type="text" id="user-search" placeholder="Search users..."
+             class="pl-9 pr-4 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 w-64">
+    </div>
+    <a href="/users/new" class="inline-flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium px-4 py-2 rounded-lg transition shadow-sm">
+      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
+      New User
+    </a>
+  </div>
 
-<table class="table table-striped mt-3">
-    <thead>
-        <tr>
-            <th>User ID</th>
-            <th>Name</th>
-            <th>Email</th>
-            <th>Role</th>
-            <th>Telegram</th>
-            <th>Actions</th>
+  <div class="overflow-x-auto">
+    <table class="w-full text-sm">
+      <thead>
+        <tr class="bg-gray-50 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+          <th class="px-6 py-3">User ID</th>
+          <th class="px-6 py-3">Name</th>
+          <th class="px-6 py-3">Email</th>
+          <th class="px-6 py-3">Role</th>
+          <th class="px-6 py-3">Telegram</th>
+          <th class="px-6 py-3">Phone</th>
+          <th class="px-6 py-3 text-right">Actions</th>
         </tr>
-    </thead>
-    <tbody>
+      </thead>
+      <tbody class="divide-y divide-gray-100" id="users-table-body">
         {% for u in users %}
-        <tr>
-            <td><a href="/users/{{ u.user_id }}">{{ u.user_id }}</a></td>
-            <td>{{ u.name or "-" }}</td>
-            <td>{{ u.email or "-" }}</td>
-            <td>{{ u.role or "employee" }}</td>
-            <td>{{ u.telegram or "-" }}</td>
-            <td>
-                <a href="/users/{{ u.user_id }}" class="btn btn-sm btn-outline-secondary">View</a>
-                <form method="post" action="/users/{{ u.user_id }}/delete" style="display:inline"
-                      onsubmit="return confirm('Delete this user and all their tokens permanently?')">
-                    <button type="submit" class="btn btn-sm btn-outline-danger">Delete</button>
-                </form>
-            </td>
+        <tr class="hover:bg-gray-50 transition user-row" data-search="{{ (u.user_id~' '~u.name~' '~u.email~' '~u.telegram~' '~u.phone)|lower }}">
+          <td class="px-6 py-3">
+            <a href="/users/{{ u.user_id }}" class="font-mono text-indigo-600 hover:text-indigo-800 text-xs font-medium">{{ u.user_id }}</a>
+          </td>
+          <td class="px-6 py-3 font-medium text-gray-900">{{ u.name or '-' }}</td>
+          <td class="px-6 py-3 text-gray-500">{{ u.email or '-' }}</td>
+          <td class="px-6 py-3">
+            {% if u.role == 'admin' %}
+            <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-purple-100 text-purple-700">admin</span>
+            {% else %}
+            <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-600">employee</span>
+            {% endif %}
+          </td>
+          <td class="px-6 py-3 font-mono text-xs text-gray-500">{{ u.telegram or '-' }}</td>
+          <td class="px-6 py-3 text-gray-500">{{ u.phone or '-' }}</td>
+          <td class="px-6 py-3 text-right">
+            <a href="/users/{{ u.user_id }}" class="inline-flex items-center gap-1 text-indigo-600 hover:text-indigo-800 text-xs font-medium transition">
+              View
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+            </a>
+          </td>
         </tr>
         {% else %}
-        <tr><td colspan="6" class="text-muted">No users found</td></tr>
+        <tr><td colspan="7" class="px-6 py-12 text-center text-gray-400">No users found</td></tr>
         {% endfor %}
-    </tbody>
-</table>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+  document.getElementById('user-search')?.addEventListener('input', function() {
+    const q = this.value.toLowerCase();
+    document.querySelectorAll('.user-row').forEach(row => {
+      row.style.display = q ? (row.dataset.search.includes(q) ? '' : 'none') : '';
+    });
+  });
+</script>
 {% endblock %}

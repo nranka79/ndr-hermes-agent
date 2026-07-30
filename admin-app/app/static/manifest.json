@@ -1,0 +1,10 @@
+{
+  "name": "Hermes Admin",
+  "short_name": "Hermes",
+  "description": "Hermes Admin Panel — Manage users, tokens, and OAuth providers",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0f172a",
+  "theme_color": "#4f46e5",
+  "icons": []
+}

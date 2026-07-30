@@ -123,8 +123,7 @@ async def view_user(request: Request, user_id: str):
     identities_map = identity.get("identities", {}) or {}
     emails = identities_map.get("email", [])
     telegrams = identities_map.get("telegram", [])
-    phones = identities_map.get("phone", [])
-
+    phone_value = identity.get("phone") or ""
     apps_perms = (identity.get("permissions", {}) or {}).get("apps", {}) or {}
     app_states = {app: apps_perms.get(app, True) for app in MANAGED_APPS}
 
@@ -138,7 +137,7 @@ async def view_user(request: Request, user_id: str):
         identities_map=identities_map,
         email_display=", ".join(emails) if emails else "-",
         telegram_display=", ".join(telegrams) if telegrams else "-",
-        phone_display=", ".join(phones) if phones else "-",
+        phone_display=phone_value or "-",
         services=services, VAULT_SERVICE_NAMES=VAULT_SERVICE_NAMES,
         pretty_service=_pretty_service,
         managed_apps=MANAGED_APPS, app_states=app_states,

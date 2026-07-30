@@ -1,31 +1,51 @@
 {% extends "base.html" %}
+{% block title %}Tokens{% endblock %}
+{% block heading %}Tokens{% endblock %}
 {% block content %}
-<h2>Tokens</h2>
-
-<table class="table table-striped mt-3">
-    <thead>
-        <tr>
-            <th>User</th>
-            <th>Service</th>
-            <th>Label</th>
-            <th>Actions</th>
+<div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+  <div class="px-6 py-4 border-b border-gray-100">
+    <p class="text-xs text-gray-400">OAuth tokens stored in the GWS Vault per user and service.</p>
+  </div>
+  <div class="overflow-x-auto">
+    <table class="w-full text-sm">
+      <thead>
+        <tr class="bg-gray-50 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+          <th class="px-6 py-3">User</th>
+          <th class="px-6 py-3">Service</th>
+          <th class="px-6 py-3">Label</th>
+          <th class="px-6 py-3 text-right">Actions</th>
         </tr>
-    </thead>
-    <tbody>
+      </thead>
+      <tbody class="divide-y divide-gray-100">
         {% for t in user_tokens %}
-        <tr>
-            <td><a href="/users/{{ t.user_id }}">{{ t.name }}</a></td>
-            <td><code>{{ t.service }}</code></td>
-            <td>{{ t.label }}</td>
-            <td>
-                <form method="post" action="/tokens/{{ t.user_id }}/{{ t.service }}/delete" style="display:inline">
-                    <button type="submit" class="btn btn-sm btn-outline-danger" onclick="return confirm('Revoke this token?')">Revoke</button>
-                </form>
-            </td>
+        <tr class="hover:bg-gray-50 transition">
+          <td class="px-6 py-3">
+            <a href="/users/{{ t.user_id }}" class="font-medium text-indigo-600 hover:text-indigo-800">{{ t.name }}</a>
+            <div class="text-xs text-gray-400 font-mono">{{ t.user_id }}</div>
+          </td>
+          <td class="px-6 py-3 font-mono text-xs text-gray-500">{{ t.service }}</td>
+          <td class="px-6 py-3">
+            <div class="flex items-center gap-2">
+              <span class="w-2 h-2 rounded-full bg-emerald-400 shrink-0"></span>
+              <span>{{ t.label }}</span>
+            </div>
+          </td>
+          <td class="px-6 py-3 text-right">
+            <form method="post" action="/tokens/{{ t.user_id }}/{{ t.service }}/delete"
+                  onsubmit="return confirm('Revoke this token?')">
+              <button type="submit"
+                      class="inline-flex items-center gap-1 text-xs font-medium text-red-500 hover:text-red-700 transition">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
+                Revoke
+              </button>
+            </form>
+          </td>
         </tr>
         {% else %}
-        <tr><td colspan="4" class="text-muted">No tokens found</td></tr>
+        <tr><td colspan="4" class="px-6 py-12 text-center text-gray-400">No tokens found</td></tr>
         {% endfor %}
-    </tbody>
-</table>
+      </tbody>
+    </table>
+  </div>
+</div>
 {% endblock %}

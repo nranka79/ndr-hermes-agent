@@ -59,7 +59,10 @@ class VaultClient:
 
     def add_identity(self, user_id: str, identity_type: str, identity_value: str,
                      name: Optional[str] = None, role: Optional[str] = None,
-                     permissions: Optional[Dict] = None) -> Dict:
+                     permissions: Optional[Dict] = None,
+                     gbrain_home: Optional[str] = None,
+                     phone: Optional[str] = None,
+                     contacts_sheet_id: Optional[str] = None) -> Dict:
         payload = {
             "op": "add_identity",
             "user_id": user_id,
@@ -73,6 +76,12 @@ class VaultClient:
             payload["role"] = role
         if permissions is not None:
             payload["permissions"] = permissions
+        if gbrain_home is not None:
+            payload["gbrain_home"] = gbrain_home
+        if phone is not None:
+            payload["phone"] = phone
+        if contacts_sheet_id is not None:
+            payload["contacts_sheet_id"] = contacts_sheet_id
         resp = self._call(payload)
         if not resp.get("ok"):
             raise VaultError(resp.get("error", "add_identity failed"))

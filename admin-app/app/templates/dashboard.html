@@ -1,37 +1,45 @@
 {% extends "base.html" %}
+{% block title %}Dashboard{% endblock %}
+{% block heading %}Dashboard{% endblock %}
 {% block content %}
-<h2>Dashboard</h2>
-<div class="row mt-4">
-    <div class="col-md-4">
-        <div class="card text-bg-primary mb-3">
-            <div class="card-body">
-                <h5 class="card-title">Identity Provider</h5>
-                <p class="card-text">GWS Vault daemon — central identity + token store.</p>
-            </div>
-        </div>
+<div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+  <div class="bg-gradient-to-br from-indigo-500 to-indigo-700 rounded-2xl p-6 text-white shadow-lg shadow-indigo-500/20">
+    <div class="flex items-center justify-between mb-4">
+      <span class="text-3xl">🔐</span>
+      <span class="text-white/60 text-xs font-medium uppercase tracking-wider">Identity</span>
     </div>
-    <div class="col-md-4">
-        <div class="card text-bg-success mb-3">
-            <div class="card-body">
-                <a href="/users" class="text-white text-decoration-none">
-                    <h5 class="card-title">User Management</h5>
-                    <p class="card-text">Add, view, and manage user identities.</p>
-                </a>
-            </div>
-        </div>
+    <h3 class="text-lg font-semibold">Identity Provider</h3>
+    <p class="text-indigo-200 text-sm mt-1">GWS Vault daemon — central identity + token store.</p>
+  </div>
+
+  <a href="/users" class="block bg-gradient-to-br from-emerald-500 to-emerald-700 rounded-2xl p-6 text-white shadow-lg shadow-emerald-500/20 hover:brightness-110 transition">
+    <div class="flex items-center justify-between mb-4">
+      <span class="text-3xl">👥</span>
+      <span class="text-white/60 text-xs font-medium uppercase tracking-wider">Manage</span>
     </div>
-    <div class="col-md-4">
-        <div class="card text-bg-info mb-3">
-            <div class="card-body">
-                <a href="/tokens" class="text-white text-decoration-none">
-                    <h5 class="card-title">Token Management</h5>
-                    <p class="card-text">View and revoke GWS OAuth tokens.</p>
-                </a>
-            </div>
-        </div>
+    <h3 class="text-lg font-semibold">User Management</h3>
+    <p class="text-emerald-200 text-sm mt-1">Add, view, and manage user identities.</p>
+  </a>
+
+  <a href="/tokens" class="block bg-gradient-to-br from-amber-500 to-amber-700 rounded-2xl p-6 text-white shadow-lg shadow-amber-500/20 hover:brightness-110 transition">
+    <div class="flex items-center justify-between mb-4">
+      <span class="text-3xl">🔑</span>
+      <span class="text-white/60 text-xs font-medium uppercase tracking-wider">Auth</span>
     </div>
+    <h3 class="text-lg font-semibold">Token Management</h3>
+    <p class="text-amber-200 text-sm mt-1">View and revoke GWS OAuth tokens.</p>
+  </a>
 </div>
-<hr>
-<h5>Welcome, {{ user.name }}</h5>
-<p class="text-muted">Signed in as {{ user.email }}. Use the sidebar to navigate.</p>
+
+<div class="bg-white rounded-2xl p-6 shadow-sm border border-gray-100">
+  <div class="flex items-center gap-4">
+    <div class="w-12 h-12 rounded-full bg-indigo-100 flex items-center justify-center text-indigo-600 text-xl font-bold">
+      {{ user.name[:1]|upper }}
+    </div>
+    <div>
+      <h2 class="text-lg font-semibold text-gray-900">Welcome, {{ user.name }}</h2>
+      <p class="text-sm text-gray-500">Signed in as {{ user.email }}. Use the sidebar to navigate.</p>
+    </div>
+  </div>
+</div>
 {% endblock %}

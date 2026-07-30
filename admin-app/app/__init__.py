@@ -1,8 +1,10 @@
 import os
 import logging
 
+from pathlib import Path
+
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, FileResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 
@@ -52,6 +54,15 @@ def create_app() -> FastAPI:
     app.include_router(tokens_router, prefix="/tokens")
     app.include_router(vocab_router, prefix="/vocab")
     app.include_router(health_router, prefix="/health")
+
+    static_dir = Path(__file__).parent / "static"
+
+    @app.get("/static/{path:path}")
+    async def static_files(path: str):
+        file_path = static_dir / path
+        if file_path.is_file():
+            return FileResponse(str(file_path))
+        return HTMLResponse("Not found", status_code=404)
 
     app.state.vault = vault
     app.state.jinja_env = env
