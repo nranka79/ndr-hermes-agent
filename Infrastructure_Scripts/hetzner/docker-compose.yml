@@ -218,6 +218,8 @@ services:
     volumes:
       # Own HERMES_HOME base — independent session/state store.
       - ./hermes-data-bot2:/data/hermes
+      # Shared skills tree — ONE canonical skills dir for all bots (2026-07-31).
+      - ./hermes-data/skills:/data/hermes/skills:ro
       # Shared per-user GBrain dirs — mounted INTO the per-bot base above.
       - ./hermes-data/users:/data/hermes/users
       - ./hermes-data/honcho.json:/data/hermes/honcho.json:ro
@@ -282,6 +284,8 @@ services:
       ASSEMBLYAI_API_KEY: ${ASSEMBLYAI_API_KEY}
     volumes:
       - ./hermes-data-bot3:/data/hermes
+      # Shared skills tree — ONE canonical skills dir for all bots (2026-07-31).
+      - ./hermes-data/skills:/data/hermes/skills:ro
       - ./hermes-data/users:/data/hermes/users
       - ./hermes-data/honcho.json:/data/hermes/honcho.json:ro
       - ./hermes-data/bin:/data/hermes/bin:ro

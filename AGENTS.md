@@ -68,6 +68,17 @@ python3 setup_oauth_credentials.py && exec hermes gateway run -v
 **Volumes:**
 - `/opt/hermes/hermes-data` → `/data/hermes` (this is `HERMES_HOME` inside the container)
 
+> **Shared skills tree (2026-07-31):** `hermes-bot2`/`hermes-bot3` mount
+> `/opt/hermes/hermes-data/skills` read-only at `/data/hermes/skills` — **one
+> canonical skills dir for all 3 bots** (union of the previously per-bot trees;
+> newest-version-wins on conflicts; per-bot dirs preserved as
+> `hermes-data-botN/skills.bak-20260731-075050` for rollback). Any new skill
+> must be added to `/opt/hermes/hermes-data/skills/` once — it appears on all
+> bots. Do NOT copy skills into `hermes-data-botN/skills/` anymore (shadowed by
+> the mount). Note: the RO mount makes `skills_sync.py` fail harmlessly on
+> bot2/bot3 at boot (stage2-hook logs a warning and continues); bot1 owns the
+> rw copy.
+
 **Temporary bind mounts (subagent-polling fix, Jun 2026 — REMOVE once image is rebuilt):**
 - `…/hermes-agent/hermes_state.py` → `/opt/hermes/hermes_state.py` (ro)
 - `…/hermes-agent/gateway/platforms/api_server.py` → `/opt/hermes/gateway/platforms/api_server.py` (ro)
