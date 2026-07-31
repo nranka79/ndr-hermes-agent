@@ -187,15 +187,24 @@
         <h3 class="text-sm font-semibold text-gray-900 uppercase tracking-wider">Stored Tokens</h3>
       </div>
       <div class="p-6">
-        {% if services %}
+        {% if token_meta %}
         <div class="space-y-2">
-          {% for svc in services %}
+          {% for m in token_meta %}
           <div class="flex items-center justify-between px-3 py-2.5 bg-gray-50 rounded-lg">
             <div class="flex items-center gap-2.5">
               <span class="w-2 h-2 rounded-full bg-emerald-400"></span>
-              <span class="text-sm text-gray-700">{{ pretty_service(svc) }}</span>
+              <span class="text-sm text-gray-700">{{ pretty_service(m.service) }}</span>
+              <span class="text-xs font-mono text-gray-400">{{ m.service }}</span>
             </div>
-            <span class="text-xs font-mono text-gray-400">{{ svc }}</span>
+            <div class="text-right">
+              <div class="text-xs text-gray-600 whitespace-nowrap">
+                {%- if m.created_at -%}
+                  {%- if m.approx -%}<span class="text-gray-400" title="Approximate date (seeded from token file date for legacy tokens)">~</span>{%- endif -%}
+                  {{ m.created_at | ist }}
+                {%- else -%}-{%- endif %}
+              </div>
+              <div class="text-[10px] text-gray-400 whitespace-nowrap">updated {{ m.updated_at | ist if m.updated_at else '-' }}</div>
+            </div>
           </div>
           {% endfor %}
         </div>

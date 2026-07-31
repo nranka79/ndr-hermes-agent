@@ -8,7 +8,7 @@ Instructions for AI coding assistants and developers working on the hermes-agent
 
 > **This section is canonical memory for the production Hermes deployment on Hetzner. Read it FIRST for any work involving the VPS, Docker, Telegram, N8N, GWS, Google Sheets, or service infrastructure. The same content also lives in `hermes-data/connections/hetzner.md` (under the Hermes project checkout) for editing — keep both in sync.**
 
-**Last updated:** 2026-07-08
+**Last updated:** 2026-07-31
 **Owner:** Nishant Ranka (admin)
 
 ### SSH Access
@@ -173,6 +173,7 @@ on ALL THREE containers, not just one.
 - **Approach:** per-user OAuth2 refresh tokens (NOT service account / DWD — those are dead)
 - **Module:** `tools/gws_auth.py` → `build_service(telegram_id, service_name)`
 - **Token storage:** gws-vault daemon (Unix socket `/run/gws-vault/vault.sock`), NOT a filesystem path. Keyed by `(canonical_uid, service_name)` — canonical_uid is resolved from the session's raw channel id (Telegram id / email / slug) via the vault's `resolve` op; service_name is a per-Google-account slug (`google-draas`, `google-ahfl`, `google-gmail`, ...). Use the `gws_resolve_account` tool to look up the right service_name instead of guessing. The old filesystem path (`.../users/{telegram_id}/gws_token.json`) was the pre-vault-migration storage and is dead.
+- **Token generation timestamps (2026-07-31):** each token file has a sidecar `{service}.json.meta` recording `{"created_at", "updated_at"}` (ISO-8601 UTC) — first auth vs last refresh. `list_services` returns both `services` and `token_meta` (`service`, `created_at`, `updated_at`, `approx`). `approx: true` = seeded from the token file's mtime for pre-sidecar legacy tokens. The `.meta` sidecar never matches the `*.json` glob, so it's invisible to service listing; token payloads are never mutated. Surfaced in admin.ahfl.in → Tokens (Generated / Last Updated columns, IST).
 - **Client env vars:** `HERMES_OAUTH_CLIENT_ID` + `HERMES_OAUTH_CLIENT_SECRET`
 - **Auth callback:** `https://transcribe.ahfl.in/gws/auth/callback`
 

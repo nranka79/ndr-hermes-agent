@@ -115,6 +115,7 @@ async def view_user(request: Request, user_id: str):
                 user=request.session.get("user"), error=f"User {user_id} not found"
             ), status_code=404)
         services = vault.list_token_services(user_id)
+        token_meta = vault.list_token_metadata(user_id)
     except Exception as e:
         return HTMLResponse(env.get_template("error.html").render(
             user=request.session.get("user"), error=str(e)
@@ -138,7 +139,7 @@ async def view_user(request: Request, user_id: str):
         email_display=", ".join(emails) if emails else "-",
         telegram_display=", ".join(telegrams) if telegrams else "-",
         phone_display=phone_value or "-",
-        services=services, VAULT_SERVICE_NAMES=VAULT_SERVICE_NAMES,
+        services=services, token_meta=token_meta, VAULT_SERVICE_NAMES=VAULT_SERVICE_NAMES,
         pretty_service=_pretty_service,
         managed_apps=MANAGED_APPS, app_states=app_states,
         full_permissions=full_permissions,

@@ -17,6 +17,7 @@ forward, not just a one-off manual check.
 """
 
 import importlib.util
+import os
 import sys
 from pathlib import Path
 
@@ -171,6 +172,90 @@ class TestExistingBehaviorUnaffected:
         assert resp["identity"]["name"] == "Test User"
         assert resp["identity"]["role"] == "employee"
         assert resp["identity"]["permissions"] == {"manage_users": False}
+
+
+class TestTokenMetadata:
+    """Vault tracks when a token was first generated (created_at) and last
+    written (updated_at) in a sidecar {service}.json.meta, surfaced via
+    list_services.token_meta -- powers the admin panel's token dates.
+
+    Token payloads themselves are never mutated: the .meta sidecar is a
+    separate file that does not match the *.json service glob."""
+
+    def _set(self, vs, user="testuser", service="google", token='{"token": "abc"}'):
+        return vs.handle_request({
+            "op": "set", "user_id": user, "service": service,
+            "token_json": token, "vault_secret": "test-secret",
+        }, peer_uid=1000)
+
+    def _list(self, vs, user="testuser"):
+        return vs.handle_request(
+            {"op": "list_services", "user_id": user, "session_uid": user},
+            peer_uid=1000,
+        )
+
+    def test_first_store_records_created_and_updated(self, vault_server):
+        resp = self._set(vault_server)
+        assert resp["ok"] is True
+        meta = vault_server._load_token_meta("testuser", "google")
+        assert meta["created_at"] == meta["updated_at"]
+
+        listing = self._list(vault_server)
+        assert listing["services"] == ["google"]
+        assert listing["token_meta"] == [{
+            "service": "google",
+            "created_at": meta["created_at"],
+            "updated_at": meta["updated_at"],
+            "approx": False,
+        }]
+
+    def test_refresh_preserves_created_at(self, vault_server):
+        self._set(vault_server)
+        first = vault_server._load_token_meta("testuser", "google")
+        self._set(vault_server, token='{"token": "refreshed"}')
+        second = vault_server._load_token_meta("testuser", "google")
+        assert second["created_at"] == first["created_at"]
+        assert second["updated_at"] >= first["updated_at"]
+
+    def test_legacy_token_falls_back_to_mtime_with_approx_flag(self, vault_server):
+        # Simulate a token written before sidecars existed.
+        token_path = vault_server._token_path("testuser", "google")
+        token_path.parent.mkdir(parents=True, exist_ok=True)
+        token_path.write_text('{"token": "legacy"}')
+        listing = self._list(vault_server)
+        assert listing["services"] == ["google"]
+        meta = listing["token_meta"][0]
+        assert meta["approx"] is True
+        assert meta["created_at"] == meta["updated_at"]
+
+    def test_refresh_seeds_legacy_created_at_from_prewrite_mtime(self, vault_server):
+        token_path = vault_server._token_path("testuser", "google")
+        token_path.parent.mkdir(parents=True, exist_ok=True)
+        token_path.write_text('{"token": "legacy"}')
+        os.utime(token_path, (1000000000, 1000000000))  # 2001-09-09T01:46:40Z
+        self._set(vault_server, token='{"token": "refreshed"}')
+        meta = vault_server._load_token_meta("testuser", "google")
+        # created_at seeded from the legacy file's mtime, NOT the refresh time
+        assert meta["created_at"] == "2001-09-09T01:46:40+00:00"
+        listing = self._list(vault_server)
+        assert listing["token_meta"][0]["approx"] is False
+
+    def test_vocab_array_payload_not_mutated(self, vault_server):
+        resp = self._set(vault_server, service="vocab", token='["word1", "word2"]')
+        assert resp["ok"] is True
+        raw = vault_server._token_path("testuser", "vocab").read_text(encoding="utf-8")
+        assert raw == '["word1", "word2"]'
+        assert vault_server._load_token_meta("testuser", "vocab")["created_at"]
+
+    def test_delete_removes_sidecar(self, vault_server):
+        self._set(vault_server)
+        resp = vault_server.handle_request({
+            "op": "delete", "user_id": "testuser", "service": "google",
+            "vault_secret": "test-secret",
+        }, peer_uid=1000)
+        assert resp["ok"] is True
+        assert not vault_server._token_meta_path("testuser", "google").exists()
+        assert self._list(vault_server)["services"] == []
 
 
 if __name__ == "__main__":

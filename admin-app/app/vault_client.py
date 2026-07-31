@@ -160,6 +160,15 @@ class VaultClient:
             return resp.get("services", [])
         return []
 
+    def list_token_metadata(self, user_id: str) -> List[Dict]:
+        """Per-service token metadata from the vault (service, created_at,
+        updated_at, approx). ``approx`` is True when created_at was seeded
+        from the token file's mtime for a pre-sidecar legacy token."""
+        resp = self._call({"op": "list_services", "user_id": user_id, "session_uid": user_id})
+        if resp.get("ok"):
+            return resp.get("token_meta", [])
+        return []
+
     def get_token(self, user_id: str, service: str) -> Optional[str]:
         resp = self._call({"op": "get", "user_id": user_id, "service": service, "session_uid": user_id})
         if resp.get("ok"):

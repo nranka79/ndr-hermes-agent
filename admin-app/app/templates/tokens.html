@@ -13,6 +13,8 @@
           <th class="px-6 py-3">User</th>
           <th class="px-6 py-3">Service</th>
           <th class="px-6 py-3">Label</th>
+          <th class="px-6 py-3">Generated</th>
+          <th class="px-6 py-3">Last Updated</th>
           <th class="px-6 py-3 text-right">Actions</th>
         </tr>
       </thead>
@@ -30,6 +32,15 @@
               <span>{{ t.label }}</span>
             </div>
           </td>
+          <td class="px-6 py-3 text-xs text-gray-600 whitespace-nowrap">
+            {%- if t.created_at -%}
+              {%- if t.approx -%}<span class="text-gray-400" title="Approximate date (seeded from token file date for legacy tokens)">~</span>{%- endif -%}
+              {{ t.created_at | ist }}
+            {%- else -%}-{%- endif %}
+          </td>
+          <td class="px-6 py-3 text-xs text-gray-400 whitespace-nowrap">
+            {{ t.updated_at | ist if t.updated_at else '-' }}
+          </td>
           <td class="px-6 py-3 text-right">
             <form method="post" action="/tokens/{{ t.user_id }}/{{ t.service }}/delete"
                   onsubmit="return confirm('Revoke this token?')">
@@ -42,7 +53,7 @@
           </td>
         </tr>
         {% else %}
-        <tr><td colspan="4" class="px-6 py-12 text-center text-gray-400">No tokens found</td></tr>
+        <tr><td colspan="6" class="px-6 py-12 text-center text-gray-400">No tokens found</td></tr>
         {% endfor %}
       </tbody>
     </table>

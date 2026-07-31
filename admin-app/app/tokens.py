@@ -50,17 +50,20 @@ async def list_tokens(request: Request):
         if not uid:
             continue
         try:
-            services = vault.list_token_services(uid)
+            metas = vault.list_token_metadata(uid)
         except Exception:
-            services = []
-        if services:
-            for svc in services:
+            metas = []
+        if metas:
+            for m in metas:
                 user_tokens.append({
                     "user_id": uid,
                     "name": u.get("name", uid),
                     "email": u.get("email", ""),
-                    "service": svc,
-                    "label": _pretty_service(svc),
+                    "service": m.get("service", ""),
+                    "label": _pretty_service(m.get("service", "")),
+                    "created_at": m.get("created_at"),
+                    "updated_at": m.get("updated_at"),
+                    "approx": bool(m.get("approx")),
                 })
 
     return HTMLResponse(env.get_template("tokens.html").render(

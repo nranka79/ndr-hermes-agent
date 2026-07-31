@@ -10,6 +10,16 @@ Token layout: VAULT_TOKEN_DIR/{user_id}/{service}.json
        /opt/gws-vault/tokens/7449813913/kelsa.json
        /opt/gws-vault/tokens/ndr/google.json            (future: alphanumeric user ID)
 
+  Each token also has a sidecar metadata file
+  VAULT_TOKEN_DIR/{user_id}/{service}.json.meta
+  containing {"created_at": <ISO-UTC>, "updated_at": <ISO-UTC>} so the
+  admin panel can show when a token was first generated. The token
+  payload itself is never mutated (the .meta file does not match the
+  *.json glob, so it is invisible to service listing). For legacy tokens
+  written before the sidecar existed, created_at is seeded from the
+  token file's mtime on the next set/refresh (best-known approximation,
+  surfaced to clients via the "approx" flag).
+
 Identity layout: IDENTITY_DIR/{user_id}.json
   e.g. /opt/gws-vault/identities/ndr@draas.com.json
   The canonical user_id is the primary email. All raw channel identifiers
@@ -45,8 +55,12 @@ Token operations:
             Authorization: vault_secret required.
 
   list_services {"op":"list_services","user_id":"...","session_uid":"..."}
-            → {"ok":true,"services":["google","kelsa",...]}
+            → {"ok":true,"services":["google","kelsa",...],
+               "token_meta":[{"service":"google","created_at":"...","updated_at":"...","approx":false},...]}
             Authorization: session_uid MUST equal user_id.
+            token_meta carries per-service generation timestamps (ISO-8601
+            UTC). "approx":true means created_at was seeded from the token
+            file's mtime for a pre-sidecar legacy token.
 
   (All token operations also accept ``telegram_id`` as an alias for ``user_id``.)
 
@@ -100,6 +114,7 @@ import socket
 import struct
 import sys
 import threading
+from datetime import datetime, timezone
 
 # ---------------------------------------------------------------------------
 # Config
@@ -148,6 +163,38 @@ def _token_path(user_id: str, service: str) -> pathlib.Path:
     if not _valid_svc(service):
         raise ValueError(f"Invalid service name: {service!r} (use lowercase letters/digits/hyphens)")
     return pathlib.Path(VAULT_TOKEN_DIR) / str(user_id) / f"{service}.json"
+
+
+def _token_meta_path(user_id: str, service: str) -> pathlib.Path:
+    """Sidecar metadata file next to a token: {service}.json.meta.
+
+    Stores {"created_at": ..., "updated_at": ...} so the admin panel can
+    show when a token was first generated. Deliberately a *separate* file
+    rather than fields injected into the token payload -- token JSON is
+    written/read verbatim by clients (google creds, vocab arrays, raw
+    Kelsa payloads) and must not be mutated by the vault. The .meta suffix
+    does not match the *.json glob, so service listing ignores it.
+    """
+    return pathlib.Path(str(_token_path(user_id, service)) + ".meta")
+
+
+def _load_token_meta(user_id: str, service: str) -> dict:
+    try:
+        return json.loads(_token_meta_path(user_id, service).read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def _write_token_meta(user_id: str, service: str, meta: dict) -> None:
+    path = _token_meta_path(user_id, service)
+    tmp = path.with_suffix(".meta.tmp")
+    tmp.write_text(json.dumps(meta), encoding="utf-8")
+    tmp.chmod(0o600)
+    tmp.replace(path)
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
 def _identity_path(user_id: str) -> pathlib.Path:
@@ -310,6 +357,20 @@ def handle_request(req: dict, peer_uid: int) -> dict:
             return {"ok": False, "error": f"Invalid token_json: {exc}"}
         try:
             path = _token_path(user_id, service)
+            # Timestamp bookkeeping -- read any legacy mtime BEFORE the
+            # file is overwritten below (replace() bumps mtime to "now").
+            now = _utc_now_iso()
+            meta = _load_token_meta(user_id, service)
+            created = meta.get("created_at")
+            if created is None:
+                # Legacy token (no sidecar yet): the file's mtime is the
+                # best-known approximation of when it was generated.
+                try:
+                    created = datetime.fromtimestamp(
+                        path.stat().st_mtime, timezone.utc
+                    ).isoformat(timespec="seconds")
+                except OSError:
+                    created = now
             path.parent.mkdir(parents=True, exist_ok=True)
             path.parent.chmod(0o700)
             # Atomic write via temp file
@@ -317,6 +378,7 @@ def handle_request(req: dict, peer_uid: int) -> dict:
             tmp.write_text(token_json, encoding="utf-8")
             tmp.chmod(0o600)
             tmp.replace(path)
+            _write_token_meta(user_id, service, {"created_at": created, "updated_at": now})
             logger.info(
                 "Token stored: user=%s service=%s (peer_uid=%d)",
                 user_id, service, peer_uid,
@@ -352,6 +414,7 @@ def handle_request(req: dict, peer_uid: int) -> dict:
             if path.exists():
                 path.unlink()
                 deleted = True
+            _token_meta_path(user_id, service).unlink(missing_ok=True)
             logger.info(
                 "Token deleted: user=%s service=%s existed=%s (peer_uid=%d)",
                 user_id, service, deleted, peer_uid,
@@ -368,10 +431,38 @@ def handle_request(req: dict, peer_uid: int) -> dict:
             return {"ok": False, "error": "Unauthorized"}
         user_dir = pathlib.Path(VAULT_TOKEN_DIR) / user_id
         try:
-            services = [p.stem for p in user_dir.glob("*.json")] if user_dir.exists() else []
+            entries = [p for p in user_dir.glob("*.json")] if user_dir.exists() else []
         except Exception:
-            services = []
-        return {"ok": True, "services": sorted(services)}
+            entries = []
+        services = []
+        token_meta = []
+        for p in entries:
+            svc = p.stem
+            services.append(svc)
+            meta = _load_token_meta(user_id, svc)
+            created = meta.get("created_at")
+            updated = meta.get("updated_at")
+            approx = False
+            if created is None or updated is None:
+                try:
+                    mtime = datetime.fromtimestamp(
+                        p.stat().st_mtime, timezone.utc
+                    ).isoformat(timespec="seconds")
+                except OSError:
+                    mtime = None
+                if created is None:
+                    created = mtime
+                    approx = True
+                if updated is None:
+                    updated = mtime
+            token_meta.append({
+                "service": svc,
+                "created_at": created,
+                "updated_at": updated,
+                "approx": approx,
+            })
+        token_meta.sort(key=lambda m: m["service"])
+        return {"ok": True, "services": sorted(services), "token_meta": token_meta}
 
     # ── Identity operations ──────────────────────────────────────────────────
 
