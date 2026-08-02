@@ -5105,6 +5105,15 @@ class AIAgent:
         persist_user_message: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Forwarder — see ``agent.conversation_loop.run_conversation``."""
+        # Ensure tools that forward the session's LLM (smart_browser) have it
+        # populated even on the very first turn (switch_model only fires on
+        # later model switches). Without this the sidecar falls back to its
+        # own env-configured model, which may be out of credits.
+        try:
+            from tools._agent_context import set_llm_config as _set_llm_ctx
+            _set_llm_ctx(self.base_url, self.api_key, self.model)
+        except Exception:
+            pass
         from agent.conversation_loop import run_conversation
         return run_conversation(self, user_message, system_message, conversation_history, task_id, stream_callback, persist_user_message)
 

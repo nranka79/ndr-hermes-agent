@@ -31,6 +31,8 @@ import logging
 import os
 import uuid
 
+from tools.registry import registry
+
 logger = logging.getLogger(__name__)
 
 _SIDECAR_URL = os.environ.get("SMART_BROWSER_URL", "http://smart-browser:9181/run")
@@ -150,22 +152,19 @@ _SMART_BROWSER_SCHEMA = {
 }
 
 
-def _register():
-    try:
-        from tools.registry import registry
-        registry.register(
-            name="smart_browser",
-            toolset="browser",
-            schema=_SMART_BROWSER_SCHEMA,
-            handler=_handle_smart_browser,
-            check_fn=_check_available,
-            is_async=False,
-            description=_SMART_BROWSER_SCHEMA["description"],
-            emoji="🌐",
-        )
-        logger.info("smart_browser tool registered (HTTP sidecar mode)")
-    except Exception as exc:
-        logger.warning("smart_browser registration failed: %s", exc)
-
-
-_register()
+# NOTE: registration must be a BARE top-level call — the auto-discovery AST
+# scan (tools/registry.py::_module_registers_tools) only picks up modules with
+# a top-level ``registry.register(...)`` expression statement. Wrapping it in
+# a function or try-block silently disables the tool (regression fixed
+# 2026-08-02).
+registry.register(
+    name="smart_browser",
+    toolset="browser",
+    schema=_SMART_BROWSER_SCHEMA,
+    handler=_handle_smart_browser,
+    check_fn=_check_available,
+    is_async=False,
+    description=_SMART_BROWSER_SCHEMA["description"],
+    emoji="🌐",
+)
+logger.info("smart_browser tool registered (HTTP sidecar mode)")

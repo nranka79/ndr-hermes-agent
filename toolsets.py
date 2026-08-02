@@ -31,6 +31,9 @@ from typing import List, Dict, Any, Set, Optional
 _HERMES_CORE_TOOLS = [
     # Web
     "web_search", "web_extract",
+    # Apify actor runner — managed scrapers on residential proxies for
+    # portal sites that block datacenter IPs (99acres/MagicBricks/Maps)
+    "apify_run_actor",
     # Terminal + process management
     "terminal", "process",
     # File manipulation
@@ -129,7 +132,7 @@ TOOLSETS = {
     # Basic toolsets - individual tool categories
     "web": {
         "description": "Web research and content extraction tools",
-        "tools": ["web_search", "web_extract"],
+        "tools": ["web_search", "web_extract", "apify_run_actor"],
         "includes": []  # No other toolsets included
     },
     

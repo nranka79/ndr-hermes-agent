@@ -12,7 +12,7 @@ Args:
   max_steps        (int, optional)  Max agent steps before stopping; default 50
   return_live_url  (bool, optional) Skip agent, return live URL immediately; default False
   pause_on_failure (bool, optional) Return live URL on failure instead of erroring; default True
-  llm              (str, optional)  Model to use; default "claude-sonnet-4-20250514"
+  llm              (str, optional)  Model to use; default "browser-use-2.0"
 
 Returns JSON:
   {
@@ -30,12 +30,14 @@ import time
 import urllib.error
 import urllib.request
 
+from tools.registry import registry
+
 logger = logging.getLogger(__name__)
 
 _API_BASE = "https://api.browser-use.com/api/v2"
 _POLL_INTERVAL = 4       # seconds between task status polls
 _LIVE_URL_WAIT = 12      # seconds to wait for live URL to appear after task creation
-_DEFAULT_LLM = "claude-sonnet-4-20250514"
+_DEFAULT_LLM = "browser-use-2.0"
 
 # Task statuses that mean "still running"
 _RUNNING_STATUSES = {"created", "started", "paused"}
@@ -223,8 +225,8 @@ _BROWSER_USE_CLOUD_SCHEMA = {
             },
             "llm": {
                 "type": "string",
-                "description": "LLM model for the agent. Default: claude-sonnet-4-20250514.",
-                "default": "claude-sonnet-4-20250514",
+                "description": "LLM model for the agent. Default: browser-use-2.0.",
+                "default": "browser-use-2.0",
             },
         },
         "required": ["task"],
@@ -232,22 +234,19 @@ _BROWSER_USE_CLOUD_SCHEMA = {
 }
 
 
-def _register():
-    try:
-        from tools.registry import registry
-        registry.register(
-            name="browser_use_cloud",
-            toolset="browser",
-            schema=_BROWSER_USE_CLOUD_SCHEMA,
-            handler=_handle_browser_use_cloud,
-            check_fn=_check_available,
-            is_async=False,
-            description=_BROWSER_USE_CLOUD_SCHEMA["description"],
-            emoji="🌐",
-        )
-        logger.info("browser_use_cloud tool registered")
-    except Exception as exc:
-        logger.warning("browser_use_cloud registration failed: %s", exc)
-
-
-_register()
+# NOTE: registration must be a BARE top-level call — the auto-discovery AST
+# scan (tools/registry.py::_module_registers_tools) only picks up modules with
+# a top-level ``registry.register(...)`` expression statement. Wrapping it in
+# a function or try-block silently disables the tool (regression fixed
+# 2026-08-02).
+registry.register(
+    name="browser_use_cloud",
+    toolset="browser",
+    schema=_BROWSER_USE_CLOUD_SCHEMA,
+    handler=_handle_browser_use_cloud,
+    check_fn=_check_available,
+    is_async=False,
+    description=_BROWSER_USE_CLOUD_SCHEMA["description"],
+    emoji="🌐",
+)
+logger.info("browser_use_cloud tool registered")
