@@ -299,8 +299,13 @@ The local copy is never the source of truth. The VPS is.
 |---|---|
 | ~~`users.json`~~ | (eliminated — vault is the single source of truth for identity) |
 | `SOUL.md` | Agent persona / system-of-record prompt |
+| `skills/domain/real-estate-area-research/` | Real-estate R&D skill (updated 2026-08-04 → v1.1.0) |
+| `skills/domain/real-estate-portal-research/` | Portal reachability / scraping skill |
+| `skills/productivity/property-pricing-sources/` | Pricing + design blueprint |
+| `skills/productivity/property-rd/` | Tool-first property R&D skill (T1 radius, T2 KML, T3 pricing) + `scripts/` |
+| `skills/research/property-legal-analysis/` | Legal analysis skill |
 
-**How the sync works:** one-way pull (VPS → local), SHA-256 hash compare first, auto-backup of any local file that differs (`<file>.bak.<timestamp>`), preflight check on SSH key + VPS reachability. To push local changes to the VPS, do it explicitly via `ssh` + `scp` — never silently.
+**How the sync works:** `pwsh scripts/sync-from-vps.ps1` — one-way pull (VPS → local), SHA-256 hash compare first, auto-backup of any local file that differs (`<file>.bak.<timestamp>`), preflight check on SSH key + VPS reachability. To push local changes to the VPS, do it explicitly via `ssh` + `scp` — never silently.
 
 ### Google Sheets Registry
 
