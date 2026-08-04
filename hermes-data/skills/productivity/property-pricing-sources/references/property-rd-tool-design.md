@@ -63,7 +63,10 @@ Rules (validated): 100% ASCII (₹→"Rs"); `&`→`&amp;`; minidom-validate befo
 Drive: `files().update(fileId=<same id>, media_body=...)` preserves link.
 
 ## T3 pricing_refresh
-Schedule: monthly cron (1st 06:00 IST) — planned; currently on-demand via CLI.
+Schedule: gateway cron job `28602cc42cc5` — `30 0 1 * *` (1st 06:00 IST,
+server UTC), skill `property-rd`, deliver `telegram:Nishant`; pilot run
+2026-08-04 verified E2E (59 listings / 45 projects, ALERT fired, sheet +
+Telegram verified).
 Source priority (LLM-side): (1) direct-reachable portals (NoBroker, 99sqft, Propzilla, QuikrHomes, Homznspace, PropertyCrow, Proplocators, HousingMan, official builder PDFs) → (2) Google snippet extraction for blocked portals (99acres/MagicBricks/Housing/SquareYards) → (3) Apify 99acres deep-scrape (totals only, no per-sqft).
 30-day window: only listings with visible recency signal (e.g. "Updated 3 weeks ago").
 Outlier logic (implemented in the tool):
