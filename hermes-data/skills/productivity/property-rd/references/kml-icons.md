@@ -1,9 +1,10 @@
 # KML Icon Map & Rules (property-rd)
 
 User-approved category → icon map. BASE = `https://maps.google.com/mapfiles/kml/`.
-All hrefs were curl-verified 200 AND visually confirmed (Aug-2026,
-Bestamanahalli/Anekal belt run) — see the maps skill
-`references/realestate-kml-categories.md` for the original session evidence.
+All hrefs in the table below were curl-verified HTTP 200 on 2026-08-04
+(full-set recheck; the original set was visually confirmed Aug-2026 on the
+Bestamanahalli/Anekal belt run — see the maps skill
+`references/realestate-kml-categories.md` for the session evidence).
 
 ## Approved icons
 
@@ -13,29 +14,30 @@ Bestamanahalli/Anekal belt run) — see the maps skill
 | Apartment | `pushpin/blue-pushpin.png` | blue pin |
 | Villa | `shapes/realestate.png` | signpost+house pictogram — do NOT use pal4/icon6 |
 | Plot / plotted dev | `pushpin/grn-pushpin.png` | green pin |
-| Farm | `shapes/farms.png` | |
+| Farm | `shapes/agriculture.png` | crop pictogram — replaces old `farms.png` (404 since 2026-08-04) |
 | Gated community | `shapes/homegardenbusiness.png` | |
 | Hospital | `shapes/hospitals.png` | red H |
 | School | `shapes/schools.png` | schoolhouse+flag |
 | College / University | `shapes/library.png` | person+book |
 | Industry / manufacturing | `shapes/factory.png` | smokestack |
+| Warehousing / logistics | `shapes/truck.png` | logistics truck — replaces old `warehouse.png` (404 since 2026-08-04) |
 | Tech park / IT | `shapes/electronics.png` | chip/computer |
 | SEZ / industrial park | `shapes/museum.png` | no dedicated SEZ icon exists |
+| Mall / retail | `shapes/shopping.png` | |
+| Temple / ashram / spiritual | `shapes/landmark.png` | classical building — mapfiles has no worship icon except `church.png`; landmark reads better on Earth. Swap for a custom icon if NDR wants |
 | Hotel (5-star) | `shapes/lodging.png` | bed pictogram |
 | Transport hub | `shapes/subway.png` (metro) / `shapes/rail.png` (rail) | |
 | Other / fallback | `shapes/info.png` | |
 
-## Categories added by property-rd (VERIFY visually on first belt run)
-
-These mapfiles hrefs are known-good paths but were NOT part of the original
-Aug-2026 approved set — spot-check once in Google Earth / My Maps:
-
-| Category | Icon URL (after BASE) | Note |
-|---|---|---|
-| Warehousing / logistics | `shapes/warehouse.png` | |
-| Mall / retail | `shapes/shopping.png` | |
-| Temple / ashram / spiritual | `shapes/info.png` | no Hindu-temple icon exists in mapfiles; swap for a custom icon if NDR wants |
-| new_project (unreclassified) | `shapes/info.png` | should rarely appear — reclassify first |
+Verified-404 traps (checked 2026-08-04): `farms.png`, `warehouse.png`,
+`city.png`, `docks.png`, `highway.png`, `temple.png`, `trees.png`,
+`ranch.png`, `garden.png`, `park.png`, `winery.png`, and all
+`religious_*` variants (`religious_hindu`, `religious_buddhist`,
+`religious_islam`, `religious_jain`, `religious_sikh`,
+`religious_christian`, `religious_shinto`) — none exist in `shapes/`.
+`church.png` IS 200 but reads as a Christian steeple, so temple uses
+`landmark.png` instead. The yellow `ylw-pushpin.png` IS 200 but
+deliberately NOT in the approved set.
 
 ## Type → icon assignment rules
 

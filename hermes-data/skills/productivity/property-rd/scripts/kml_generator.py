@@ -46,24 +46,26 @@ KML_NS = "http://www.opengis.net/kml/2.2"
 ICON_BASE = "https://maps.google.com/mapfiles/kml/"
 
 # User-approved icon map (maps skill references/realestate-kml-categories.md;
-# hrefs curl-verified 200 + visually confirmed Aug-2026).
+# hrefs curl-verified 200 + visually confirmed Aug-2026; farm/warehouse/mall/
+# temple hrefs re-verified 200 on 2026-08-04 — farms.png and warehouse.png
+# returned 404 and were replaced by agriculture.png / truck.png).
 TYPE_ICONS = {
     "subject": ("shapes/star.png", 1.4),
     "apartment": ("pushpin/blue-pushpin.png", 1.0),
     "villa": ("shapes/realestate.png", 1.0),
     "plot": ("pushpin/grn-pushpin.png", 1.0),
-    "farm": ("shapes/farms.png", 1.0),
+    "farm": ("shapes/agriculture.png", 1.0),
     "gated": ("shapes/homegardenbusiness.png", 1.0),
     "hospital": ("shapes/hospitals.png", 1.0),
     "school": ("shapes/schools.png", 1.0),
     "college": ("shapes/library.png", 1.0),          # college + university
     "industry": ("shapes/factory.png", 1.0),         # manufacturing
-    "warehouse": ("shapes/warehouse.png", 1.0),      # verify visually 1st run
+    "warehouse": ("shapes/truck.png", 1.0),          # logistics truck
     "techpark": ("shapes/electronics.png", 1.0),     # tech parks / IT
     "sez": ("shapes/museum.png", 1.0),               # SEZ / industrial park
-    "mall": ("shapes/shopping.png", 1.0),            # verify visually 1st run
-    "temple": ("shapes/info.png", 1.0),              # no hindu-temple icon in
-    #                                                    mapfiles; fallback
+    "mall": ("shapes/shopping.png", 1.0),
+    "temple": ("shapes/landmark.png", 1.0),          # classical building —
+    #                                                    closest worship-adjacent icon in mapfiles
     "hotel": ("shapes/lodging.png", 1.0),
     "transport": ("shapes/subway.png", 1.0),
     "new_project": ("shapes/info.png", 1.0),         # only after reclass fails

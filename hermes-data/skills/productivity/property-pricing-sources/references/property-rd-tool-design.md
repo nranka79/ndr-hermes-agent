@@ -26,7 +26,7 @@ Origin story: Sammy's Palm Hills (6.3 km from Thylagere subject land) was missed
 | `kml-icons.md` (approved icon map) | **BUILT** | `property-rd/references/kml-icons.md` |
 | `sources-registry.md` (sources-of-truth KB) | **BUILT** | `property-rd/references/sources-registry.md` |
 | SKILL.md (tool-first orchestration) | **BUILT** | `property-rd/SKILL.md` |
-| Monthly cron wiring (T3 schedule) | NOT yet — manual/on-demand | — |
+| Monthly cron wiring (T3 schedule) | **WIRED 2026-08-04** (gateway cron, `30 0 1 * *`, deliver telegram:Nishant) | container cron store |
 | RERA integration | deferred (NDR) | — |
 
 ## Architecture (v0.2 — tool-first, per NDR 2026-08-04)
@@ -59,7 +59,7 @@ Place-name pins: Nominatim via `--place` (towns only — villages/projects need 
 
 ## T2 kml_generator
 Input: `--sheet <id> --subject-name .. --subject-lat .. --subject-lon .. [--radius 10] [--labels price|none] [--out file.kml] [--drive-file-id <id>]` (+ `--from-json` preview mode, debug only).
-Rules (validated): 100% ASCII (₹→"Rs"); `&`→`&amp;`; minidom-validate before write; label = `Name | Rs X/sqft` per user preference; icon map per **references/kml-icons.md** (the user-approved Aug-2026 set: subject=shapes/star.png, apartment=pushpin/blue-pushpin.png, villa=shapes/realestate.png, plot=pushpin/grn-pushpin.png, hospital/school/college/industry/techpark/sez/hotel + warehouse/mall/temple additions flagged for visual verification); `new_project`/`other` auto-reclassified by name/price signals before icon assignment; coordinate-bucket dedupe (4 dp) keeps the richest row; description = full details + numbered pricing-source list with URLs from Listings & Sources.
+Rules (validated): 100% ASCII (₹→"Rs"); `&`→`&amp;`; minidom-validate before write; label = `Name | Rs X/sqft` per user preference; icon map per **references/kml-icons.md** (user-approved Aug-2026 set, hrefs curl-verified 200 on 2026-08-04 — `farms.png`/`warehouse.png` were 404 and replaced with `agriculture.png`/`truck.png`, mall=`shopping.png`, temple=`landmark.png`; all documented in kml-icons.md); `new_project`/`other` auto-reclassified by name/price signals before icon assignment; coordinate-bucket dedupe (4 dp) keeps the richest row; description = full details + numbered pricing-source list with URLs from Listings & Sources.
 Drive: `files().update(fileId=<same id>, media_body=...)` preserves link.
 
 ## T3 pricing_refresh
@@ -102,13 +102,19 @@ skills/productivity/property-rd/
 3. KML label per-sqft only (`Rs 17,000/sqft`) — implemented.
 4. New-project discovery: refresh existing rows + flag new finds for manual approval before adding — partially (discovery appends; approval gate optional).
 5. Sheet: keep current R&D sheet, or dedicated R&D Database master with per-region tabs — keep current sheet.
-6. Warehouse / mall / temple icons need a one-time visual verification in
-   Google Earth (added to the approved set with flag).
-7. Monthly cron for T3 + alerting (currently manual CLI runs).
+6. Warehouse / mall / temple icons — **resolved 2026-08-04**: full icon set
+   curl-verified; `farms.png` and `warehouse.png` were 404 (replaced by
+   `agriculture.png` / `truck.png`); mall=`shopping.png`, temple=
+   `landmark.png` (no worship icon exists in mapfiles). All in kml-icons.md.
+7. Monthly cron for T3 + alerting — **wired 2026-08-04**: gateway cron job
+   `property-rd T3 monthly pricing refresh`, schedule `30 0 1 * *`
+   (1st 06:00 IST, server runs UTC), skill `property-rd`, deliver
+   `telegram:Nishant` (channel-directory label).
 
 ## Build order (v0.1 → v0.2) — completed
 Phase 1: sheet_io.py + radius_query ✓ (test w/ Thylagere pin 13.3216384,77.6789048)
 Phase 2: kml_generator ✓ (icon map port + description-with-source-links + escaping tests)
 Phase 3: pricing_refresh ✓ (listings JSON in, outlier logic, audit tab)
-Phase 4: cron monthly + alerting + SKILL.md finalized — cron pending
+Phase 4: cron monthly + alerting + SKILL.md finalized ✓ (cron job created
+         2026-08-04, pilot run verified delivery)
 Phase 5 (opt): Chennai corridor, price-history chart tab.
