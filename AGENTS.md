@@ -307,6 +307,12 @@ The local copy is never the source of truth. The VPS is.
 
 **How the sync works:** `pwsh scripts/sync-from-vps.ps1` — one-way pull (VPS → local), SHA-256 hash compare first, auto-backup of any local file that differs (`<file>.bak.<timestamp>`), preflight check on SSH key + VPS reachability. To push local changes to the VPS, do it explicitly via `ssh` + `scp` — never silently.
 
+**Local-wins files (since 2026-08-04):** the files below are maintained **locally — git is the source of truth**, not the VPS. `sync-from-vps.ps1` preserves the local version when it pulls the surrounding skill tree (see `$LOCAL_WINS_FILES` in the script):
+
+- `hermes-data/skills/productivity/property-pricing-sources/references/property-rd-tool-design.md`
+- `hermes-data/skills/productivity/property-rd/references/kml-icons.md`
+- `hermes-data/skills/productivity/property-rd/scripts/kml_generator.py`
+
 ### Google Sheets Registry
 
 - **Spreadsheet ID:** `1XbSRAXxPLY4cXMTm2rmvKh11Nx3x0aKUxxuWualoV9g`

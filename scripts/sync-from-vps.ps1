@@ -16,6 +16,10 @@
 # Behavior: SHA-256 compare first; auto-backup of any local file that differs
 # (<file>.bak.<timestamp>); preflight check on SSH key + VPS reachability.
 # To push local changes to the VPS, do it explicitly via scp - never silently.
+#
+# Local-wins exclusions (2026-08-04): the files below are maintained LOCALLY
+# (git is the source of truth); the VPS copy is ignored. Sync keeps the local
+# version untouched even when the remote tree is pulled.
 
 $ErrorActionPreference = "Stop"
 
@@ -29,6 +33,13 @@ $CUSTOM_SKILLS = @(
     "productivity/property-pricing-sources",
     "productivity/property-rd",
     "research/property-legal-analysis"
+)
+
+# Files maintained locally (git = source of truth). Relative to the skill dir.
+$LOCAL_WINS_FILES = @(
+    "productivity/property-pricing-sources/references/property-rd-tool-design.md",
+    "productivity/property-rd/references/kml-icons.md",
+    "productivity/property-rd/scripts/kml_generator.py"
 )
 
 function Preflight {
@@ -48,11 +59,26 @@ function Preflight {
 function Sync-DirTree([string]$remoteDir, [string]$localDir) {
     $parent = Split-Path $localDir -Parent
     if (-not (Test-Path $parent)) { New-Item -ItemType Directory -Force -Path $parent | Out-Null }
+    # Back up local-wins files before the remote tree overwrites them.
+    $saved = @{}
+    foreach ($rel in $LOCAL_WINS_FILES) {
+        if ($rel -notlike "$remoteDir/*") { continue }
+        $localFile = Join-Path $LOCAL_MIRROR ("skills\" + ($rel -replace "/", "\"))
+        if (Test-Path $localFile) {
+            $saved[$rel] = [System.IO.File]::ReadAllText($localFile, [System.Text.UTF8Encoding]::new($false))
+        }
+    }
     $remoteAbs = "${VPS_HOST}:${VPS_SKILLS_ROOT}/${remoteDir}"
     scp -o BatchMode=yes -q -r $remoteAbs $parent
     if ($LASTEXITCODE -ne 0) {
         Write-Host "  FAILED: scp $remoteAbs" -ForegroundColor Red
         exit 1
+    }
+    # Restore local-wins files (local version is the source of truth).
+    foreach ($rel in $saved.Keys) {
+        $localFile = Join-Path $LOCAL_MIRROR ("skills\" + ($rel -replace "/", "\"))
+        [System.IO.File]::WriteAllText($localFile, $saved[$rel], [System.Text.UTF8Encoding]::new($false))
+        Write-Host "  kept local: $rel (local-wins)" -ForegroundColor Cyan
     }
     Write-Host "  pulled tree: $remoteDir -> $localDir" -ForegroundColor Green
 }
