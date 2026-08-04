@@ -307,6 +307,18 @@ The local copy is never the source of truth. The VPS is.
 
 **How the sync works:** `pwsh scripts/sync-from-vps.ps1` — one-way pull (VPS → local), SHA-256 hash compare first, auto-backup of any local file that differs (`<file>.bak.<timestamp>`), preflight check on SSH key + VPS reachability. To push local changes to the VPS, do it explicitly via `ssh` + `scp` — never silently.
 
+**property-rd T3 monthly cron (wired 2026-08-04):** gateway cron job
+`28602cc42cc5` in the hermes container — `hermes cron create "30 0 1 * *"
+<prompt> --skill property-rd --deliver telegram:Nishant` (1st of month
+06:00 IST; server runs UTC). The agent loads the `property-rd` skill,
+collects fresh listings (30-day window) per `sources-registry.md`, writes
+`/data/hermes/cron/t3/listings-<today>.json`, runs
+`pricing_refresh.py --sheet 1EQv1zm7j5vV9NUuAsWpSLalENqg8xgKWvaL_QvvGYaM
+--alert-file /data/hermes/cron/t3/alert-latest.json`, and delivers the
+report to NDR's DM. Pilot run 2026-08-04: 59 listings / 45 projects,
+19/45 rejected (>30% → ALERT fired as designed, raw snippets in
+alert-latest.json), sheet writes + Telegram delivery verified.
+
 **Local-wins files (since 2026-08-04):** the files below are maintained **locally — git is the source of truth**, not the VPS. `sync-from-vps.ps1` preserves the local version when it pulls the surrounding skill tree (see `$LOCAL_WINS_FILES` in the script):
 
 - `hermes-data/skills/productivity/property-pricing-sources/references/property-rd-tool-design.md`
