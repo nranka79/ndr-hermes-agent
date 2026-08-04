@@ -3,7 +3,7 @@ Resolves the authenticated caller's identity from an inbound API server request.
 
 Open WebUI forwards the SSO-authenticated user's identity to backends when
 ENABLE_FORWARD_USER_INFO_HEADERS=true is set in its environment.  It adds:
-    X-OpenWebUI-User-Email  -- the Google SSO email (e.g. ndr@draas.com)
+    X-OpenWebUI-User-Email  -- the Google SSO email (e.g. user@example.com)
     X-OpenWebUI-User-Name   -- display name
     X-OpenWebUI-User-Role   -- Open WebUI role (admin / user)
 

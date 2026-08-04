@@ -742,7 +742,7 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
         that will be resolved automatically.
 
         Examples:
-            target="telegram:6308981865"
+            target="telegram:123456789"
             target="discord:#general"
             target="slack:#engineering"
 

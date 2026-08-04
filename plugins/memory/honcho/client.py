@@ -706,7 +706,7 @@ class HonchoClientConfig:
                 return sanitized
 
         # Gateway session key: stable per-chat identifier passed by the gateway
-        # (e.g. "agent:main:telegram:dm:8439114563"). Sanitize colons to hyphens
+        # (e.g. "agent:main:telegram:dm:123456789"). Sanitize colons to hyphens
         # for Honcho session ID compatibility. This takes priority over strategy-
         # based resolution because gateway platforms need per-chat isolation that
         # cwd-based strategies cannot provide.

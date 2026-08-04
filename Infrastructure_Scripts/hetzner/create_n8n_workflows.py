@@ -1,8 +1,13 @@
-import json, urllib.request, urllib.error, uuid
+import json, os, urllib.request, urllib.error, uuid
 
-NEW_TOKEN = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJiYzA2YzgxMC00NGI0LTQ5ZjUtYTIzNS1jMmQ4ZDliNGFhODciLCJpc3MiOiJuOG4iLCJhdWQiOiJwdWJsaWMtYXBpIiwianRpIjoiYTgxNjlhZGQtOTNmMi00Yjc0LThlZjEtODgzNTA2YWEwY2Y2IiwiaWF0IjoxNzc3NDM2NTM0fQ.4Qy5Kf-PyY95OYh3hZt8AZ_uln2If0iBeKyOkjeHoqM'
+NEW_TOKEN = os.environ.get("HERMES_N8N_TOKEN") or os.environ.get("N8N_API_TOKEN") or ""
+if not NEW_TOKEN:
+    raise SystemExit(
+        "create_n8n_workflows.py requires HERMES_N8N_TOKEN (or N8N_API_TOKEN) "
+        "in the environment - no token is hardcoded."
+    )
 BASE_URL = 'https://transcribe.ahfl.in'
-SA_DELEGATED = 'ndr@draas.com'
+SA_DELEGATED = os.environ.get("SA_DELEGATED_EMAIL", "")
 
 SA_AUTH_JS = r"""
 const fetch = (url, {method='GET',headers={},body}={}) => new Promise((resolve,reject) => {
@@ -112,7 +117,7 @@ return [{json:{success:true,data:result}}];
 CALENDAR_JS = SA_AUTH_JS + r"""
 const body = $input.first().json.body || $input.first().json;
 const op = body.operation;
-const calId = encodeURIComponent(body.calendarId || 'ndr@draas.com');
+const calId = encodeURIComponent(body.calendarId || 'primary');
 const base = `https://www.googleapis.com/calendar/v3/calendars/${calId}/events`;
 const token = await getGoogleToken('https://www.googleapis.com/auth/calendar');
 let result;

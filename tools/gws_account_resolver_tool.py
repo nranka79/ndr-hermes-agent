@@ -57,7 +57,7 @@ GWS_RESOLVE_ACCOUNT_SCHEMA = {
             "account": {
                 "type": "string",
                 "description": (
-                    "Email address (e.g. 'ndr@draas.com') or short label "
+                    "Email address (e.g. 'user@example.com') or short label "
                     "('draas', 'ahfl', 'gmail', 'personal'). Omit to list "
                     "every known account and its auth status."
                 ),

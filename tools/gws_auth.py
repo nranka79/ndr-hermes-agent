@@ -31,7 +31,7 @@ Usage from skill code (terminal or execute_code):
     svc = build_service("gmail", "v1")                   # default service
     svc = build_service("gmail", "v1", service_name="google-ahfl")
     url = get_auth_url()                                 # default service
-    url = get_auth_url(login_hint="ndr@ahfl.in")
+    url = get_auth_url(login_hint="user@example.com")
 
 The session user id is read from HERMES_SESSION_USER_ID env var,
 which is injected into every subprocess by the gateway. Callers must

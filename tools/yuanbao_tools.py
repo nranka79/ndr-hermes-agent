@@ -596,7 +596,7 @@ registry.register(
                     "type": "string",
                     "description": (
                         "The group where the target user belongs. "
-                        "Extract from chat_id: 'group:328306697' → '328306697'. "
+                        "Extract from chat_id: 'group:123456789' → '123456789'. "
                         "Required when user_id is not provided."
                     ),
                 },

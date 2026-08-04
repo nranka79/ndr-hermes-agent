@@ -113,7 +113,7 @@ def _build_svc(account_email: str | None = None):
     """Return a Google Sheets API service for the contacts registry.
 
     account_email: optional override -- an email address (e.g.
-    'ndr@draas.com') or short label ('draas'/'ahfl'/'gmail') identifying
+    'user@example.com') or short label ('draas'/'ahfl'/'gmail') identifying
     which Google account's vault token to use. If omitted, defaults to the
     current session user's own configured gws_service (from their profile
     in tools._user_registry), same as noun_resolver.py.
@@ -567,7 +567,7 @@ _SCHEMA = {
                 "type": "string",
                 "description": (
                     "Optional: override which Google account's token to use "
-                    "-- an email address (e.g. 'ndr@draas.com') or short label "
+                    "-- an email address (e.g. 'user@example.com') or short label "
                     "('draas'/'ahfl'/'gmail'). Defaults to the current session "
                     "user's own configured account."
                 ),

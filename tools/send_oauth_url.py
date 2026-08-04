@@ -292,7 +292,7 @@ registry.register(
             "re-type or paraphrase it, because small chat models have been "
             "observed to silently truncate substrings like 'google.' from "
             "OAuth client_ids. Describe the action in prose ('I sent you a "
-            "button / link to authorize ndr@draas.com') without revealing the URL. "
+            "button / link to authorize user@example.com') without revealing the URL. "
             "The authorizing user is ALWAYS the current session user — the "
             "tool reads the identity from the session itself and there is no "
             "way (and no need) to pass a user or telegram id."
@@ -304,7 +304,7 @@ registry.register(
                     "type": "string",
                     "description": (
                         "Optional email to pre-fill in the OAuth provider's "
-                        "login form (e.g. 'ndr@draas.com')."
+                        "login form (e.g. 'user@example.com')."
                     ),
                 },
                 "service_name": {
