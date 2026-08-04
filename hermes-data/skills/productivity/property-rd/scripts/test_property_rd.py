@@ -180,9 +180,9 @@ class TestKML(unittest.TestCase):
         kml, stats = build_kml(comps, pois, subject=subject, labels="price")
         minidom.parseString(kml)  # must be well-formed
         self.assertEqual(stats["placemarks"], 4)  # subject + 2 comps + poi
-        self.assertIn("<href>https://maps.google.com/mapfiles/kml/"
+        self.assertIn("<href>https://transcribe.ahfl.in/kml-icons/"
                       "pushpin/blue-pushpin.png</href>", kml)
-        self.assertIn("<href>https://maps.google.com/mapfiles/kml/shapes/"
+        self.assertIn("<href>https://transcribe.ahfl.in/kml-icons/shapes/"
                       "star.png</href>", kml)
         # description carries the pricing source URL
         self.assertIn("https://99acres.com/cgl?tag=1", kml)

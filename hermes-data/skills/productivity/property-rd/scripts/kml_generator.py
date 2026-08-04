@@ -43,12 +43,18 @@ from sheet_io import (  # noqa: E402
 )
 
 KML_NS = "http://www.opengis.net/kml/2.2"
-ICON_BASE = "https://maps.google.com/mapfiles/kml/"
+# Icons are self-hosted on the VPS (nginx serves /kml-icons/ from
+# /opt/hermes/kml-icons/, root-owned 755/644 — outside hermes-data so the
+# restricted perms there are untouched). Google's mapfiles CDN is no longer
+# referenced, so KML files don't depend on an external host (previously
+# farms.png/warehouse.png 404'd).
+ICON_BASE = "https://transcribe.ahfl.in/kml-icons/"
 
 # User-approved icon map (maps skill references/realestate-kml-categories.md;
 # hrefs curl-verified 200 + visually confirmed Aug-2026; farm/warehouse/mall/
 # temple hrefs re-verified 200 on 2026-08-04 — farms.png and warehouse.png
-# returned 404 and were replaced by agriculture.png / truck.png).
+# returned 404 and were replaced by agriculture.png / truck.png; icons now
+# self-hosted at ICON_BASE, all 18 files validated 200 on 2026-08-04).
 TYPE_ICONS = {
     "subject": ("shapes/star.png", 1.4),
     "apartment": ("pushpin/blue-pushpin.png", 1.0),

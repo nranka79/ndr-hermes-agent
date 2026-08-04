@@ -1,9 +1,10 @@
 # KML Icon Map & Rules (property-rd)
 
-User-approved category → icon map. BASE = `https://maps.google.com/mapfiles/kml/`.
-All hrefs in the table below were curl-verified HTTP 200 on 2026-08-04
-(full-set recheck; the original set was visually confirmed Aug-2026 on the
-Bestamanahalli/Anekal belt run — see the maps skill
+User-approved category → icon map. BASE = `https://transcribe.ahfl.in/kml-icons/`
+(self-hosted on the VPS — nginx serves `/kml-icons/` from `/opt/hermes/kml-icons/`;
+no external Google CDN dependency). All hrefs below were curl-verified HTTP 200
+on 2026-08-04 (full-set recheck; the original set was visually confirmed
+Aug-2026 on the Bestamanahalli/Anekal belt run — see the maps skill
 `references/realestate-kml-categories.md` for the session evidence).
 
 ## Approved icons

@@ -6,7 +6,7 @@
 
   Each placemark: name = "Project | Rs X/sqft", styleUrl = one of the
   TYPE_ICONS ids, description = full detail + pricing source URL(s).
-  Icons: BASE = https://maps.google.com/mapfiles/kml/
+  Icons: BASE = https://transcribe.ahfl.in/kml-icons/
 -->
 <kml xmlns="http://www.opengis.net/kml/2.2">
   <Document>
@@ -14,14 +14,14 @@
     <Style id="subject">
       <IconStyle>
         <scale>1.4</scale>
-        <Icon><href>https://maps.google.com/mapfiles/kml/shapes/star.png</href></Icon>
+        <Icon><href>https://transcribe.ahfl.in/kml-icons/shapes/star.png</href></Icon>
       </IconStyle>
       <LabelStyle><scale>1.0</scale></LabelStyle>
     </Style>
     <Style id="apartment">
       <IconStyle>
         <scale>1.0</scale>
-        <Icon><href>https://maps.google.com/mapfiles/kml/pushpin/blue-pushpin.png</href></Icon>
+        <Icon><href>https://transcribe.ahfl.in/kml-icons/pushpin/blue-pushpin.png</href></Icon>
       </IconStyle>
       <LabelStyle><scale>1.0</scale></LabelStyle>
     </Style>
