@@ -490,7 +490,14 @@ WHATSAPP_LINK_GUIDANCE = (
     "tool. If the resulting URL appears broken in Telegram, do NOT strip "
     "characters from the message text — that is a display-layer issue "
     "handled automatically by the Telegram platform adapter. Use the "
-    "platform='telegram' parameter to get a MarkdownV2-safe display version."
+    "platform='telegram' parameter to get a MarkdownV2-safe display version.\n\n"
+    "DELIVERING ON TELEGRAM: always send the display_link value — never the "
+    "bare URL, which the adapter re-wraps and can cut. For long messages the "
+    "tool returns a 'parts' array (one complete wa.me URL per part) plus "
+    "'split': true. When that happens, deliver EACH part as its OWN separate "
+    "Telegram message (e.g. via the send_message tool) — never combine "
+    "multiple parts into one message, because Telegram caps a single message "
+    "at 4096 characters and its splitter will break the link in half."
 )
 
 PLATFORM_HINTS = {
