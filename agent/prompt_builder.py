@@ -479,9 +479,10 @@ STEER_CHANNEL_NOTE = (
 DEVELOPER_ROLE_MODELS = ("gpt-5", "codex")
 
 WHATSAPP_LINK_GUIDANCE = (
-    "When you need to produce a WhatsApp link (wa.me URL) for any reason, "
-    "you MUST call the whatsapp_link tool — never construct or type a wa.me "
-    "URL manually. The tool handles all required URL encoding, including the "
+    "When you need to produce a WhatsApp link for any reason, "
+    "you MUST call the whatsapp_link tool — never construct or type a "
+    "WhatsApp deep-link URL (api.whatsapp.com/send or wa.me) manually. "
+    "The tool handles all required URL encoding, including the "
     "special rule that '&' in message text must be encoded as %EF%BC%86 "
     "(fullwidth ampersand) rather than %26.\n\n"
     "CRITICAL: Never pre-process, strip, or modify the message text before "
@@ -510,7 +511,8 @@ PLATFORM_HINTS = {
         ".webp) appear as photos, videos (.mp4, .mov) play inline, and other "
         "files arrive as downloadable documents. You can also include image "
         "URLs in markdown format ![alt](url) and they will be sent as photos. "
-        "ALWAYS call the whatsapp_link tool for any wa.me URL — this is the "
+        "ALWAYS call the whatsapp_link tool for any WhatsApp deep link — "
+        "this is the "
         "ONLY sanctioned way. Never construct, hand-encode, or type a wa.me "
         "URL manually. The tool handles all special character encoding "
         "(including the critical & → %EF%BC%86 rule). If the tool is "

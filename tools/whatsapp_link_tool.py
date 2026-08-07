@@ -1,7 +1,18 @@
 """WhatsApp deep-link generator.
 
-Produces wa.me URLs that open WhatsApp with an optional recipient and/or
-pre-filled message text.
+Produces api.whatsapp.com/send deep links that open WhatsApp with an
+optional recipient and/or pre-filled message text.
+
+WHY api.whatsapp.com/send INSTEAD OF wa.me: wa.me is a server-side
+redirector that re-decodes and re-encodes the ``text`` parameter while
+building its redirect target. That intermediate pass corrupts payloads —
+most visibly a literal ``%`` (encoded as %25) comes back as a raw ``%`` in
+the regenerated URL, and the mobile WhatsApp client then mangles it into
+the U+FFFD replacement character ``�``. WhatsApp Web's parser tolerates the
+same URL, so the bug only shows on phones. Linking directly to
+``api.whatsapp.com/send`` (which is what wa.me redirects TO anyway) skips
+the corrupting hop — the query string reaches the client verbatim, on both
+mobile and desktop.
 
 Encoding rules (RFC 3986 + WhatsApp-specific workarounds):
 
@@ -43,7 +54,7 @@ Encoding rules (RFC 3986 + WhatsApp-specific workarounds):
 
   Length: Telegram caps a single message at 4096 UTF-16 code units. When the
   generated URL would exceed that, the message text is split into parts and
-  the tool returns one wa.me URL per part (see the "parts" key). Each part is
+  the tool returns one deep link per part (see the "parts" key). Each part is
   sized so the worst-case single-message delivery form — the MarkdownV2
   inline link [display_text](url) — stays under the cap, so Telegram's own
   message splitter never cuts a link in half.
@@ -52,9 +63,9 @@ Encoding rules (RFC 3986 + WhatsApp-specific workarounds):
   display_text and a pre-built MarkdownV2-safe inline link so Telegram's
   parser never breaks on reserved characters in the link text.
 
-This is the ONLY sanctioned way to build a wa.me URL. Do not hand-encode one
-with urllib.parse or any other method — the encoding rules are easy to get
-wrong and this tool is the single source of truth for it.
+This is the ONLY sanctioned way to build a WhatsApp deep link. Do not
+hand-encode one with urllib.parse or any other method — the encoding rules
+are easy to get wrong and this tool is the single source of truth for it.
 """
 
 import json
@@ -96,17 +107,19 @@ def _utf16_len(s: str) -> int:
 WHATSAPP_LINK_SCHEMA = {
     "name": "whatsapp_link",
     "description": (
-        "Generate a wa.me deep link that opens WhatsApp with an optional "
-        "pre-filled message and/or recipient phone number.\n\n"
-        "MANDATORY: This is the ONLY sanctioned way to produce a wa.me URL. "
-        "You MUST call this tool EVERY TIME you need one — never construct, "
-        "hand-encode, or type a wa.me URL manually (including via "
-        "execute_code/urllib.parse or any other tool). Manual encoding is "
-        "known to break on mobile WhatsApp clients. If this tool is "
-        "unavailable, tell the user rather than improvising an encoding.\n\n"
+        "Generate a WhatsApp deep link (api.whatsapp.com/send) that opens "
+        "WhatsApp with an optional pre-filled message and/or recipient phone "
+        "number.\n\n"
+        "MANDATORY: This is the ONLY sanctioned way to produce a WhatsApp "
+        "deep link. You MUST call this tool EVERY TIME you need one — never "
+        "construct, hand-encode, or type an api.whatsapp.com/wa.me URL "
+        "manually (including via execute_code/urllib.parse or any other "
+        "tool). Manual encoding is known to break on mobile WhatsApp "
+        "clients. If this tool is unavailable, tell the user rather than "
+        "improvising an encoding.\n\n"
         "LONG MESSAGES: if the encoded URL would exceed Telegram's "
         "single-message limit (4096 characters), the tool splits the message "
-        "into parts and returns a 'parts' array (one wa.me URL per part) "
+        "into parts and returns a 'parts' array (one deep link per part) "
         "plus 'split': true. Deliver EACH part as its own separate Telegram "
         "message — never combine multiple parts into one message, or "
         "Telegram's own splitter will cut the link in half."
@@ -158,8 +171,36 @@ def _sanitize_phone(phone: str) -> str:
     return re.sub(r"\D", "", phone)
 
 
+def _build_wa_url(phone_digits: str, encoded_text: str = "") -> str:
+    """Build an ``api.whatsapp.com/send`` deep link.
+
+    WHY NOT ``wa.me``: wa.me is a server-side redirector that re-decodes and
+    re-encodes the ``text`` parameter while generating the redirect target.
+    That intermediate pass corrupts certain payloads — most visibly a plain
+    ``%25`` (a literal ``%``) becomes a literal ``%`` in the regenerated URL,
+    which the mobile WhatsApp client then mangles into the U+FFFD replacement
+    character ``�``. Web WhatsApp's parser tolerates the same URL, which is
+    why the bug only shows on phones. Linking directly to
+    ``api.whatsapp.com/send`` skips the corrupting hop entirely and hands the
+    query verbatim to the client — verified to preserve emoji and all
+    percent-encoded payloads on both mobile and desktop.
+
+    ``phone_digits`` is a cleaned digit string (country code + number, no
+    ``+``). ``encoded_text`` is the already percent-encoded message (omit for
+    a chat-only link).
+    """
+    if phone_digits:
+        url = f"https://api.whatsapp.com/send?phone={phone_digits}"
+    else:
+        url = "https://api.whatsapp.com/send"
+    if encoded_text:
+        url += ("&" if phone_digits else "?") + f"text={encoded_text}"
+    return url
+
+
 def _encode_wa_text(text: str) -> str:
-    """Percent-encode *text* for the ``?text=`` query parameter of a wa.me URL.
+    """Percent-encode *text* for the ``text=`` query parameter of a WhatsApp
+    deep link (``api.whatsapp.com/send?phone=…&text=…``).
 
     Encoding order (critical):
 
@@ -178,7 +219,8 @@ def _encode_wa_text(text: str) -> str:
     replacements never cascade; a literal ``%26``/``%23`` in the source text
     encodes to ``%2526``/``%2523`` and is left untouched.
 
-    Returns the percent-encoded string ready for use in ``wa.me/?text=…``.
+    Returns the percent-encoded string ready for use in
+    ``api.whatsapp.com/send?…&text=…``.
     """
     encoded = urllib.parse.quote(text, safe="~")
     encoded = encoded.replace("%26", "%EF%BC%86")
@@ -186,7 +228,7 @@ def _encode_wa_text(text: str) -> str:
     return encoded
 
 
-def _part_fits(part_text: str, base_url: str) -> bool:
+def _part_fits(part_text: str, phone_digits: str) -> bool:
     """Return whether *part_text* can be delivered as one Telegram message.
 
     Robust budget: the worst-case single-message form is the MarkdownV2
@@ -196,7 +238,7 @@ def _part_fits(part_text: str, base_url: str) -> bool:
     how the agent delivers it — as the display link or as the bare URL —
     without Telegram's own 4096 splitter ever cutting it in half.
     """
-    url = f"{base_url}?text={_encode_wa_text(part_text)}"
+    url = _build_wa_url(phone_digits, _encode_wa_text(part_text))
     display = _escape_telegram_mdv2(part_text)
     link_len = _utf16_len(display) + _utf16_len(url) + 3  # "[text](url)"
     return (
@@ -223,7 +265,7 @@ def _prefer_split_boundary(text: str, safe_len: int) -> int:
     return safe_len
 
 
-def _split_wa_text(text: str, base_url: str) -> list:
+def _split_wa_text(text: str, phone_digits: str) -> list:
     """Split *text* into parts, each deliverable as one Telegram message.
 
     Greedy loop: take the largest prefix that passes :func:`_part_fits`
@@ -241,7 +283,7 @@ def _split_wa_text(text: str, base_url: str) -> list:
         best = 1
         while lo <= hi:
             mid = (lo + hi) // 2
-            if _part_fits(rest[:mid], base_url):
+            if _part_fits(rest[:mid], phone_digits):
                 best = mid
                 lo = mid + 1
             else:
@@ -281,7 +323,6 @@ def whatsapp_link_tool(args, **kw):
     # Bare 10-digit number without ISD code — default to ISD 91 (India).
     if phone_digits and len(phone_digits) == 10:
         phone_digits = "91" + phone_digits
-    base = f"https://wa.me/{phone_digits}" if phone_digits else "https://wa.me/"
 
     result = {
         "phone": phone_digits or None,
@@ -289,11 +330,11 @@ def whatsapp_link_tool(args, **kw):
     }
 
     if not text_raw:
-        result["url"] = base
+        result["url"] = _build_wa_url(phone_digits)
         return json.dumps(result)
 
     def _build_part(part_text: str) -> dict:
-        url = f"{base}?text={_encode_wa_text(part_text)}"
+        url = _build_wa_url(phone_digits, _encode_wa_text(part_text))
         part = {"text": part_text, "url": url}
         if platform == "telegram":
             display_text = _escape_telegram_mdv2(part_text)
@@ -305,7 +346,7 @@ def whatsapp_link_tool(args, **kw):
             )
         return part
 
-    parts = [_build_part(part_text) for part_text in _split_wa_text(text_raw, base)]
+    parts = [_build_part(part_text) for part_text in _split_wa_text(text_raw, phone_digits)]
 
     result["url"] = parts[0]["url"]
 
@@ -314,8 +355,8 @@ def whatsapp_link_tool(args, **kw):
         result["split"] = True
         result["message_count"] = len(parts)
         result["split_reason"] = (
-            "The wa.me URL exceeds Telegram's single-message limit of "
-            f"{_TELEGRAM_MAX_MESSAGE_LENGTH} characters. Each part is a "
+            "The WhatsApp deep link exceeds Telegram's single-message limit "
+            f"of {_TELEGRAM_MAX_MESSAGE_LENGTH} characters. Each part is a "
             "complete link and must be delivered as its own separate "
             "Telegram message."
         )
