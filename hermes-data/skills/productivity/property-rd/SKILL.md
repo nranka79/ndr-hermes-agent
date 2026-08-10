@@ -1,14 +1,14 @@
 ---
 name: property-rd
-description: "Tool-first competitor R&D for Indian real estate — from a GPS pin, discover competing projects + infrastructure within 10 km, price them, and produce the R&D sheet + KML via scripts. The LLM extracts data; sheet_io/radius_query/kml_generator/pricing_refresh do the writes and the KML. Companion: real-estate-area-research (discovery), real-estate-portal-research (listings), property-pricing-sources (rate bands)."
-version: 1.0.0
+description: "Tool-first competitor R&D for Indian real estate — from a GPS pin, discover competing projects + infrastructure within 10 km, price them, and produce the R&D sheet + KML via scripts. The LLM extracts data; sheet_io/radius_query/kml_generator/pricing_refresh do the writes and the KML. Comp discovery is now K-RERA-primary (karnataka-rera-collector). Companion: real-estate-area-research (discovery), real-estate-portal-research (pricing listings), property-pricing-sources (rate bands)."
+version: 1.1.0
 author: Nishant Ranka (nranka79), Hermes Agent
 license: MIT
 metadata:
   hermes:
     tags: [real-estate, rd, kml, sheets, pricing, competitors, infrastructure]
     category: productivity
-    related_skills: [real-estate-area-research, real-estate-portal-research, property-pricing-sources, maps]
+    related_skills: [karnataka-rera-collector, real-estate-area-research, real-estate-portal-research, property-pricing-sources, maps]
 ---
 
 # Property R&D Skill (tool-first)
@@ -65,43 +65,41 @@ Read `references/sources-registry.md` — the growing KB of known portals,
 Reddit groups, Facebook groups, Instagram handles, forums, gov sources.
 The discovery phase starts from here.
 
-### 2. Discovery — three legs in parallel
+### 2. Discovery — recursive portal + Google crawl (PRIMARY), K-RERA supplement
 
-- **Portal leg (locality-first, NOT project-keyed):** 99acres
-  `{plots|villas|apartments|new-projects}-in-<locality>-<zone>-ffid` URLs via
-  the Apify projects-search actor (direct API — the `apify_run_actor` wrapper
-  returns empty; see real-estate-area-research). Never feed npxid pages for
-  discovery (marquee-biased).
-- **Google-search leg (portals/ads discovery):** `web_search` for
-  "<locality> property plots villas projects", "site:instagram.com <locality>
-  realestate", "site:facebook.com/groups <locality> property",
-  "site:reddit.com <locality> property". Purpose: find MORE portals, direct
-  listings, Insta ads, FB group posts. New sources found -> append to the
-  sources-registry (that is the KB).
-- **Community leg:** search the Reddit groups, Facebook groups, forums and
-  Insta handles already in the registry for the locality + any project names
-  known so far. FB/Insta are login-walled: use Google snippets for discovery,
-  `browser_use_cloud` for a public group page if needed.
+The locality name from Step 0 drives everything. Discovery is a recursive crawl, not a one-shot search:
 
-### 3. Expansion loop — harvest suggested projects until ~100
+- **Registry bootstrap (first leg):** load `references/sources-registry.md` — the list of known property portals + community sources. This is the seed set.
+- **Google + portal sweep:** run `web_search("<locality> property plots villas projects")` AND search EVERY known portal in the registry for that locality:
+  - Portals reachable from the VPS (NoBroker, 99sqft, Propzilla, QuikrHomes, Homznspace, PropertyCrow, Proplocators, HousingMan, builder PDFs) — direct extraction/search.
+  - Blocked portals (99acres, MagicBricks, Housing.com) — Apify actor (`magicbricks-99acres`) with the locality.
+- **Registry growth:** any NEW property portal surfaced by Google or portal results is appended to the sources-registry — it becomes a known portal for all future runs.
+- **K-RERA leg (statutory supplement, NOT the discovery engine):** `karnataka-rera-collector` query by taluk for the belt — authoritative registration/promoter/type/units/land/status as a cross-check and completeness layer.
+
+### 3. Expansion loop — recursive per-project search until 100 unique competitors
 
 ```
-frontier = projects found in step 2 (deduped)
-visited  = {}          # project key -> already expanded
-while frontier and total_count < 100:
+competitive_list = projects found in step 2 (deduped by project key)
+visited  = {}
+frontier = competitive_list.copy()
+while frontier and len(competitive_list) < 100:
     p = frontier.pop()
     if p in visited: continue
     visited[p] = True
-    # ONE direct search per project: portal deep page AND web_search
-    run 99acres project search for p (direct search purpose: latest
-        listings + pricing + the portal's "similar projects" suggestions)
-    run web_search('"<p>" <locality> price per sqft')    # pricing snippet
-    for each suggested/similar project in the results:
-        if not in sheet and not in visited: frontier.append(it)
+    # for EACH project: search the portals again AND Google again
+    run portal search for p on every known portal (direct for reachable,
+        Apify for blocked) -> latest listings, pricing, AND the portal's
+        "similar / recommended projects"
+    run web_search('"<p>" <locality> price per sqft')
+        -> pricing snippets AND more portals (add new ones to registry)
+    for each recommended/suggested project in the results:
+        if not in competitive_list and not in visited:
+            competitive_list.append(it); frontier.append(it)
 ```
-Stop when the frontier is empty or the sheet list crosses ~100 projects for
-this point of interest. Every new project is immediately added to the sheet
-(rows_to_add.json -> `sheet_io.py append`).
+
+- Dedupe by project key (`sheet_io.key_name`). If a project is already in the list → ignore it; otherwise add it and recurse on it.
+- Stop when the frontier is empty OR the competitive list reaches **100 unique competitors**.
+- Every new project is immediately appended to the sheet (`rows_to_add.json` → `sheet_io.py append`).
 
 ### 4. Coordinates for every project
 
@@ -119,15 +117,14 @@ Priority order:
 4. No coords after all three -> sheet-only row (goes to the sheet, NOT the
    KML; the generator reports it).
 
-### 5. Pricing per project
+### 5. Pricing per project — 3-month recency rule, listing-linked
 
-Per `property-pricing-sources` SKILL.md: direct portals first (NoBroker,
-99sqft, Propzilla, QuikrHomes, Homznspace, PropertyCrow, Proplocators,
-HousingMan, builder PDFs), then Google snippets for blocked portals
-(99acres/MagicBricks/Housing rate pages — **validate each snippet against
-the raw context**: wrong-row locality tables produce absurd rates),
-then Apify 99acres deep-scrape (totals only). Compute psf from total+area
-when both exist (mark approx). Every figure needs its source URL.
+- For each competitor, search the known portals for THAT project's listings (per-project portal search, not locality).
+- **Recency cutoff:** only listings posted in the LAST 3 MONTHS count, whether by broker or by developer. Anything older is ignored for price discovery and flagged stale in the audit.
+- **Price-discovery contract per accepted listing:** total quoted price + size (area) + computed psf (total/area; mark approx when area is a range) + **the listing URL — mandatory**. Every psf must be traceable to a saved listing link.
+- Write one row per reviewed listing to the Listings & Sources tab: `[project, type, portal, price, total, date, url]` — `date` = listing date and MUST be within the last 3 months; `url` = the saved listing link that feeds the KML description's pricing-source list.
+- Source order: direct portals first, Google snippets (validated against raw context) for blocked portals, Apify 99acres deep-scrape (totals only) as fallback.
+- The pricing audit (`pricing_refresh.py`) flags any figure derived from a listing older than 3 months as stale; stale psf never reaches the KML label.
 
 ### 6. Sheet writes (tool-only)
 
@@ -187,11 +184,21 @@ For the same pin + radius:
   user, with caveats (asking ≠ transaction prices; flag 20+ km rows as
   verify).
 
-### 10. RERA (deferred workstream)
+### 10. RERA — wired 2026-08-04 (was deferred)
 
-Karnataka RERA (kanarera.karnataka.gov.in) lookup per project (registration,
-developer, status) is a planned extension — not wired yet. Say so if asked,
-don't improvise.
+Karnataka RERA (`rera.karnataka.gov.in` — not `kanarera.karnataka.gov.in`,
+that was a wrong domain guess in the original deferred note) is now the
+PRIMARY comp-discovery leg (step 2), via the new `karnataka-rera-collector`
+skill (`skills/domain/karnataka-rera-collector/`). Registration no,
+promoter, project type, land area, unit/tower breakdown, dates, status,
+and (once Tier-2 enriched) survey numbers all come from the statutory
+register instead of portal scraping. See that skill's SKILL.md for the
+full enqueue/poll job interface, the `query` command, and its verified
+live counts (Bengaluru Urban 4,359 rows / Bengaluru  Rural 694 rows, as of
+2026-08-04). Known gap carried over: that skill's `locality` field is
+always blank (no structured source on the RERA site) — query it by
+`taluk`, and keep doing locality-level grouping/filtering here in
+property-rd the same way as before.
 
 ## Data contracts
 
@@ -245,6 +252,9 @@ don't improvise.
 
 ## References
 
+- `domain/karnataka-rera-collector` — the K-RERA index/enrich/query skill that step 2's
+  primary discovery leg now calls (registration/promoter/units/land-area/
+  dates/status, statutory source).
 - `references/kml-icons.md` — approved icon map + KML rules.
 - `references/sources-registry.md` — the growing sources-of-truth KB
   (portals / Reddit / FB / Insta / forums / gov). READ at run start, APPEND
