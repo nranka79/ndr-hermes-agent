@@ -18,6 +18,8 @@ Config keys this provider responds to::
 Env vars::
 
     TAVILY_API_KEY=...           # https://app.tavily.com/home (required)
+    TAVILY_API_KEY_2=...         # optional extra accounts — tried in order
+    TAVILY_API_KEY_3=...         # until one works (see tools.key_rotation)
     TAVILY_BASE_URL=...          # optional override of https://api.tavily.com
 """
 
@@ -28,25 +30,23 @@ import os
 from typing import Any, Dict, List
 
 from agent.web_search_provider import WebSearchProvider
+from tools.key_rotation import (
+    KEY_DEAD_STATUSES,
+    AllKeysRejectedError,
+    KeyRotator,
+    has_key_series,
+)
 
 logger = logging.getLogger(__name__)
 
+_TAVILY_ROTATOR = KeyRotator("TAVILY_API_KEY")
 
-def _tavily_request(endpoint: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-    """POST to the Tavily API and return the parsed JSON response.
 
-    Mirrors :func:`tools.web_tools._tavily_request`. Raises ``ValueError``
-    when ``TAVILY_API_KEY`` is unset; the caller catches and surfaces as
-    a typed error response.
-    """
+def _tavily_request(
+    endpoint: str, payload: Dict[str, Any], api_key: str
+) -> Dict[str, Any]:
+    """POST to the Tavily API with a given key and return the parsed JSON."""
     import httpx
-
-    api_key = os.getenv("TAVILY_API_KEY")
-    if not api_key:
-        raise ValueError(
-            "TAVILY_API_KEY environment variable not set. "
-            "Get your API key at https://app.tavily.com/home"
-        )
 
     base_url = os.getenv("TAVILY_BASE_URL", "https://api.tavily.com")
     payload = dict(payload)  # don't mutate caller's dict
@@ -57,6 +57,36 @@ def _tavily_request(endpoint: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     response = httpx.post(url, json=payload, timeout=60)
     response.raise_for_status()
     return response.json()
+
+
+def _tavily_request_with_rotation(
+    endpoint: str, payload: Dict[str, Any]
+) -> Dict[str, Any]:
+    """POST to Tavily, rotating through the key series until one works.
+
+    Raises ``ValueError`` when no key is configured (caller surfaces as a
+    typed error response) or :class:`AllKeysRejectedError` when every
+    configured key was rejected by the vendor.
+    """
+    if not has_key_series("TAVILY_API_KEY"):
+        raise ValueError(
+            "TAVILY_API_KEY environment variable not set. "
+            "Get your API key at https://app.tavily.com/home"
+        )
+
+    def _call(key: str) -> Dict[str, Any]:
+        return _tavily_request(endpoint, payload, key)
+
+    def _is_key_dead(exc: Exception) -> bool:
+        response = getattr(exc, "response", None)
+        return response is not None and response.status_code in KEY_DEAD_STATUSES
+
+    try:
+        result = _TAVILY_ROTATOR.run(_call, _is_key_dead)
+    except AllKeysRejectedError as exc:
+        raise ValueError(str(exc)) from exc
+    assert isinstance(result, dict)
+    return result
 
 
 def _normalize_tavily_search_results(response: Dict[str, Any]) -> Dict[str, Any]:
@@ -137,8 +167,8 @@ class TavilyWebSearchProvider(WebSearchProvider):
         return "Tavily"
 
     def is_available(self) -> bool:
-        """Return True when ``TAVILY_API_KEY`` is set to a non-empty value."""
-        return bool(os.getenv("TAVILY_API_KEY", "").strip())
+        """Return True when at least one key in the TAVILY_API_KEY series is set."""
+        return has_key_series("TAVILY_API_KEY")
 
     def supports_search(self) -> bool:
         return True
@@ -155,7 +185,7 @@ class TavilyWebSearchProvider(WebSearchProvider):
                 return {"success": False, "error": "Interrupted"}
 
             logger.info("Tavily search: '%s' (limit=%d)", query, limit)
-            raw = _tavily_request(
+            raw = _tavily_request_with_rotation(
                 "search",
                 {
                     "query": query,
@@ -186,7 +216,7 @@ class TavilyWebSearchProvider(WebSearchProvider):
                 ]
 
             logger.info("Tavily extract: %d URL(s)", len(urls))
-            raw = _tavily_request(
+            raw = _tavily_request_with_rotation(
                 "extract",
                 {
                     "urls": urls,

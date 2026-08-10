@@ -36,6 +36,8 @@ Config keys this provider responds to::
 Env vars::
 
     FIRECRAWL_API_KEY=...            # direct cloud auth
+    FIRECRAWL_API_KEY_2=...          # optional extra accounts — tried in
+    FIRECRAWL_API_KEY_3=...          # order until one works (key rotation)
     FIRECRAWL_API_URL=...            # self-hosted Firecrawl
     FIRECRAWL_GATEWAY_URL=...        # Nous tool-gateway (subscribers)
     TOOL_GATEWAY_DOMAIN=...          # alternate gateway env
@@ -51,9 +53,16 @@ import os
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 from agent.web_search_provider import WebSearchProvider
+from tools.key_rotation import (
+    KEY_DEAD_STATUSES,
+    KeyRotator,
+    has_key_series,
+)
 from tools.website_policy import check_website_access
 
 logger = logging.getLogger(__name__)
+
+_FIRECRAWL_ROTATOR = KeyRotator("FIRECRAWL_API_KEY")
 
 
 # ---------------------------------------------------------------------------
@@ -119,10 +128,19 @@ Firecrawl = _FirecrawlProxy()
 # :func:`_get_firecrawl_client` below.
 
 
+def _next_firecrawl_key() -> Optional[str]:
+    """Return the next candidate direct key (preferred-first), or None."""
+    return next(_FIRECRAWL_ROTATOR.iter_keys(), None)
+
+
 def _get_direct_firecrawl_config() -> Optional[tuple]:
-    """Return explicit direct Firecrawl kwargs + cache key, or None when unset."""
-    api_key = os.getenv("FIRECRAWL_API_KEY", "").strip()
+    """Return explicit direct Firecrawl kwargs + cache key, or None when unset.
+
+    The API key comes from the FIRECRAWL_API_KEY key series — the current
+    candidate key rotates on rejection; ``FIRECRAWL_API_URL`` stays fixed.
+    """
     api_url = os.getenv("FIRECRAWL_API_URL", "").strip().rstrip("/")
+    api_key = _next_firecrawl_key()
 
     if not api_key and not api_url:
         return None
@@ -160,8 +178,14 @@ def _is_tool_gateway_ready() -> bool:
 
 
 def _has_direct_firecrawl_config() -> bool:
-    """Return True when direct Firecrawl config is explicitly configured."""
-    return _get_direct_firecrawl_config() is not None
+    """Return True when direct Firecrawl config is explicitly configured.
+
+    Any key in the FIRECRAWL_API_KEY series counts, plus a self-hosted
+    FIRECRAWL_API_URL.
+    """
+    return has_key_series("FIRECRAWL_API_KEY") or bool(
+        os.getenv("FIRECRAWL_API_URL", "").strip()
+    )
 
 
 def check_firecrawl_api_key() -> bool:
@@ -272,6 +296,87 @@ def _reset_client_for_tests() -> None:
 
     _wt._firecrawl_client = None
     _wt._firecrawl_client_config = None
+
+
+# ---------------------------------------------------------------------------
+# Key rotation
+# ---------------------------------------------------------------------------
+
+
+def _is_firecrawl_key_dead(exc: Exception) -> bool:
+    """True when the exception means the current key is useless.
+
+    Catches SDK errors (``status_code``) and requests/httpx errors
+    (``response.status_code``) for 401/402/403/429.
+    """
+    status = getattr(exc, "status_code", None)
+    if status is None:
+        response = getattr(exc, "response", None)
+        status = getattr(response, "status_code", None)
+    return status in KEY_DEAD_STATUSES
+
+
+def _firecrawl_search(query: str, limit: int) -> Any:
+    """Run a Firecrawl search, rotating through the key series on rejection.
+
+    Raises ``ValueError`` when unconfigured or when every key was rejected.
+    """
+    import tools.web_tools as _wt
+
+    last_error: Optional[Exception] = None
+    rejected = False
+    for key in _FIRECRAWL_ROTATOR.iter_keys():
+        try:
+            response = _get_firecrawl_client().search(query=query, limit=limit)
+        except Exception as exc:  # noqa: BLE001 — classified via _is_firecrawl_key_dead
+            last_error = exc
+            if _is_firecrawl_key_dead(exc):
+                rejected = True
+                _FIRECRAWL_ROTATOR.mark_dead(key)
+                _wt._firecrawl_client = None
+                _wt._firecrawl_client_config = None
+            continue
+        _FIRECRAWL_ROTATOR.mark_worked(key)
+        return response
+    if rejected:
+        raise ValueError(
+            "all configured FIRECRAWL_API_KEY key(s) were rejected by the vendor"
+        )
+    if last_error is not None:
+        raise last_error
+    _raise_web_backend_configuration_error()
+
+
+def _firecrawl_scrape_with_rotation(url: str, formats: List[str]) -> Any:
+    """Scrape one URL, rotating through the key series on rejection.
+
+    Runs inside :func:`asyncio.to_thread` from ``extract()``; raises the
+    underlying error when rotation can't help.
+    """
+    import tools.web_tools as _wt
+
+    last_error: Optional[Exception] = None
+    rejected = False
+    for key in _FIRECRAWL_ROTATOR.iter_keys():
+        try:
+            result = _get_firecrawl_client().scrape(url=url, formats=formats)
+        except Exception as exc:  # noqa: BLE001 — classified via _is_firecrawl_key_dead
+            last_error = exc
+            if _is_firecrawl_key_dead(exc):
+                rejected = True
+                _FIRECRAWL_ROTATOR.mark_dead(key)
+                _wt._firecrawl_client = None
+                _wt._firecrawl_client_config = None
+            continue
+        _FIRECRAWL_ROTATOR.mark_worked(key)
+        return result
+    if rejected:
+        raise ValueError(
+            "all configured FIRECRAWL_API_KEY key(s) were rejected by the vendor"
+        )
+    if last_error is not None:
+        raise last_error
+    _raise_web_backend_configuration_error()
 
 
 # ---------------------------------------------------------------------------
@@ -405,17 +510,13 @@ class FirecrawlWebSearchProvider(WebSearchProvider):
             return {"success": False, "error": "Interrupted"}
 
         logger.info("Firecrawl search: '%s' (limit=%d)", query, limit)
-        # _get_firecrawl_client() raises ValueError on unconfigured systems —
-        # let it propagate so the dispatcher emits the legacy envelope shape.
-        client = _get_firecrawl_client()
-        try:
-            response = client.search(query=query, limit=limit)
-            web_results = _extract_web_search_results(response)
-            logger.info("Firecrawl: found %d search results", len(web_results))
-            return {"success": True, "data": {"web": web_results}}
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Firecrawl search error: %s", exc)
-            return {"success": False, "error": f"Firecrawl search failed: {exc}"}
+        # _firecrawl_search rotates through the key series; raises
+        # ValueError on unconfigured systems / all-keys-rejected so the
+        # dispatcher emits the legacy envelope shape.
+        response = _firecrawl_search(query, limit)
+        web_results = _extract_web_search_results(response)
+        logger.info("Firecrawl: found %d search results", len(web_results))
+        return {"success": True, "data": {"web": web_results}}
 
     async def extract(self, urls: List[str], **kwargs: Any) -> List[Dict[str, Any]]:
         """Extract content from one or more URLs via Firecrawl.
@@ -485,9 +586,9 @@ class FirecrawlWebSearchProvider(WebSearchProvider):
                 try:
                     scrape_result = await asyncio.wait_for(
                         asyncio.to_thread(
-                            _get_firecrawl_client().scrape,
-                            url=url,
-                            formats=formats,
+                            _firecrawl_scrape_with_rotation,
+                            url,
+                            formats,
                         ),
                         timeout=60,
                     )

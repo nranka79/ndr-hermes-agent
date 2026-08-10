@@ -29,13 +29,16 @@ from __future__ import annotations
 import logging
 import os
 import uuid
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import requests
 
 from agent.browser_provider import BrowserProvider
+from tools.key_rotation import KEY_DEAD_STATUSES, KeyRotator, has_key_series
 
 logger = logging.getLogger(__name__)
+
+_FIRECRAWL_ROTATOR = KeyRotator("FIRECRAWL_API_KEY")
 
 _BASE_URL = "https://api.firecrawl.dev"
 
@@ -56,7 +59,7 @@ class FirecrawlBrowserProvider(BrowserProvider):
         return "Firecrawl"
 
     def is_available(self) -> bool:
-        return bool(os.environ.get("FIRECRAWL_API_KEY"))
+        return has_key_series("FIRECRAWL_API_KEY")
 
     # ------------------------------------------------------------------
     # Session lifecycle
@@ -65,8 +68,9 @@ class FirecrawlBrowserProvider(BrowserProvider):
     def _api_url(self) -> str:
         return os.environ.get("FIRECRAWL_API_URL", _BASE_URL)
 
-    def _headers(self) -> Dict[str, str]:
-        api_key = os.environ.get("FIRECRAWL_API_KEY")
+    def _headers(self, api_key: Optional[str] = None) -> Dict[str, str]:
+        if api_key is None:
+            api_key = next(_FIRECRAWL_ROTATOR.iter_keys(), None)
         if not api_key:
             raise ValueError(
                 "FIRECRAWL_API_KEY environment variable is required. "
@@ -84,36 +88,58 @@ class FirecrawlBrowserProvider(BrowserProvider):
             ttl = 300
 
         body: Dict[str, object] = {"ttl": ttl}
+        url = f"{self._api_url()}/v2/browser"
 
-        try:
-            response = requests.post(
-                f"{self._api_url()}/v2/browser",
-                headers=self._headers(),
-                json=body,
-                timeout=30,
-            )
-        except requests.RequestException as exc:
+        # Try each key in the FIRECRAWL_API_KEY series until one creates a
+        # session; 401/402/403/429 = key rejected -> next key.
+        last_error: Optional[Exception] = None
+        rejected = False
+        for key in _FIRECRAWL_ROTATOR.iter_keys():
+            try:
+                response = requests.post(
+                    url,
+                    headers=self._headers(key),
+                    json=body,
+                    timeout=30,
+                )
+            except requests.RequestException as exc:
+                last_error = exc
+                continue
+            if not response.ok:
+                if response.status_code in KEY_DEAD_STATUSES:
+                    rejected = True
+                    _FIRECRAWL_ROTATOR.mark_dead(key)
+                    continue
+                raise RuntimeError(
+                    f"Failed to create Firecrawl browser session: "
+                    f"{response.status_code} {response.text}"
+                )
+            _FIRECRAWL_ROTATOR.mark_worked(key)
+
+            data = response.json()
+            session_name = f"hermes_{task_id}_{uuid.uuid4().hex[:8]}"
+
+            logger.info("Created Firecrawl browser session %s", session_name)
+
+            return {
+                "session_name": session_name,
+                "bb_session_id": data["id"],
+                "cdp_url": data["cdpUrl"],
+                "features": {"firecrawl": True},
+            }
+
+        if rejected:
             raise RuntimeError(
-                f"Firecrawl API connection failed: {exc}"
-            ) from exc
-
-        if not response.ok:
-            raise RuntimeError(
-                f"Failed to create Firecrawl browser session: "
-                f"{response.status_code} {response.text}"
+                "all configured FIRECRAWL_API_KEY key(s) were rejected by Firecrawl"
             )
-
-        data = response.json()
-        session_name = f"hermes_{task_id}_{uuid.uuid4().hex[:8]}"
-
-        logger.info("Created Firecrawl browser session %s", session_name)
-
-        return {
-            "session_name": session_name,
-            "bb_session_id": data["id"],
-            "cdp_url": data["cdpUrl"],
-            "features": {"firecrawl": True},
-        }
+        if last_error is not None:
+            raise RuntimeError(
+                f"Firecrawl API connection failed: {last_error}"
+            ) from last_error
+        raise RuntimeError(
+            "FIRECRAWL_API_KEY environment variable is required. "
+            "Get your key at https://firecrawl.dev"
+        )
 
     def close_session(self, session_id: str) -> bool:
         try:

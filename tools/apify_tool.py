@@ -24,6 +24,11 @@ Cost guardrails: every actor run is billed to the APIFY_API_KEY account
 (e.g. ``maxResults``) small; ``max_items`` caps how many dataset records
 are returned to the agent.
 
+Multi-account: extra keys ``APIFY_API_KEY_2``, ``APIFY_API_KEY_3``, ...
+are tried in order when the current key is rejected (auth/credits/rate
+limit) or a run fails with a credit/quota error — see
+:mod:`tools.key_rotation`.
+
 Registered as: apify_run_actor
 Toolset:       web
 
@@ -51,9 +56,16 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+from tools.key_rotation import (
+    KEY_DEAD_STATUSES,
+    KeyRotator,
+    has_key_series,
+)
 from tools.registry import registry
 
 logger = logging.getLogger(__name__)
+
+_APIFY_ROTATOR = KeyRotator("APIFY_API_KEY")
 
 _API_BASE = "https://api.apify.com/v2"
 _POLL_INTERVAL = 5  # seconds between run-status polls
@@ -65,10 +77,6 @@ _ACTOR_PRESETS = {
 }
 
 _FINISHED_STATUSES = {"SUCCEEDED", "FAILED", "ABORTED", "TIMED-OUT"}
-
-
-def _api_key() -> str:
-    return (os.environ.get("APIFY_API_KEY") or "").strip()
 
 
 def _resolve_actor(actor: str) -> str:
@@ -97,14 +105,97 @@ def _req(method: str, path: str, body=None, key: str = "", timeout: int = 30):
     return parsed
 
 
+def _credit_failure(text: str) -> bool:
+    """True when an Apify failure message is credit/quota related."""
+    lowered = (text or "").lower()
+    return "credit" in lowered or "quota" in lowered
+
+
+def _run_actor_with_key(
+    actor_id: str,
+    run_input: dict,
+    max_items: int,
+    timeout_minutes: float,
+    key: str,
+) -> dict:
+    """Create + poll + fetch one actor run for a single key.
+
+    Returns the result payload dict (status completed/failed); raises
+    :class:`urllib.error.HTTPError` on HTTP-level failures.
+    """
+    created = _req("POST", f"/acts/{actor_id}/runs", body=run_input, key=key)
+    run_id = created.get("id")
+    dataset_id = created.get("defaultDatasetId")
+    status = created.get("status", "")
+    if not run_id:
+        logger.error("apify_run_actor: unexpected create response: %s", json.dumps(created)[:500])
+        return {
+            "status": "failed", "run_id": None, "item_count": 0,
+            "items": None,
+            "error": f"Apify run not created — unexpected response: {json.dumps(created)[:300]}",
+        }
+    logger.info("apify_run_actor: actor=%s run=%s status=%s", actor_id, run_id, status)
+
+    # Poll until the run finishes (or timeout)
+    deadline = time.time() + timeout_minutes * 60
+    while time.time() < deadline and status not in _FINISHED_STATUSES:
+        time.sleep(_POLL_INTERVAL)
+        try:
+            run_info = _req("GET", f"/actor-runs/{run_id}", key=key)
+            status = run_info.get("status", status)
+            dataset_id = dataset_id or run_info.get("defaultDatasetId")
+        except Exception as exc:  # transient poll failure — keep waiting
+            logger.debug("apify_run_actor: poll error: %s", exc)
+
+    if status != "SUCCEEDED":
+        status_message = ""
+        try:
+            run_info = _req("GET", f"/actor-runs/{run_id}", key=key)
+            status_message = run_info.get("statusMessage") or ""
+        except Exception:  # noqa: BLE001 — statusMessage is a nicety only
+            pass
+        suffix = f" - {status_message}" if status_message else ""
+        return {
+            "status": "failed",
+            "run_id": run_id,
+            "item_count": 0,
+            "items": None,
+            "error": f"Apify run {run_id} ended with status '{status}'{suffix}",
+        }
+
+    # Fetch dataset items
+    if not dataset_id:
+        return {
+            "status": "failed",
+            "run_id": run_id,
+            "item_count": 0,
+            "items": None,
+            "error": "Run succeeded but no dataset id returned",
+        }
+    items = _req(
+        "GET",
+        f"/datasets/{dataset_id}/items?limit={max_items}",
+        key=key,
+        timeout=60,
+    )
+    if isinstance(items, dict):
+        items = items.get("items", [])
+    return {
+        "status": "completed",
+        "run_id": run_id,
+        "item_count": len(items),
+        "items": items,
+        "error": None,
+    }
+
+
 def _handle_apify_run_actor(args: dict, **_) -> str:
     actor_name = args["actor"]
     run_input = args.get("input") or {}
     max_items = max(1, min(int(args.get("max_items", 50)), 500))
     timeout_minutes = max(1, min(float(args.get("timeout_minutes", 10)), 30))
 
-    key = _api_key()
-    if not key:
+    if not has_key_series("APIFY_API_KEY"):
         return json.dumps({
             "status": "failed",
             "run_id": None,
@@ -114,85 +205,57 @@ def _handle_apify_run_actor(args: dict, **_) -> str:
                      "(get a free token at console.apify.com) and recreate the container",
         })
 
-    try:
-        actor_id = _resolve_actor(actor_name)
-        created = _req("POST", f"/acts/{actor_id}/runs", body=run_input, key=key)
-        run_id = created.get("id")
-        dataset_id = created.get("defaultDatasetId")
-        status = created.get("status", "")
-        if not run_id:
-            logger.error("apify_run_actor: unexpected create response: %s", json.dumps(created)[:500])
+    actor_id = _resolve_actor(actor_name)
+
+    # Try each key in the series until one creates a run and returns data.
+    # HTTP 401/403/429 = key rejected -> next key. Run FAILED with a
+    # credit/quota message = account out of credits -> next key.
+    for key in _APIFY_ROTATOR.iter_keys():
+        try:
+            payload = _run_actor_with_key(
+                actor_id, run_input, max_items, timeout_minutes, key
+            )
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode(errors="replace") if exc.fp else ""
+            error = f"HTTP {exc.code}: {body[:500]}"
+            logger.error("apify_run_actor: %s", error)
+            if exc.code in KEY_DEAD_STATUSES:
+                _APIFY_ROTATOR.mark_dead(key)
+                continue
             return json.dumps({
                 "status": "failed", "run_id": None, "item_count": 0,
-                "items": None,
-                "error": f"Apify run not created — unexpected response: {json.dumps(created)[:300]}",
+                "items": None, "error": error,
             })
-        logger.info("apify_run_actor: actor=%s run=%s status=%s", actor_id, run_id, status)
-
-        # Poll until the run finishes (or timeout)
-        deadline = time.time() + timeout_minutes * 60
-        while time.time() < deadline and status not in _FINISHED_STATUSES:
-            time.sleep(_POLL_INTERVAL)
-            try:
-                run_info = _req("GET", f"/actor-runs/{run_id}", key=key)
-                status = run_info.get("status", status)
-                dataset_id = dataset_id or run_info.get("defaultDatasetId")
-            except Exception as exc:  # transient poll failure — keep waiting
-                logger.debug("apify_run_actor: poll error: %s", exc)
-
-        if status != "SUCCEEDED":
+        except Exception as exc:
+            error = f"{type(exc).__name__}: {exc}"
+            logger.error("apify_run_actor: %s", error)
             return json.dumps({
-                "status": "failed",
-                "run_id": run_id,
-                "item_count": 0,
-                "items": None,
-                "error": f"Apify run {run_id} ended with status '{status}'",
+                "status": "failed", "run_id": None, "item_count": 0,
+                "items": None, "error": error,
             })
 
-        # Fetch dataset items
-        if not dataset_id:
-            return json.dumps({
-                "status": "failed",
-                "run_id": run_id,
-                "item_count": 0,
-                "items": None,
-                "error": "Run succeeded but no dataset id returned",
-            })
-        items = _req(
-            "GET",
-            f"/datasets/{dataset_id}/items?limit={max_items}",
-            key=key,
-            timeout=60,
-        )
-        if isinstance(items, dict):
-            items = items.get("items", [])
-        return json.dumps({
-            "status": "completed",
-            "run_id": run_id,
-            "item_count": len(items),
-            "items": items,
-            "error": None,
-        }, ensure_ascii=False)
+        if payload["status"] == "completed":
+            _APIFY_ROTATOR.mark_worked(key)
+            return json.dumps(payload, ensure_ascii=False)
 
-    except urllib.error.HTTPError as exc:
-        body = exc.read().decode(errors="replace") if exc.fp else ""
-        error = f"HTTP {exc.code}: {body[:500]}"
-        logger.error("apify_run_actor: %s", error)
-        return json.dumps({
-            "status": "failed", "run_id": None, "item_count": 0,
-            "items": None, "error": error,
-        })
-    except Exception as exc:
-        error = f"{type(exc).__name__}: {exc}"
-        logger.error("apify_run_actor: %s", error)
-        return json.dumps({
-            "status": "failed", "run_id": None, "item_count": 0,
-            "items": None, "error": error,
-        })
+        # Run finished but failed. Credit/quota failure -> try the next key
+        # (it may have credits). Anything else is an actor/input problem the
+        # key can't fix — report it.
+        if _credit_failure(payload.get("error") or ""):
+            _APIFY_ROTATOR.mark_dead(key)
+            continue
+        _APIFY_ROTATOR.mark_worked(key)
+        return json.dumps(payload, ensure_ascii=False)
+
+    return json.dumps({
+        "status": "failed", "run_id": None, "item_count": 0,
+        "items": None,
+        "error": "All configured APIFY_API_KEY key(s) were rejected by Apify",
+    })
 
 
 def _check_available() -> bool:
-    return bool(_api_key())
+    return has_key_series("APIFY_API_KEY")
 
 
 _APIFY_RUN_ACTOR_SCHEMA = {
