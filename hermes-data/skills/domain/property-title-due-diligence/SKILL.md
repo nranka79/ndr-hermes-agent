@@ -1229,16 +1229,16 @@ where the user wants a structured analysis alongside proposed content.
 - `references/google-drive-search.md` — Google Drive search
 
 **Other DRAAS references (kept from the old umbrella index):**
-- GWS Identity: `references/gws-account-identity`, `references/gws-account-identity-investigation`, `references/gws-api-quirks`
-- Drive: `references/drive-permission-expiry-pitfalls`, `references/drive-photo-categorization`
-- GWS Automation: `references/gws-automation`, `references/gws-drafts-and-drive-expiry`, `references/gws-docs-html-import`, `references/gws-doc-comments-review`, `references/gws-comments-calendar-drafts`, `references/docs-api-editing`, `references/docusaurus-docs-extraction`
-- Gmail: `references/gmail-api-pitfalls`, `references/gmail-bounce-cleanup`, `references/gmail-dsn-cron-cleanup` (+ `scripts/gmail_trash_query.py`)
-- Contacts: `references/contacts-management`, `references/contacts-registry`
-- Kelsa: `references/kelsa-land-proposal-lookup`, `references/kelsa-misc-budget-analysis`, `references/kelsa-misc-budget-engineering`, `references/kelsa-misc-budget-engineering-focus`
-- JDA: `references/jda-offer-letter-workflow`, `references/jda-offer-letter-plain-proposal`, `references/jda-offer-letter-production-notes`, `references/jda-addendum-refund-analysis`
-- MOU: `references/mou-drafting-workflow`, `references/mou-aggregator-deal`
-- Market Research: `references/market-research-deck`, `references/market-research-deck-workflow`, `references/grok-image-generation`, `references/pptx-deck-building`
-- Master Plan: `references/master-plan-annotation`, `references/phone-safe-plan-delivery`
-- Not-Spam: `references/not-spam-whitelist`, `references/not-spam-whitelist-daily-run` (+ `scripts/not_spam_check.py`)
-- E-Commerce: `references/indian-ecommerce-availability`
-- Other: `references/inventory-sheet-extraction`, `references/geocoding-methodology`, `references/mymaps-kml-roundtrip`, `references/whatsapp-link-pitfalls`, `references/portal-listing-capture`, `references/pricing-triangulation-recipe`, `references/medical-report-analysis`, `references/medical-readouts-and-openrouter-vision`, `references/employee-offer-payment-whatsapp`, `references/magicbricks-leads-camp-format`, `references/tailor-talk-format`
+- GWS Identity: `references/gws-account-identity.md`, `references/gws-account-identity-investigation.md`, `references/gws-api-quirks.md`
+- Drive: `references/drive-permission-expiry-pitfalls.md`, `references/drive-photo-categorization.md`
+- GWS Automation: `references/gws-automation.md`, `references/gws-drafts-and-drive-expiry.md`, `references/gws-docs-html-import.md`, `references/gws-doc-comments-review.md`, `references/gws-comments-calendar-drafts.md`, `references/docs-api-editing.md`, `references/docusaurus-docs-extraction.md`
+- Gmail: `references/gmail-api-pitfalls.md`, `references/gmail-bounce-cleanup.md`, `references/gmail-dsn-cron-cleanup.md` (+ `scripts/gmail_trash_query.py`)
+- Contacts: `references/contacts-management.md`, `references/contacts-registry.md`
+- Kelsa: `references/kelsa-land-proposal-lookup.md`, `references/kelsa-misc-budget-analysis.md`, `references/kelsa-misc-budget-engineering.md`, `references/kelsa-misc-budget-engineering-focus.md`
+- JDA: `references/jda-offer-letter-workflow.md`, `references/jda-offer-letter-plain-proposal.md`, `references/jda-offer-letter-production-notes.md`, `references/jda-addendum-refund-analysis.md`
+- MOU: `references/mou-drafting-workflow.md`, `references/mou-aggregator-deal.md`
+- Market Research: `references/market-research-deck.md`, `references/market-research-deck-workflow.md`, `references/grok-image-generation.md`, `references/pptx-deck-building.md`
+- Master Plan: `references/master-plan-annotation.md`, `references/phone-safe-plan-delivery.md`
+- Not-Spam: `references/not-spam-whitelist.md`, `references/not-spam-whitelist-daily-run.md` (+ `scripts/not_spam_check.py`)
+- E-Commerce: `references/indian-ecommerce-availability.md`
+- Other: `references/inventory-sheet-extraction.md`, `references/geocoding-methodology.md`, `references/mymaps-kml-roundtrip.md`, `references/whatsapp-link-pitfalls.md`, `references/portal-listing-capture.md`, `references/pricing-triangulation-recipe.md`, `references/medical-report-analysis.md`, `references/medical-readouts-and-openrouter-vision.md`, `references/employee-offer-payment-whatsapp.md`, `references/magicbricks-leads-camp-format.md`, `references/tailor-talk-format.md`
