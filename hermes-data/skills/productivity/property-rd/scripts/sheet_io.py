@@ -137,7 +137,7 @@ def ascii_fold(text):
     return "".join(out)
 
 
-_NUM_RE = re.compile(r"[\d,]+(?:\.\d+)?")
+_NUM_RE = re.compile(r"\d[\d,]*(?:\.\d+)?")
 
 
 def parse_num(text):

@@ -13,7 +13,7 @@ Use when the user needs **per-sqft or per-unit price data** for Indian real esta
 ## Source Inventory (tested Aug 2026 from Hermes VPS)
 
 ### Directly accessible from VPS (HTTP 200 via curl)
-- **NoBroker** (nobroker.in) — plot/land listings with price + sqft; publishes locality avg price/sq-yard. Works directly.
+- **NoBroker** (nobroker.in) — plot/land listings with price + sqft; publishes locality avg price/sq-yard. **Project pages render a live "avg ₹X per sq ft" banner** (`https://www.nobroker.in/flats-for-sale-in-<project-slug>-prjtl`) — a priority-1 per-sqft source that worked in the 2026-08 T3 run (Sattva Park Cubix ₹9,691, Brigade Atmosphere ₹6,443, Ivory ₹11,390, all current-month).
 - **99sqft** (99sqft.com) — works directly.
 - **Propzilla** (propzilla.in) — works directly.
 - **QuikrHomes** (quikrhomes.com) — works directly.

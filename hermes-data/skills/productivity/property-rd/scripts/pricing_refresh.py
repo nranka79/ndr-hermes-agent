@@ -87,7 +87,8 @@ def _locate_project_rows(raw_rows):
             continue
         name = row[proj_idx]
         out.setdefault(key_name(name), []).append({
-            "row": i,  # 1-based sheet row (header = row 1)
+            "row": i + 1,  # 1-based sheet row (header = row 1; i is 0-based
+                           # within data rows so data row i maps to sheet row i+1)
             "psf_col": _col_letter(psf_idx) if psf_idx is not None else None,
             "total_col": (_col_letter(total_idx)
                           if total_idx is not None else None),
