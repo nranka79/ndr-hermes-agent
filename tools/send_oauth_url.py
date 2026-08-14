@@ -96,7 +96,7 @@ def _session_user_id() -> str:
 # ---------------------------------------------------------------------------
 
 def _deliver_telegram_button(chat_id: str, url: str, label: str,
-                             login_hint: str | None, service_name: str | None) -> dict:
+                             service_name: str | None) -> dict:
     """Send the URL as a Telegram inline-keyboard button.
 
     The URL is never returned to the caller — it's only ever embedded in
@@ -112,8 +112,7 @@ def _deliver_telegram_button(chat_id: str, url: str, label: str,
 
     bot = Bot(token=bot_token)
     text = (
-        f"Click the button below to authorize your Google account"
-        f"{f' ({login_hint})' if login_hint else ''}.\n\n"
+        f"Click the button below to authorize your Google account.\n\n"
         f"This grants Hermes the scopes it needs to manage Gmail, Calendar, "
         f"Drive, Contacts, Tasks, Docs, and Sheets. You can revoke access "
         f"any time from your Google account settings."
@@ -146,18 +145,17 @@ def _deliver_telegram_button(chat_id: str, url: str, label: str,
     }
 
 
-def _deliver_cli_print(url: str, label: str, login_hint: str | None,
+def _deliver_cli_print(url: str, label: str,
                        service_name: str | None) -> dict:
     """Print the URL to stderr between banner separators.
 
     The user reads it from their terminal and copy-pastes into a browser.
     The LLM doesn't see this print — only the JSON status return value.
     """
-    account = f" ({login_hint})" if login_hint else ""
     sep = "=" * 72
     sys.stderr.write(
         f"\n{sep}\n"
-        f"OAuth Authorization Required — {label}{account}\n"
+        f"OAuth Authorization Required — {label}\n"
         f"{sep}\n"
         f"Open this URL in a browser to authorize:\n\n"
         f"  {url}\n\n"
@@ -171,7 +169,7 @@ def _deliver_cli_print(url: str, label: str, login_hint: str | None,
     }
 
 
-def _deliver_markdown_link(url: str, label: str, login_hint: str | None,
+def _deliver_markdown_link(url: str, label: str,
                            service_name: str | None) -> dict:
     """Build a pre-formatted markdown link the LLM can embed verbatim.
 
@@ -211,7 +209,6 @@ def check_requirements() -> bool:
 
 
 def send_oauth_url(
-    login_hint: str | None = None,
     service_name: str | None = None,
     label: str = "Authorize Google account",
     task_id: str | None = None,
@@ -223,12 +220,13 @@ def send_oauth_url(
     ``message_id`` (Telegram), and ``service`` — no URLs, no client_ids.
 
     The authorizing user's identity is taken from the session context ONLY
-    (see :func:`_session_user_id`) — there is deliberately no ``telegram_id``
-    parameter, so the model can never file a token under another user's
-    vault entry.
+    (see :func:`_session_user_id`) — there is deliberately no ``login_hint``,
+    ``telegram_id``, or email parameter, so the model can never influence
+    whose vault entry the token is filed under or which email is displayed.
+    The Google login form hint is derived from the session user's own
+    registered email inside ``gws_auth.get_auth_url``.
 
     Args:
-        login_hint:   Optional email to pre-fill in Google's login form.
         service_name: Optional vault service name (e.g. ``"google-draas"``)
                       — for tracking only. The actual vault key is auto-
                       detected from the id_token email at callback time.
@@ -250,22 +248,22 @@ def send_oauth_url(
 
     # 1) Compute the URL server-side. The URL never leaves this function
     #    except via the channel-specific delivery (button / print / JSON).
-    url = gws_auth.get_auth_url(login_hint=login_hint)
+    url = gws_auth.get_auth_url()
 
     # 2) Detect the current session's channel and deliver accordingly.
     platform, chat_id = _detect_session()
 
     if platform == "telegram" and chat_id:
         result = _deliver_telegram_button(
-            chat_id, url, label, login_hint, service_name
+            chat_id, url, label, service_name
         )
     elif platform == "cli":
-        result = _deliver_cli_print(url, label, login_hint, service_name)
+        result = _deliver_cli_print(url, label, service_name)
     else:
         # Open WebUI and any markdown-rendering channel: return a pre-
         # formatted markdown link. Document the truncation risk in the
         # returned JSON so the LLM is warned.
-        result = _deliver_markdown_link(url, label, login_hint, service_name)
+        result = _deliver_markdown_link(url, label, service_name)
 
     return json.dumps(result)
 
@@ -292,21 +290,14 @@ registry.register(
             "re-type or paraphrase it, because small chat models have been "
             "observed to silently truncate substrings like 'google.' from "
             "OAuth client_ids. Describe the action in prose ('I sent you a "
-            "button / link to authorize ndr@draas.com') without revealing the URL. "
+            "button / link to authorize your account') without revealing the URL. "
             "The authorizing user is ALWAYS the current session user — the "
             "tool reads the identity from the session itself and there is no "
-            "way (and no need) to pass a user or telegram id."
+            "way (and no need) to pass a user, telegram id, or email."
         ),
         "parameters": {
             "type": "object",
             "properties": {
-                "login_hint": {
-                    "type": "string",
-                    "description": (
-                        "Optional email to pre-fill in the OAuth provider's "
-                        "login form (e.g. 'ndr@draas.com')."
-                    ),
-                },
                 "service_name": {
                     "type": "string",
                     "description": (
@@ -326,11 +317,10 @@ registry.register(
             "required": [],
         },
     },
-    # NOTE: args may still contain a stray "telegram_id" from an older model
-    # transcript — it is intentionally ignored; identity comes from the
-    # session inside send_oauth_url().
+    # NOTE: args may still contain a stray "telegram_id" or "login_hint"
+    # from an older model transcript — both are intentionally ignored;
+    # identity comes from the session inside send_oauth_url().
     handler=lambda args, **kw: send_oauth_url(
-        login_hint=args.get("login_hint"),
         service_name=args.get("service_name"),
         label=args.get("label", "Authorize Google account"),
         task_id=kw.get("task_id"),

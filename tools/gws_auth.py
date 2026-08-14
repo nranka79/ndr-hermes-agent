@@ -31,7 +31,7 @@ Usage from skill code (terminal or execute_code):
     svc = build_service("gmail", "v1")                   # default service
     svc = build_service("gmail", "v1", service_name="google-ahfl")
     url = get_auth_url()                                 # default service
-    url = get_auth_url(login_hint="ndr@ahfl.in")
+    url = get_auth_url()                                 # session identity only
 
 The session user id is read from HERMES_SESSION_USER_ID env var,
 which is injected into every subprocess by the gateway. Callers must
@@ -432,21 +432,24 @@ def build_service(api: str, version: str, service_name: str = _DEFAULT_SERVICE):
     return build(api, version, credentials=creds)
 
 
-def get_auth_url(login_hint: str = None) -> str:
+def get_auth_url() -> str:
     """Generate an OAuth authorization URL for the current session's user.
 
-    Identity is derived from the session context ONLY. The callback handler
-    will auto-detect which Google account the user authorizes and store the
-    token under the correct vault service key -- no need to encode anything
-    extra in the OAuth ``state``.
+    Identity is derived from the session context ONLY — there is no
+    parameter for email or user identity, and none can be supplied by the
+    caller. The URL's OAuth ``state`` carries the session user's raw
+    channel id; the callback handler resolves the canonical vault user
+    from it and stores the token under the correct vault service key
+    (auto-detected from the authorized account's email via
+    ``EMAIL_TO_SERVICE``).
 
     Hermes is a confidential server-side client (client_secret never leaves
     the server), so PKCE is not needed and is explicitly disabled to avoid
     library-version quirks in the code_verifier exchange.
 
-    Args:
-        login_hint:   Email to pre-fill in Google's login form.  If omitted,
-                      uses the user's registered email from the user registry.
+    The login hint (Google account-picker pre-fill) is derived from the
+    session user's own registered email via the vault registry — never
+    from a caller-supplied argument.
     """
     tid = _current_telegram_id()
 
@@ -463,16 +466,13 @@ def get_auth_url(login_hint: str = None) -> str:
         "state": str(tid),
     }
 
-    if login_hint:
-        auth_kwargs["login_hint"] = login_hint
-    else:
-        try:
-            from tools._user_registry import get_user_config
-            user = get_user_config(str(tid))
-            if user and user.get("email"):
-                auth_kwargs["login_hint"] = user["email"]
-        except Exception:
-            pass
+    try:
+        from tools._user_registry import get_user_config
+        user = get_user_config(str(tid))
+        if user and user.get("email"):
+            auth_kwargs["login_hint"] = user["email"]
+    except Exception:
+        pass
 
     url, _ = flow.authorization_url(**auth_kwargs)
     return url

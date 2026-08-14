@@ -669,6 +669,22 @@ def photos_trash(args):
     )
 
 
+class _SkillArgs:
+    """Namespace for skill function args. Returns ``None`` for any attribute
+    not explicitly set — unlike ``types.SimpleNamespace`` which raises
+    ``AttributeError``. This matches the behavior of the skill's argparse
+    defaults: ``store_true`` flags implicitly default to ``False`` (``None``
+    is falsy), string flags default to ``None``/``""``, and int flags default
+    to ``None`` (safe for API ``pageSize``/``maxResults`` params which the
+    server treats as "no limit")."""
+
+    def __init__(self, **kwargs):
+        self.__dict__.update(kwargs)
+
+    def __getattr__(self, name):
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Dispatcher
 # ---------------------------------------------------------------------------
@@ -724,7 +740,7 @@ def call(operation: str, service_name: str = "google-draas", **kwargs) -> str:
             raise AttributeError(f"Unknown gws_skill_bridge operation: {operation!r}")
 
     _current_service_name = service_name
-    args = types.SimpleNamespace(**kwargs)
+    args = _SkillArgs(**kwargs)
 
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
