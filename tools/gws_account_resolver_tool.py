@@ -164,14 +164,14 @@ def gws_resolve_account_tool(args, **kw):
                 has_tok = gws_auth.has_token(svc)
             except Exception as e:
                 results.append({
-                    "email": user_email or svc,
+                    "email": user_email,
                     "service_name": svc,
                     "has_token": None,
                     "error": str(e),
                 })
                 continue
             results.append({
-                "email": user_email or svc,
+                "email": user_email,
                 "service_name": svc,
                 "has_token": has_tok,
             })
