@@ -102,11 +102,6 @@ _HERMES_CORE_TOOLS = [
     # Must be in _HERMES_CORE_TOOLS so every session's sandbox stub includes it,
     # otherwise gws_auth.load_credentials() fails with ImportError in sandbox.
     "gws_fetch_token",
-    # Kelsa MCP (Kelsa-Read) -- per-user OAuth login + generic tool
-    # list/call, since Kelsa cannot use the generic mcp_servers auto-connect
-    # path (headless gateway can't complete Kelsa's local-interactive OAuth
-    # flow -- see tools/kelsa_auth.py). Pilot scope, 2026-07-13.
-    "kelsa_login", "kelsa_complete_login", "kelsa_list_tools", "kelsa_call_tool",
     # Contacts/entities registry lookup (fuzzy/ranked search across the
     # Google Sheets registry) -- per-user OAuth via gws_auth, no SA/DWD.
     "contact_resolver",
@@ -123,6 +118,18 @@ _HERMES_WEBHOOK_SAFE_TOOLS = [
     "web_extract",
     "vision_analyze",
     "clarify",
+]
+
+# Interactive-UI tools that have no sensible rendering on HTTP/API/editor
+# surfaces (they render multi-choice prompts / cross-channel send buttons).
+_HERMES_INTERACTIVE_UI_TOOLS = {"clarify", "send_message"}
+
+# Shared core bundle for non-interactive surfaces (API server / editor ACP).
+# Same tools as every other platform composite minus the interactive-UI
+# tools — so OpenWebUI/ACP expose the exact same GWS, OAuth, contacts,
+# WhatsApp, Kelsa, etc. tools that CLI/Telegram/Slack resolve.
+_HERMES_CORE_TOOLS_NONINTERACTIVE = [
+    t for t in _HERMES_CORE_TOOLS if t not in _HERMES_INTERACTIVE_UI_TOOLS
 ]
 
 
@@ -408,53 +415,13 @@ TOOLSETS = {
 
     "hermes-acp": {
         "description": "Editor integration (VS Code, Zed, JetBrains) — coding-focused tools without messaging, audio, or clarify UI",
-        "tools": [
-            "web_search", "web_extract",
-            "terminal", "process",
-            "read_file", "write_file", "patch", "search_files",
-            "vision_analyze",
-            "skills_list", "skill_view", "skill_manage",
-            "browser_navigate", "browser_snapshot", "browser_click",
-            "browser_type", "browser_scroll", "browser_back",
-            "browser_press", "browser_get_images",
-            "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
-            "todo", "memory",
-            "session_search",
-            "execute_code", "delegate_task",
-        ],
+        "tools": _HERMES_CORE_TOOLS_NONINTERACTIVE,
         "includes": []
     },
 
     "hermes-api-server": {
         "description": "OpenAI-compatible API server — full agent tools accessible via HTTP (no interactive UI tools like clarify or send_message)",
-        "tools": [
-            # Web
-            "web_search", "web_extract",
-            # Terminal + process management
-            "terminal", "process",
-            # File manipulation
-            "read_file", "write_file", "patch", "search_files",
-            # Vision + image generation
-            "vision_analyze", "image_generate",
-            # Skills
-            "skills_list", "skill_view", "skill_manage",
-            # Browser automation
-            "browser_navigate", "browser_snapshot", "browser_click",
-            "browser_type", "browser_scroll", "browser_back",
-            "browser_press", "browser_get_images",
-            "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
-            # Planning & memory
-            "todo", "memory",
-            # Session history search
-            "session_search",
-            # Code execution + delegation
-            "execute_code", "delegate_task",
-            # Cronjob management
-            "cronjob",
-            # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
-            "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
-
-        ],
+        "tools": _HERMES_CORE_TOOLS_NONINTERACTIVE,
         "includes": []
     },
     
