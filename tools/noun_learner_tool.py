@@ -542,22 +542,21 @@ _NOUN_LEARNER_SCHEMA = {
 
 # ── Registration ──────────────────────────────────────────────────────────────
 
-def _register():
-    try:
-        from tools.registry import registry
-        registry.register(
-            name="noun_learner",
-            toolset="general",
-            schema=_NOUN_LEARNER_SCHEMA,
-            handler=_handle_noun_learner,
-            check_fn=_check_available,
-            is_async=False,
-            description=_NOUN_LEARNER_SCHEMA["description"],
-            emoji="📚",
-        )
-        logger.info("noun_learner tool registered")
-    except Exception as e:
-        logger.warning(f"noun_learner registration failed: {e}")
+# NOTE: registration must be a BARE top-level call — the auto-discovery AST
+# scan (tools/registry.py::_module_registers_tools) only picks up modules with
+# a top-level ``registry.register(...)`` expression statement. Wrapping it in
+# a function or try-block silently disables the tool (regression fixed
+# 2026-08-02, same pattern as tools/smart_browser_tool.py).
+from tools.registry import registry
 
-
-_register()
+registry.register(
+    name="noun_learner",
+    toolset="general",
+    schema=_NOUN_LEARNER_SCHEMA,
+    handler=_handle_noun_learner,
+    check_fn=_check_available,
+    is_async=False,
+    description=_NOUN_LEARNER_SCHEMA["description"],
+    emoji="📚",
+)
+logger.info("noun_learner tool registered")

@@ -103,6 +103,7 @@ _HERMES_CORE_TOOLS = [
     # Google Sheets registry) -- per-user OAuth via gws_auth, no SA/DWD.
     "contact_resolver",
     "entity_resolver",
+    "noun_learner",
     # Document OCR (Mistral OCR 4) -- gated on MISTRAL_API_KEY via check_fn
     "ocr_mistral",
 ]
@@ -254,6 +255,14 @@ TOOLSETS = {
                        "like 'google.' from OAuth client_ids.",
         "tools": ["send_oauth_url", "kelsa_login", "kelsa_complete_login",
                   "kelsa_list_tools", "kelsa_call_tool"],
+        "includes": []
+    },
+
+    "general": {
+        "description": "General-purpose registry lookup tools: fuzzy/ranked contact and entity "
+                       "resolution plus noun-learner write-back across the Google Sheets "
+                       "registry (per-user OAuth via gws_auth)",
+        "tools": ["contact_resolver", "entity_resolver", "noun_learner"],
         "includes": []
     },
 
