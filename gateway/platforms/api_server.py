@@ -43,7 +43,7 @@ import sqlite3
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 try:
     from aiohttp import web
@@ -197,6 +197,45 @@ _TEXT_PART_TYPES = frozenset({"text", "input_text", "output_text"})
 _IMAGE_PART_TYPES = frozenset({"image_url", "input_image"})
 _FILE_PART_TYPES = frozenset({"file", "input_file"})
 
+# Shared uploads directory: Open WebUI stores chat uploads here (mounted
+# read-only into the hermes container as /mnt/uploads).  Files are named
+# ``<file_id>_<original_name>`` (fallback ``<file_id>.<ext>`` when the name
+# exceeded the filesystem limit).
+_UPLOADS_DIR = "/mnt/uploads"
+
+
+def _resolve_uploaded_file_part(part: Dict[str, Any]) -> Optional[Tuple[str, str, str]]:
+    """Resolve an OpenAI ``file`` / ``input_file`` content part to a local upload.
+
+    Accepts the common part shapes — ``{"file": {"file_id": ...}}``,
+    ``{"file_id": ...}``, and Open WebUI-style ``{"url": <file_id>}`` —
+    and returns ``(file_id, filename, path)`` when the bytes exist on disk,
+    else ``None``.
+    """
+    file_ref = part.get("file")
+    if isinstance(file_ref, dict):
+        file_id = file_ref.get("file_id") or file_ref.get("url") or part.get("url")
+    else:
+        file_id = part.get("file_id") or part.get("url")
+    file_id = str(file_id or "").strip()
+    if not file_id or not file_id.isprintable() or any(c in file_id for c in "*?[\\/"):
+        return None
+    if not os.path.isdir(_UPLOADS_DIR):
+        return None
+    try:
+        candidates = sorted(
+            p
+            for pattern in (f"{file_id}_*", f"{file_id}.*")
+            for p in Path(_UPLOADS_DIR).glob(pattern)
+            if p.is_file()
+        )
+    except Exception:
+        return None
+    if not candidates:
+        return None
+    file_path = str(candidates[0])
+    return file_id, os.path.basename(file_path), file_path
+
 
 def _normalize_multimodal_content(content: Any) -> Any:
     """Validate and normalize multimodal content for the API server.
@@ -208,8 +247,10 @@ def _normalize_multimodal_content(content: Any) -> Any:
     converts (``_preprocess_anthropic_content`` for Anthropic).
 
     Raises ``ValueError`` with an OpenAI-style code on invalid input:
-      * ``unsupported_content_type`` — file/input_file/file_id parts, or
-        non-image ``data:`` URLs.
+      * ``file_not_found`` — file/input_file parts whose file id does not
+        resolve to a file in the shared uploads directory.
+      * ``unsupported_content_type`` — unresolvable file parts, non-image
+        ``data:`` URLs, or unknown part types.
       * ``invalid_image_url`` — missing URL or unsupported scheme.
       * ``invalid_content_part`` — malformed text/image objects.
 
@@ -292,6 +333,34 @@ def _normalize_multimodal_content(content: Any) -> Any:
             continue
 
         if part_type in _FILE_PART_TYPES:
+            # Resolve uploaded-file references against the shared uploads
+            # directory (/mnt/uploads).  On success the file is surfaced as
+            # an <attached_files> text part so the agent can read it from
+            # disk; on failure we fall back to the historical rejection.
+            resolved = _resolve_uploaded_file_part(part)
+            if resolved:
+                file_id, filename, file_path = resolved
+                attached = (
+                    "<attached_files>\n"
+                    f'<file type="file" id="{file_id}" url="{file_id}" '
+                    f'name="{filename}" path="{file_path}"/>\n'
+                    "</attached_files>"
+                )
+                normalized_parts.append({"type": "text", "text": attached})
+                text_accum_len += len(attached)
+                continue
+            part_file_id = str(
+                (part.get("file") or {}).get("file_id")
+                if isinstance(part.get("file"), dict)
+                else part.get("file_id")
+                or part.get("url")
+                or ""
+            ).strip()
+            if part_file_id and os.path.isdir(_UPLOADS_DIR):
+                raise ValueError(
+                    "file_not_found:Uploaded file is not available — files older "
+                    "than 24 hours are cleaned up automatically. Re-upload it and try again."
+                )
             raise ValueError(
                 "unsupported_content_type:Inline image inputs are supported, "
                 "but uploaded files and document inputs are not supported on this endpoint."
@@ -317,7 +386,7 @@ def _normalize_multimodal_content(content: Any) -> Any:
 
 
 def _content_has_visible_payload(content: Any) -> bool:
-    """True when content has any text or image attachment.  Used to reject empty turns."""
+    """True when content has any text, image, or file attachment.  Used to reject empty turns."""
     if isinstance(content, str):
         return bool(content.strip())
     if isinstance(content, list):
@@ -327,6 +396,8 @@ def _content_has_visible_payload(content: Any) -> bool:
                 if ptype in _TEXT_PART_TYPES and str(part.get("text") or "").strip():
                     return True
                 if ptype in _IMAGE_PART_TYPES:
+                    return True
+                if ptype in _FILE_PART_TYPES:
                     return True
     return False
 

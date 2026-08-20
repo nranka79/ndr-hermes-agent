@@ -93,6 +93,12 @@ _HERMES_CORE_TOOLS = [
     "whatsapp_link",
     # GWS multi-account resolver -- maps account email/label -> vault service_name
     "gws_resolve_account",
+    # GWS token fetch RPC tool (sandbox-only path to vault credentials via
+    # execute_code; registered under toolset "oauth"). Must be in core so the
+    # "oauth" toolset stays a subset of every platform's default composite —
+    # otherwise the recovery pass in _get_platform_tools drops it and the
+    # sandbox never generates the gws_fetch_token stub (build_service fails).
+    "gws_fetch_token",
     # Contacts/entities registry lookup (fuzzy/ranked search across the
     # Google Sheets registry) -- per-user OAuth via gws_auth, no SA/DWD.
     "contact_resolver",
