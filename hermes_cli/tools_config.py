@@ -1441,7 +1441,7 @@ def _get_platform_tools(
         ts_tools = set(resolve_toolset(ts_key))
         if not ts_tools or not ts_tools.issubset(platform_tool_universe):
             continue
-        if ts_tools.issubset(configurable_tool_universe):
+        if has_explicit_config and ts_tools.issubset(configurable_tool_universe):
             continue
         if not ts_tools.issubset(claimed):
             enabled_toolsets.add(ts_key)
