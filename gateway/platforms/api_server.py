@@ -237,6 +237,40 @@ def _resolve_uploaded_file_part(part: Dict[str, Any]) -> Optional[Tuple[str, str
     return file_id, os.path.basename(file_path), file_path
 
 
+_ATTACHED_FILES_BLOCK_RE = re.compile(r"<attached_files>.*?</attached_files>", re.DOTALL)
+_ATTACHED_FILE_TAG_RE = re.compile(r'<file\b[^>]*?\bid="([^"]+)"[^>]*?(/?>)')
+
+
+def _enrich_attached_files_paths(text: str) -> str:
+    """Resolve ``<attached_files>`` file ids to on-disk paths.
+
+    Open WebUI sends chat attachments as opaque file ids; the agent can only
+    read them once it knows the location.  Inject ``path="..."`` attributes
+    for ids that resolve inside ``_UPLOADS_DIR`` so the agent sees the real
+    path regardless of its instructions.  Unresolvable ids are left as-is.
+    """
+    if not text or "<attached_files>" not in text:
+        return text
+
+    def _fill_tag(m: "re.Match") -> str:
+        tag = m.group(0)
+        if " path=" in tag:
+            return tag
+        resolved = _resolve_uploaded_file_part({"type": "file", "file_id": m.group(1)})
+        if not resolved:
+            return tag
+        path = resolved[2].replace('"', "&quot;")
+        closing = m.group(2)
+        if closing == "/>":
+            return tag[:-2] + f' path="{path}"/>'
+        return tag[:-1] + f' path="{path}">'
+
+    def _fill_block(m: "re.Match") -> str:
+        return _ATTACHED_FILE_TAG_RE.sub(_fill_tag, m.group(0))
+
+    return _ATTACHED_FILES_BLOCK_RE.sub(_fill_block, text)
+
+
 def _normalize_multimodal_content(content: Any) -> Any:
     """Validate and normalize multimodal content for the API server.
 
@@ -260,7 +294,10 @@ def _normalize_multimodal_content(content: Any) -> Any:
     if content is None:
         return ""
     if isinstance(content, str):
-        return content[:MAX_NORMALIZED_TEXT_LENGTH] if len(content) > MAX_NORMALIZED_TEXT_LENGTH else content
+        content = _enrich_attached_files_paths(content)
+        if len(content) > MAX_NORMALIZED_TEXT_LENGTH:
+            content = content[:MAX_NORMALIZED_TEXT_LENGTH]
+        return content
     if not isinstance(content, list):
         # Mirror the legacy text-normalizer's fallback so callers that
         # pre-existed image support still get a string back.
@@ -274,7 +311,7 @@ def _normalize_multimodal_content(content: Any) -> Any:
         if isinstance(part, str):
             if part:
                 trimmed = part[:MAX_NORMALIZED_TEXT_LENGTH]
-                normalized_parts.append({"type": "text", "text": trimmed})
+                normalized_parts.append({"type": "text", "text": _enrich_attached_files_paths(trimmed)})
                 text_accum_len += len(trimmed)
             continue
 
@@ -295,7 +332,7 @@ def _normalize_multimodal_content(content: Any) -> Any:
                 text = str(text)
             if text:
                 trimmed = text[:MAX_NORMALIZED_TEXT_LENGTH]
-                normalized_parts.append({"type": "text", "text": trimmed})
+                normalized_parts.append({"type": "text", "text": _enrich_attached_files_paths(trimmed)})
                 text_accum_len += len(trimmed)
             continue
 
