@@ -23,6 +23,11 @@ _MODEL_FAMILY_RE = re.compile(
     r"\b(gemini|gpt|claude|deepseek|qwen|kimi|llama|mistral|grok)\b",
     re.IGNORECASE,
 )
+_VISION_HINT_RE = re.compile(
+    r"\b(look at|see|view|read|scan|analy[sz]e|describe|interpret|extract (?:text|content)"
+    r"|transcrib|ocr|vision|image|photo|picture|screenshot|pdf|page)\b",
+    re.IGNORECASE,
+)
 
 _FAMILY_PREFERENCES = {
     "gemini":   ["google/gemini-3", "google/gemini-2.5-pro"],
@@ -131,6 +136,17 @@ def _handle(args: dict, **kwargs) -> str:
     if not _MODEL_FAMILY_RE.search(trigger):
         return json.dumps({"error": "Refused: user_trigger_phrase must name a model family (gemini|gpt|claude|deepseek|qwen|kimi|llama|mistral|grok)."})
 
+    if _VISION_HINT_RE.search(prompt or "") or _VISION_HINT_RE.search(trigger or ""):
+        return json.dumps({
+            "error": (
+                "This tool is TEXT-ONLY and cannot accept image/PDF/vision input. "
+                "The request appears to involve looking at or reading an image/document. "
+                "Use the vision_analyze tool instead (it routes through the proper multimodal "
+                "vision router and handles images correctly), or extract text from the PDF via "
+                "pdf_tool and pass the extracted text here."
+            ),
+        })
+
     try:
         model = _resolve_model(model_arg, trigger)
     except Exception as e:
@@ -174,9 +190,16 @@ _TOOL_SCHEMA = {
         "Default behaviour is to use the main model (MiniMax) — this tool exists only for explicit user routing requests. "
         "This tool ONLY calls the model and returns its text. It does NOT save files. "
         "If the user wants the result written to a Doc, sheet, or message, YOU do that afterwards with the appropriate tool using the returned 'response' text.\n\n"
+        "TEXT-ONLY TOOL — NO IMAGES, PDFS, OR VISION: this tool sends plain text only and CANNOT accept image "
+        "input, PDF pages, screenshots, or any other visual content. If the user's task involves seeing or "
+        "interpreting an image, PDF, scan, or photo — INCLUDING when they explicitly ask for a vision-capable "
+        "model like Gemini 'via openrouter' — do NOT call this tool. Instead use the vision_analyze tool "
+        "(or the pdf_tool for documents), which routes images through the proper multimodal vision router "
+        "(OpenRouter/Nous/Codex/Anthropic) and handles base64/URL image parts correctly. "
+        "Calling this tool with a request to 'look at' an image will fail with an empty or text-only response.\n\n"
         "Args:\n"
         "  user_trigger_phrase — verbatim quote of the user's request showing 'openrouter' + model name. Server rejects if missing either.\n"
-        "  prompt — full instruction to send to the chosen model.\n"
+        "  prompt — full instruction to send to the chosen model (text only).\n"
         "  model — (optional) full slug like 'google/gemini-2.5-pro', or just family ('gemini'). If omitted, server picks newest from family in trigger phrase.\n"
         "  max_tokens — (optional) default 8000. Reasoning models need >=4000."
     ),

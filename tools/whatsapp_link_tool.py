@@ -327,10 +327,18 @@ def whatsapp_link_tool(args, **kw):
     result = {
         "phone": phone_digits or None,
         "text": text_raw or None,
+        "delivered": False,
+        "mode": "deep_link",
     }
 
     if not text_raw:
         result["url"] = _build_wa_url(phone_digits)
+        result["note"] = (
+            "This is a WhatsApp deep link ONLY. Nothing has been sent to the recipient. "
+            "The recipient must open this link on a device with WhatsApp so their app "
+            "launches the chat. Report this to the user as a generated link, NEVER as a "
+            "sent message."
+        )
         return json.dumps(result)
 
     def _build_part(part_text: str) -> dict:
@@ -364,6 +372,13 @@ def whatsapp_link_tool(args, **kw):
     if platform == "telegram":
         result["display_text"] = parts[0]["display_text"]
         result["display_link"] = parts[0]["display_link"]
+
+    result["note"] = (
+        "This is a WhatsApp deep link ONLY. Nothing has been sent to the recipient. "
+        "The recipient must open the link on a device with WhatsApp so their app "
+        "launches the chat with the text pre-filled. Report this to the user as a "
+        "generated link that Rahul can tap, NEVER as a message that was sent or delivered."
+    )
 
     return json.dumps(result)
 
