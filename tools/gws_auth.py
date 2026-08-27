@@ -80,6 +80,11 @@ logger = logging.getLogger(__name__)
 # with invalid_scope.
 HERMES_GWS_SCOPES = [
     "https://www.googleapis.com/auth/gmail.modify",
+    # Gmail settings (2026-08-27): allows creating/reading/deleting mailbox
+    # filters + labels via users.settings.filters.* . Basic = own mailbox only.
+    # NOTE: adding a NEW scope requires a fresh OAuth re-consent (prompt=consent);
+    # the existing refresh token cannot pick this up (see load_credentials notes).
+    "https://www.googleapis.com/auth/gmail.settings.basic",
     "https://www.googleapis.com/auth/calendar",
     "https://www.googleapis.com/auth/drive",
     "https://www.googleapis.com/auth/contacts",
