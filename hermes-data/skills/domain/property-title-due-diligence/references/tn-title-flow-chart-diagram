@@ -1,0 +1,73 @@
+# TN Title: Flow Chart / Tree Diagram Generation
+
+## When to Use
+After extracting Part V Flow on Title from a CMS TSR, create a visual tree diagram per survey series showing:
+- Original parent survey → bifurcation chain → current sub-survey numbers
+- Patta numbers at each link
+- Party names in ownership chain
+- Acquisition status (acquired by SLP/DRA, not acquired, error)
+
+## Sheet Setup
+- New sheet called `FLOW_CHARTS`
+- 5 columns: A (tree text), B (patta chain), C (party chain), D (status), E (dates/docs)
+- One section per survey series (158, 166, 167, 168, 176+177 usually)
+
+## Box-Drawing Characters
+Use these for tree structure (never `+` — it triggers formula in Sheets):
+- `├──` — branch to child (more children exist)
+- `└──` — last child in branch
+- `│` — vertical connector for continuation
+- `┌──` — first child (for parallel top-level branches)
+- Spaces for indentation (4 per level)
+
+## Data Flow Per Survey Series
+
+### Series 158: Most complex — bifurcates into 1A, 1B, 1C sub-series
+- 158/1 → 1A1 → 1A1A + 1A1B (Lakshmana Reddy family → SLP)
+- 158/1 → 1B2, 1B3, 1B4 (→ Suresh/Manjunath — NOT DRA)
+- 158/1 → 1B5 (→ Billa Reddy — NOT DRA)
+- 158/1 → 1C1 (Krishna→SLP), 1C2 (Lakshamma→SLP)
+- 158/1 → 1C3,1C4,1C6 (→ DRA Realty via Sale 21785/2024)
+- 158/1 → 1C5 (→ Yella→Suresh — NOT DRA)
+- 158/1 → 1C7 (Rukhmani→Ravindra — NOT DRA)
+- 158/1 → 1C9 → 1C9A (→ DRA Realty) + 1C9B (→ SLP)
+
+### Series 166: 5 sub-surveys (3A,3B,3C,3D,3F + 3E1,3E2)
+- Mostly acquired by SLP via Sale 21201/2023
+- 166/3E bifurcated into 3E1 (Kanakamma+ch) + 3E2 (Prabhu)
+
+### Series 167: 7 sub-surveys
+- 167/1A, 1D, 1I → SLP (via Lakshmana/Nanjunda chains)
+- 167/1H, 2D → SLP (via Guvva→Sarojamma→LRs chain)
+- 167/1E → Suresh/Manjunath (NOT DRA)
+- 167/2B → Billa Reddy (NOT DRA)
+- 167/2C → Suresh/Manjunath (NOT DRA)
+
+### Series 168: 168/1A + 168/1B
+- Purushotham Reddy (Schedule E) — ⚠️ Patta 2191 error
+
+### Series 176 & 177: Complex Kencha chain
+- 176/1B2D, 176/2B4A, 177/1A1B → DRA Realty via Exchange 4292/2024
+- Path: Lakshmaiaya→MuraliGopal→Clover→Kencha→Venkatamma→DRA
+
+## Writing to Sheets (Critical)
+```python
+# NEVER use 'USER_ENTERED' for cells starting with box-drawing chars
+# Always use 'RAW' to prevent formula interpretation
+sheets.spreadsheets().values().update(
+    spreadsheetId=ss_id,
+    range="FLOW_CHARTS!A1",
+    valueInputOption='RAW',
+    body=body
+).execute()
+```
+
+## Status Markers
+- `✅ ACQUIRED` = Acquired by Sevaganapalli Land Partners (SLP)
+- `✅ DRA REALTY` = Acquired by DRA Realty Private Limited
+- `❌ NOT DRA` = Not acquired, still with original/other parties
+- `⚠️` = Issue/error in title or records
+- `📄` = Revenue record, no separate digital file
+
+## Legend
+Always include a legend at the bottom of FLOW_CHARTS explaining markers.

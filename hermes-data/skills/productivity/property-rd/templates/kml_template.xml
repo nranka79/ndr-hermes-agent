@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Reference template for property-rd KML output.
+  The kml_generator.py script builds the real file from the R&D sheet —
+  never hand-write KML. This template documents the structure only.
+
+  Each placemark: name = "Project | Rs X/sqft", styleUrl = one of the
+  TYPE_ICONS ids, description = full detail + pricing source URL(s).
+  Icons: BASE = https://transcribe.ahfl.in/kml-icons/
+-->
+<kml xmlns="http://www.opengis.net/kml/2.2">
+  <Document>
+    <name>Competitive R&amp;D Map</name>
+    <Style id="subject">
+      <IconStyle>
+        <scale>1.4</scale>
+        <Icon><href>https://transcribe.ahfl.in/kml-icons/shapes/star.png</href></Icon>
+      </IconStyle>
+      <LabelStyle><scale>1.0</scale></LabelStyle>
+    </Style>
+    <Style id="apartment">
+      <IconStyle>
+        <scale>1.0</scale>
+        <Icon><href>https://transcribe.ahfl.in/kml-icons/pushpin/blue-pushpin.png</href></Icon>
+      </IconStyle>
+      <LabelStyle><scale>1.0</scale></LabelStyle>
+    </Style>
+    <Placemark>
+      <name>Prestige Crystal Lawns | Rs 8,999/sqft</name>
+      <description>Project: Prestige Crystal Lawns
+Type: Plotted Development
+Developer: Prestige Group
+Locality: Devanahalli
+Current Price (per sq.ft): Rs 8,999
+Current Sale Price (Total): Rs 1.38-3.40 Cr
+Pricing sources:
+1. 99acres - Rs 8,999 - (plots Rs 1.38-3.40Cr) - [2026-08-03] - https://www.99acres.com/prestige-crystal-lawns?tag=1&amp;src=area</description>
+      <styleUrl>#plot</styleUrl>
+      <Point>
+        <coordinates>77.45,13.25,0</coordinates>
+      </Point>
+    </Placemark>
+  </Document>
+</kml>
