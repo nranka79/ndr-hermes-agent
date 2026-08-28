@@ -112,7 +112,7 @@ Pick the tool for the task type:
 | MagicBricks listings | tunnel curl/Playwright | `-x socks5h://hermes-utilities:1000`; JSON-LD + card text; see `references/tunnel-portal-scraping-recipes.md` |
 | MagicBricks project rate | tunnel curl, project hub page | `/project-<slug>-for-sale-in-<city>-pppfs` SSR HTML carries `₹X Cr/Lac` + `₹Y per sqft` per listing — psf direct, no Apify; recipe in `references/tunnel-portal-scraping-recipes.md` |
 | NoBroker listings | tunnel Playwright | SEO pages, Escape popup, body-text cards; see recipes reference |
-| 99acres-only listings | `apify_run_actor` | preset `99acres` — 99acres is Akamai-fingerprint-blocked even through the tunnel |
+| 99acres-only listings | `browser_navigate`/`smart_browser`, or tunnel curl with FULL browser headers | real Chromium fingerprint returns 200 (curl-minimal 403s are fingerprint, not IP); see recipes reference |
 | Google Maps / Places results | `apify_run_actor` | preset `google-places` |
 | Live browsing / forms / logins | `browser_use_cloud` | cloud IPs; always share `live_url` |
 | Non-blocked site browsing | `smart_browser` | VPS sidecar (browser-use + Playwright) |
@@ -189,7 +189,7 @@ When building source-link bars on project slides (`📍 Google Maps │ 🏠 Mag
   slugs / URLs inside (`Devanahalli` vs `Hosur`) — scrape fresh for the
   current pin. Never reuse a cached haul across belts.
 - **Never present locality-level listings as project-specific data (2026-08-26, Sterlitee Regal Park).** When major portals return 0 plot listings inside the project name, locality-level fallback plots belong to OTHER projects in the same area — NOT the requested one. The user will call this out. Follow the protocol in `references/secondary-portal-project-pricing.md`: state the absence clearly, check secondary aggregator sites for developer pricing, and label locality data explicitly.
-- **99acres 403s even through the residential tunnel (verified 2026-08-12).** It's Akamai browser fingerprinting at the edge, not an IP block — residential IPs get `Access Denied` too, from curl AND Playwright, on every path (`/property-in-<loc>-ffid/`, `/`, API guesses). `m.99acres.com` doesn't resolve through SOCKS at all. No workaround found; don't burn retries. Cover 99acres via Tavily web_search snippets or cross-portal data.
+- **99acres 403s only for curl-fingerprint requests (verified 2026-08-28).** Akamai blocks curl/minimal-header requests from ANY IP (VPS or residential), but a **real browser fingerprint returns 200 from the same IP** — including the VPS IP. Use `browser_navigate`/`smart_browser` (real Chromium) or curl with a FULL browser header set (User-Agent + Accept + Accept-Language + sec-ch-ua + Sec-Fetch-*) through the tunnel. A bare `-A "Mozilla/5.0 ..."` curl still 403s — that's fingerprint, not an IP block. Don't conclude "site blocked" from a curl result alone.
 - **Housing.com 406s even through the residential tunnel (verified
   2026-08-12).** WAF `Security Alert` on every path (listing pages, APIs,
   even `/sitemap.xml`). The error page's `Real Client IP` field showed the
