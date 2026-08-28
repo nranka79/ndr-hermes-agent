@@ -1,13 +1,14 @@
 ---
 name: individual-project-research
-description: "Complete R&D for a specific real estate project: extract RERA info + plans, search listings for pricing, create project info doc + pricing spreadsheet. Covers pre-launch and RERA-registered projects. Also handles multi-competitor research runs. Codified 2026-08-26 by NDR. Updated 2026-08-28: real-browser over curl, tunnel/IP state corrected."
-version: 1.3.0
+description: "Per-project deep-dive for a SPECIFIC real estate project: extract RERA info + plans, search listings for pricing, create project info doc + pricing spreadsheet. Stage 2 of real-estate research — after real-estate-area-research finds the competing projects around a location, run this skill ONCE PER competitor for its pricing + RERA deliverables. Covers pre-launch and RERA-registered projects. Codified 2026-08-26 by NDR. Updated 2026-08-28: real-browser over curl, tunnel/IP state corrected, area-research handoff clarified."
+version: 1.4.0
 author: NDR, Hermes Agent
 license: MIT
 metadata:
   hermes:
     tags: [real-estate, research, rera, pricing, spreadsheet]
     category: real-estate
+    related_skills: [real-estate-area-research, real-estate-portal-research, property-rd]
 ---
 
 # Individual Project Research Skill
@@ -16,6 +17,26 @@ End-to-end R&D for a specific real estate project. Given a project name/URL/link
 produce three deliverables: (1) project info document with RERA details + GPS, 
 (2) RERA plan downloads (layout, elevation, section, brochure), (3) pricing 
 spreadsheet with 5+ listings from multiple portals.
+
+## Relationship to real-estate-area-research (MANDATORY, v1.4.0)
+
+This skill is **stage 2 — the per-project deep-dive**. The two-stage flow:
+
+- **Stage 1 (`real-estate-area-research`):** given a LOCATION (pin, locality,
+  land parcel), discover every competing project + point of interest around
+  it and produce the KML + competitor sheet.
+- **Stage 2 (THIS skill):** for EACH competing project found in stage 1, run
+  this skill to extract that specific project's RERA details + plans and its
+  pricing listings.
+
+Trigger mapping:
+- User gives a **location** ("research this area / find competing projects
+  near X") → run `real-estate-area-research` first, then this skill once per
+  competitor.
+- User gives ONE **specific project** (name/URL) → run this skill directly.
+- Both stages use headless browsing (`browser_navigate` / `smart_browser` or
+  full-browser-header curl through the tunnel) — never bare curl (fingerprint
+  403s from every IP).
 
 ## Prerequisites
 
@@ -153,7 +174,8 @@ For a single project, include:
 - Website URL, source of data
 - RERA plan availability status
 
-For multi-competitor research, create ONE consolidated document with:
+For multi-competitor research (i.e. stage 2 of a `real-estate-area-research`
+run): create ONE consolidated document with:
 - A section per competitor project
 - Summary comparison table at the end (developer, size, units, price range, rate/sqft, RERA, status)
 - Notes on data gaps for each project
@@ -166,7 +188,9 @@ Two sheets:
 2. **Summary** — per-project summary:
    Project | RERA No. | Min Rate | Max Rate | Avg Rate | Price Range | Status | RERA Status
 
-For multi-competitor research: place ALL projects' listings in one Pricing Data sheet with project name in column B, separated by colored section headers. Summary sheet has one row per project.
+For multi-competitor research (stage 2 after area discovery): place ALL
+projects' listings in one Pricing Data sheet with project name in column B,
+separated by colored section headers. Summary sheet has one row per project.
 
 ## Step 6: WhatsApp Message Delivery (if requested)
 

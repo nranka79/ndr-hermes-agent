@@ -1,14 +1,14 @@
 ---
 name: real-estate-area-research
-description: Competitive-area discovery for Indian real estate land parcels — locality-first area search, Google Maps geocoding, dedupe, radius filter, KML/sheet outputs. Use when the ask is "find additional projects (villa/plot/apartment) in the vicinity of <land parcel>".
-version: 1.1.0
+description: Competitive-area discovery for Indian real estate land parcels — locality-first area search, Google Maps geocoding, dedupe, radius filter, KML/sheet outputs. Use when the ask is "find additional projects (villa/plot/apartment) in the vicinity of <land parcel>". For EACH competing project found, hand off to the individual-project-research skill (pricing + RERA deep-dive per project). Use headless browsing, not curl.
+version: 1.3.0
 author: Nishant Ranka (nranka79), Hermes Agent
 license: MIT
 metadata:
   hermes:
     tags: [real-estate, apify, area-search, geocoding, kml]
     category: domain
-    related_skills: [property-rd, real-estate-portal-research, property-pricing-sources, maps]
+    related_skills: [property-rd, real-estate-portal-research, individual-project-research, property-pricing-sources, maps]
 ---
 
 # Real-Estate Area Research (competitor discovery around a land parcel)
@@ -19,6 +19,27 @@ into). This skill covers the **discovery pipeline** used when Nishant
 asks to expand competitor coverage around a specific land parcel (e.g.
 "re-run the skill looking for additional projects in the vicinity,
 collect pricing, add them to the KML and the competitor sheet").
+
+## Two-stage flow (MANDATORY, v1.3.0)
+
+This skill is **stage 1 — area/competitor discovery**. Given a location
+(pin, locality, land parcel), it finds every competing project + point of
+interest around that location and produces the KML + competitor sheet.
+Then, for EACH competing project found, run the **`individual-project-research`**
+skill as **stage 2** — the per-project deep-dive that extracts pricing and
+RERA details for that specific project. Do NOT stop after the area sweep:
+every shortlisted competitor on the sheet must go through
+`individual-project-research` for its pricing + RERA deliverables.
+
+- If the user says "research this location / area / vicinity and find the
+  competing projects" → run THIS skill (stage 1), then `individual-project-research`
+  per competitor (stage 2).
+- If the user gives ONE specific project (name/URL) → run
+  `individual-project-research` directly.
+- Both stages MUST use headless browsing (`browser_navigate` / `smart_browser`,
+  real Chromium) or curl-with-full-browser-headers through the residential
+  tunnel — NOT bare curl (curl-minimal fingerprints get Akamai/WAF 403s
+  from every IP; see real-estate-portal-research pitfalls).
 
 ## Tool-first execution (MANDATORY, v1.1.0)
 
@@ -100,12 +121,15 @@ hand-write KML/XML:
    (Thylagere subject land = 13.3216384, 77.6789048). Geocoded projects
    > 10 km drop; no-coords projects still go to the sheet but not the KML.
    (`radius_query.py` automates the scan + 5/10 km counts.)
-9. **Pricing:** 99acres deep-scrape covers ~1/3 of records
-   (`price.displayPrice`); for the rest `web_search` "<exact project name>
-   price per sqft" — portal snippet pages (99acres/MagicBricks/housiey/
-   proplocators) give psf bands directly. Keep the source note per figure
-   (validate snippets against raw context — wrong-row locality tables are
-   the biggest trap).
+9. **Pricing:** Use headless browsing first — `browser_navigate`/`smart_browser`
+   (real Chromium, pre-wired to the residential tunnel) on the portal's
+   project/listing page, or curl with a FULL browser header set through
+   `socks5h://hermes-utilities:1000` (bare `-A` curl 403s — fingerprint, not IP).
+   99acres deep-scrape covers ~1/3 of records (`price.displayPrice`); for the
+   rest `web_search` "<exact project name> price per sqft" — portal snippet
+   pages (99acres/MagicBricks/housiey/proplocators) give psf bands directly.
+   Keep the source note per figure (validate snippets against raw context —
+   wrong-row locality tables are the biggest trap).
 10. **Infrastructure pipeline (v1.1.0).** For the same pin + radius, run a
     separate infra sweep: OSM/Overpass via the `maps` skill (hospitals,
     schools, colleges, industries, warehousing, tech parks — 46 POI
@@ -116,6 +140,12 @@ hand-write KML/XML:
 11. **Outputs (tool-only, v1.1.0):** append rows to the Competitors /
     Listings & Sources / POIs tabs via `sheet_io.py append`; generate +
     upload the KML with `kml_generator.py` (same Drive file id).
+12. **Per-project deep-dive handoff (v1.3.0):** for EACH shortlisted
+    competitor project on the sheet, run the `individual-project-research`
+    skill — extract RERA details + plans and per-project pricing listings,
+    and produce that project's info doc + pricing spreadsheet. The area KML
+    gives the map; `individual-project-research` gives the per-project
+    depth. Use headless browsing there too.
 
 ## Apify direct-API drive (when the `apify_run_actor` wrapper returns empty)
 
@@ -214,11 +244,13 @@ website, get their details… about 10 projects at least"), pull the official
 registry — NOT just portal listings:
 
 1. **Access via the residential tunnel only** — `rera.tn.gov.in` network-blocks
-   the VPS datacenter IP (curl → HTTP 000). Use
-   `curl -x socks5h://hermes-utilities:1000` with a browser UA (same pattern
-   as K-RERA). The `registered-layout/tn` page is ~8.8 MB; `registered-building/tn`
-   ~0.9 MB; default shows current year only — add `?_token=x&year=2025`
-   (any token value works) to sweep prior years.
+   the VPS datacenter IP (bare curl → HTTP 000). Use `browser_navigate`/
+   `smart_browser` (real Chromium, pre-wired to the tunnel), or curl with a
+   FULL browser header set through `socks5h://hermes-utilities:1000` (same
+   pattern as K-RERA; bare `-A` curl is not enough). The `registered-layout/tn`
+   page is ~8.8 MB; `registered-building/tn` ~0.9 MB; default shows current
+   year only — add `?_token=x&year=2025` (any token value works) to sweep
+   prior years.
 2. **Filter by district code = the number after `TN/` in the reg no.**
    Nilgiris = 12, Coimbatore = 11, Chennai = 29, Krishnagiri = 30,
    Chengalpattu = 35. Registration formats vary by vintage (`TN/12/Layout/1858/2025`
@@ -352,6 +384,10 @@ Fallback").
 - Geocoded placemarks fall within the 10 km radius of the reference pin.
 - Every price figure has a source (deep-scrape displayPrice or a web snippet).
 - Sheet and KML counts updated; KML re-uploaded to the same Drive file id.
+- **Every shortlisted competitor got its `individual-project-research` run**
+  (per-project pricing + RERA deliverables), not just an area row on the sheet.
+- Data was gathered with headless browsing (browser_navigate/smart_browser or
+  full-browser-header curl through the tunnel) — not bare curl (fingerprint 403s).
 
 ## Reference
 
