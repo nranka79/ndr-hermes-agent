@@ -1,7 +1,7 @@
 ---
 name: individual-project-research
-description: "Complete R&D for a specific real estate project: extract RERA info + plans, search listings for pricing, create project info doc + pricing spreadsheet. Covers pre-launch and RERA-registered projects. Also handles multi-competitor research runs. Codified 2026-08-26 by NDR."
-version: 1.2.0
+description: "Complete R&D for a specific real estate project: extract RERA info + plans, search listings for pricing, create project info doc + pricing spreadsheet. Covers pre-launch and RERA-registered projects. Also handles multi-competitor research runs. Codified 2026-08-26 by NDR. Updated 2026-08-28: real-browser over curl, tunnel/IP state corrected."
+version: 1.3.0
 author: NDR, Hermes Agent
 license: MIT
 metadata:
@@ -19,46 +19,42 @@ spreadsheet with 5+ listings from multiple portals.
 
 ## Prerequisites
 
+- **Headless browser** (`browser_navigate` / `smart_browser`) — PREFERRED over curl. Real Chromium fingerprints pass Akamai/WAF on MagicBricks, 99acres, Housing.com from any exit IP; curl's fingerprint gets "Access Denied" from every IP, even residential.
 - **Tavily API credits** (web_search) — may be exhausted; have fallback ready
 - **browser_use_cloud credits** — may be exhausted; have fallback ready
-- **browser_navigate** — works from VPS IP but NO residential proxies by default (stealth=local only); many sites return Access Denied
 - **Google Drive access** — via `tools.gws_auth.build_service('drive', 'v3', service_name='google-draas')`
 - **Jina Reader proxy** (r.jina.ai) — requires API key (no key = 401)
-- **Curl from terminal** — VPS IP (91.99.219.247 range), no tunnel SOCKS on 1080 by default
-- **Tavily out-of-credits fallback** → direct browser_navigate + tunnel curl (if tunnel available) + smart_browser (if credits available)
+- **Tavily out-of-credits fallback** → `browser_navigate` (headless browser, prefers residential route) then `smart_browser`. Prefer browser tools over curl.
 
-### Current system state (Aug 2026, under maintenance):
-- **SOCKS5 proxy** (`AGENT_BROWSER_PROXY=socks5://hermes-utilities:1000`) exists but as of last test (Aug 28) egressed from the **same VPS IP** (91.99.219.247). Verified: both direct curl and `curl -x socks5h://hermes-utilities:1000 https://api.ipify.org` return the same IP. NDR confirmed the routing algorithm was being updated as of Aug 28 — re-test after the fix is applied.
-- **Domain-policy router design:** The intended architecture routes residential-listed domains (MagicBricks, NoBroker, rera.tn.gov.in) through a Bengaluru residential node while non-listed domains exit from the VPS IP. This means IP echo tests do NOT confirm or deny tunnel health — always test against the actual portal domain. If this router becomes operational, the blocked-portal situation below may resolve for some sites.\n- **No tunnel-router service** exists on this system (found in AGENTS.md documentation but not deployed). Camofox container also not deployed.
-- **smart_browser** (browser-egress container, Chromium + browser-use): runs from VPS IP. K-RERA, MagicBricks, all block. Failed silently on K-RERA search (7 steps, no result).
-- **browser_navigate** (agent-browser CLI, local Chromium headless-shell): runs WITHOUT residential proxies (accessibility tree warning confirms). K-RERA homepage loads fine (Kannada/English), but projectSearch and services sub-URLs return "Error Page". Google returns CAPTCHA page (`/sorry/index?continue...`).
-- **browser_use_cloud**: requires separate API credits — may be exhausted
-- **Major portals** (MagicBricks, 99acres, Housing.com): return "Access Denied" from VPS IP via browser_navigate
+### Current system state (Aug 2026, verified 2026-08-28):
+- **Tunnel router is OPERATIONAL.** Residential-listed domains (MagicBricks, 99acres, rera.karnataka.gov.in, google/bing/duckduckgo, etc.) egress through a connected residential node; everything else defaults to `direct` (VPS IP). Verify with a **listed** echo endpoint, e.g. `curl -s --socks5-hostname hermes-utilities:1000 https://ifconfig.me` → residential node IP; NOT `api.ipify.org` (not in the residential list → correctly shows the VPS IP; that is expected, not a bug).
+- **Blocking is client-fingerprint, not IP.** Akamai (MagicBricks/99acres) returns "Access Denied" for curl/minimal-header requests from *any* exit (VPS or residential), and 200 for a real browser header set from the *same* IP. The residential node's own browser works fine on these sites.
+- **smart_browser** (browser-egress container, Chromium + browser-use): routes via the tunnel's SOCKS5; real browser fingerprint. Verify its LLM is not rate-limited (opencode-go key rotation + OpenRouter fallback configured).
+- **browser_navigate** (agent-browser CLI, local Chromium headless-shell): real browser fingerprint; uses `AGENT_BROWSER_PROXY` tunnel SOCKS when set.
+- **K-RERA** (rera.karnataka.gov.in): intermittently very slow (60–160 s connections observed) — retry and allow long timeouts; the site itself, not the route, is the bottleneck.
 - **Housystan.com**: accessible, but project-specific RERA pages return 404 for many projects
-- **K-RERA certificate PDF** endpoint: `https://rera.karnataka.gov.in/certificate?CER_NO=<RERA>` — times out (HTTP 000) from both VPS curl and browser_navigate. smart_browser also fails.
-- **Pricing discovery constraint**: MagicBricks API blobs (SERVER_PRELOADED_STATE_) only accessible from the tunnel SOCKS (which exits at the same VPS IP and is also blocked). No reliable automated pricing extraction from any Indian property portal.
+- **Pricing discovery**: use the headless browser to load portal pages (full browser headers); extract listing prices from the page/`SERVER_PRELOADED_STATE_`. Avoid raw curl for portals that Akamai/WAF-protect.
 
 ### Verification practice before reporting "blocked"
-Try each browser tool (browser_navigate, smart_browser, browser_use_cloud if credits available) at least ONCE before concluding a URL is inaccessible. Different tools route differently — browser_navigate goes through local Chromium + SOCKS5 proxy, smart_browser goes through a separate browser-egress Docker container. One may work where another fails. Document which tool was tried and what error/response was received.
+Try each browser tool (browser_navigate, smart_browser, browser_use_cloud if credits available) at least ONCE before concluding a URL is inaccessible. Different tools route differently — browser_navigate goes through local Chromium + SOCKS5 proxy, smart_browser goes through a separate browser-egress Docker container. One may work where another fails. Document which tool was tried and what error/response was received. Always prefer the real-browser tools; a raw curl result is not evidence that the site is blocked for a browser.
 
 ## Step 1: Identify the project
 
 Start with the URL or project name the user provides.
 
-- If a URL is given, open it via browser (browser_navigate) or curl through tunnel
+- If a URL is given, open it via a headless browser (browser_navigate or smart_browser) — not curl (curl fingerprints get blocked by Akamai/WAF)
 - Search aggregator sites: housystan.com, propnewz.com, godrejsoukyaroad.com, etc.
 - Extract: project name, developer, RERA number if available
 
 ## Step 2: Extract RERA Information
 
 ### If RERA-registered:
-1. Go to rera.karnataka.gov.in via browser_navigate
+1. Go to rera.karnataka.gov.in via browser_navigate or smart_browser (headless browser, residential route)
 2. Switch to English (click the "English" link on the top banner)
-3. **Known limitation:** The /projectSearch and /services sub-URLs return "Error Page" from VPS IP. The homepage "KNOW PROJECT STATUS" link also leads to an empty page.
+3. **Known behavior:** The /projectSearch and /services sub-URLs may intermittently return "Error Page" — K-RERA is slow/unreliable (60–160 s connections observed); retry with long timeouts rather than concluding blocked.
 4. **Working alternative:** Use the RERA certificate URL directly:
    `https://rera.karnataka.gov.in/certificate?CER_NO=<RERA_NUMBER>`
-   - NOTE: This PDF download times out from VPS IP (HTTP 000). The page loads as "Error Page" in browser_navigate.
-   - **Manual step required:** Ask user to download from the portal manually
+   - May time out on the first try; retry. If it still fails after retries, ask the user to download from the portal manually.
 5. **Aggregator sites** (may have some RERA info):
    - Housystan.com: try `/project/rera/<project-name-slug>` — may 404
    - PropNewz.com: try `/new-projects/<project-slug>` — may 404
@@ -97,17 +93,28 @@ Start with the URL or project name the user provides.
 
 ## Step 4: Pricing Discovery
 
-### Method 1: MagicBricks (if tunnel SOCKS available - may not be)
+### Method 1: Headless browser (PREFERRED)
+Load the portal listing page with a real browser — `browser_navigate` or `smart_browser` (both go through the residential route for portal domains, and both present a real Chromium fingerprint that Akamai/WAF accepts):
+- `browser_navigate("https://www.magicbricks.com/villa-for-sale-in-<locality>-bangalore-pppfs", ...)`
+- Same for 99acres, Housing.com, NoBroker, etc.
+Extract listing prices from the rendered page, or from the `SERVER_PRELOADED_STATE_` JSON blob in the page source if present.
+If browser tools fail, curl with a FULL browser header set (User-Agent + Accept + Accept-Language + sec-ch-ua + Sec-Fetch-*) through the tunnel works from residential IPs:
 ```bash
-curl -s --socks5-hostname hermes-utilities:1000 -A "Mozilla/5.0 ..." \
+curl -s --socks5-hostname hermes-utilities:1000 \
+  -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36" \
+  -H "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8" \
+  -H "Accept-Language: en-US,en;q=0.9" \
+  -H "sec-ch-ua: \"Chromium\";v=\"151\", \"Google Chrome\";v=\"151\", \"Not:A-Brand\";v=\"24\"" \
+  -H "sec-ch-ua-mobile: ?0" -H "sec-ch-ua-platform: \"Windows\"" \
+  -H "Sec-Fetch-Dest: document" -H "Sec-Fetch-Mode: navigate" -H "Sec-Fetch-Site: none" -H "Upgrade-Insecure-Requests: 1" \
   "https://www.magicbricks.com/villa-for-sale-in-<locality>-bangalore-pppfs"
 ```
-Extract listing prices from `SERVER_PRELOADED_STATE_` JSON blob.
+A bare `-A "Mozilla/5.0 ..."` curl (no other headers) is NOT enough — it still gets "Access Denied" from every IP.
 
-### Method 2: Browser navigate (VPS IP - likely Access Denied)
-- MagicBricks, 99acres, Housing.com all return "Access Denied" from VPS IP
-- Google Search blocks VPS IP with CAPTCHA
-- **Try anyway** — sometimes works for less popular portals or specific sub-pages
+### Method 2: Browser navigate (real browser, residential route)
+- Use browser_navigate/smart_browser first; these present a real browser fingerprint and work on MagicBricks, 99acres, Housing.com.
+- Google Search may still CAPTCHA from some IPs; prefer Bing/DuckDuckGo (residential-listed) or browser-based Google.
+- **Try anyway** — real browsers sometimes work where curl-based attempts failed.
 
 ### Method 3: Developer's own website
 - Daiwikhousing.com, Godrej properties site, etc.
@@ -196,20 +203,20 @@ When NDR asks you to send or share competitor research details via WhatsApp:
 - **Embedded Google Maps iframes**: For pre-launch projects, these often contain the actual GPS coordinates. Extract lat/lon from the embed URL (format: `?q=<lat>,<lon>`).
 - **Competitor pricing from different areas**: When doing multi-project R&D, clearly note which projects are in the same locality vs. "nearby" but actually in different suburbs (e.g., Soukya Road projects vs. Devanahalli projects are 15-20 km apart). Tag them clearly in deliverables.
 - **Tavily credits may be exhausted**: Fall back to browser_navigate or search sites directly
-- **browser_use_cloud credits may be exhausted**: Fall back to browser_navigate from VPS IP (limited success) or smart_browser
-- **browser_navigate blocking**: Browser_navigate runs local Chromium + SOCKS5 proxy (hermes-utilities:1000). The SOCKS5 proxy exits from the same VPS IP (91.99.219.247) — no residential exit. Sites that block the VPS IP will also block the SOCKS5 path.**
-- **smart_browser blocking**: Smart_browser runs in a separate browser-egress Docker container. It ALSO exits from the VPS IP. Sites that block via IP will also fail here. The failure mode is different from browser_navigate (silent agent failure vs "Access Denied" page) — so always try it once before concluding a URL is inaccessible.**
-- **Tool-by-tool blocking differences**: Different browser tools fail differently on the same URL — browser_navigate shows "Access Denied" or "Error Page", smart_browser fails silently (returns null with no error), browser_use_cloud would succeed if credits available. Always try at least 2 tools before reporting a URL as blocked.**
-- **"Try before concluding" rule**: When NDR asks why something was blocked, do NOT answer from memory/knowledge alone. Actually try the tools (browser_navigate, smart_browser, curl with SOCKS5) and verify the IP egress. Show the actual error/output received and the IP check result (`curl -x socks5h://hermes-utilities:1000 https://api.ipify.org` vs direct `curl https://api.ipify.org`). NDR expects demonstrated results, not remembered constraints.**
+- **browser_use_cloud credits may be exhausted**: Fall back to browser_navigate or smart_browser
+- **Curl fingerprint ≠ blocked site**: Akamai/WAF "Access Denied" for curl is a client-fingerprint rejection, NOT an IP block. A bare-`-A` curl 403s from residential IPs too; a real browser (or curl with full browser headers) returns 200 from the SAME IP. Never conclude "site blocked" from a curl result alone.**
+- **Real-browser tools route residential**: browser_navigate (AGENT_BROWSER_PROXY) and smart_browser (browser-egress SOCKS5) both go through the tunnel SOCKS for residential-listed portal domains — the same residential node you use at home.
+- **K-RERA is slow, not blocked**: rera.karnataka.gov.in intermittently takes 60–160 s per connection. Retry with long timeouts before concluding failure; this is the site's own slowness, not the tunnel.**
+- **Tool-by-tool blocking differences**: Different browser tools fail differently on the same URL — browser_navigate may show "Access Denied"/"Error Page", smart_browser may fail silently (returns null with no error). Always try at least 2 tools before reporting a URL as blocked.**
+- **"Try before concluding" rule**: When NDR asks why something was blocked, do NOT answer from memory/knowledge alone. Actually try the tools (browser_navigate, smart_browser) and verify the result. Show the actual error/output received. NDR expects demonstrated results, not remembered constraints.**
 - **Cloudflare on project websites**: Try aggregator sites (Housystan, PropNewz) or Google Maps listing
-- **99acres blocked**: Akamai even through tunnel; skip or use Google snippets  
-- **Housing.com blocked**: WAF even through tunnel; skip or use Google snippets
-- **Google Search blocks VPS IP**: Returns CAPTCHA page on `/sorry/index?continue...` — cannot use google.com from terminal curl or browser_navigate
-- **K-RERA certificate PDF**: The `/certificate?CER_NO=` endpoint times out (HTTP 000) from both VPS curl and browser_navigate — user must download manually
-- **K-RERA project search sub-URLs**: `/projectSearch`, `/projectSearchDetails`, `/services` all return "Error Page" — only the homepage works
+- **99acres**: works with real-browser fingerprint; curl-style requests 403. Use browser tools.  
+- **Housing.com**: WAF-protected against curl; use browser tools.
+- **Google Search CAPTCHA**: may appear from some IPs; prefer Bing/DuckDuckGo (residential-listed) or retry via browser.
+- **K-RERA certificate PDF**: The `/certificate?CER_NO=` endpoint may be slow/timeout on first try; retry with long timeout. Ask the user to download manually only after retries fail.
+- **K-RERA project search sub-URLs**: `/projectSearch`, `/projectSearchDetails`, `/services` may intermittently return "Error Page" — retry.
 - **Housystan RERA pages**: `/project/rera/<slug>` returns 404 for many projects — don't rely on this
-- **MagicBricks from VPS IP**: "Access Denied" — no way to scrape pricing. Use alternative sources (developer website, previous data, market estimates) and mark data as estimated
-- **sellerName/API data from MagicBricks**: Only accessible via tunnel curl with matching User-Agent. From VPS IP, even the page is blocked
+- **MagicBricks pricing**: works via real-browser tools or curl-with-full-browser-headers through the residential route. Mark data as estimated only if unverifiable.
 - **Voice transcription errors**: NDR uses voice input. Common corrections in this domain:
   - "Rovala" → "Row Villa"
   - "Goodridge" → "Godrej"  
