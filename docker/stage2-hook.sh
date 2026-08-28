@@ -251,26 +251,6 @@ if [ -n "$venv_owner" ] && [ "$venv_owner" != "$actual_hermes_uid" ]; then
         echo "[stage2] Warning: chown of build trees failed (rootless container?) — continuing"
 fi
 
-# --- Fix ownership of the skills tree independently of the top-level check ---
-# The targeted data-volume chown above is gated on top-level $HERMES_HOME
-# ownership. When a root-run process (deploy, image build, `docker exec`
-# as root) re-chowns $HERMES_HOME/skills to root:0700 while the top-level
-# dir is already hermes-owned, `needs_chown` stays false and the skills
-# tree is never repaired — the unprivileged hermes runtime then fails with
-# PermissionError on skill_manage/skill_view and on the gws_skill_bridge
-# import (skills/productivity/google-workspace/scripts/google_api.py),
-# which agents surface as "skills are locked". Probe the skills dir
-# directly, mirroring the venv pattern above. Idempotent; skipped on
-# rootless containers where chown would fail.
-if [ -d "$HERMES_HOME/skills" ]; then
-    skills_owner=$(stat -c %u "$HERMES_HOME/skills" 2>/dev/null || echo "")
-    if [ -n "$skills_owner" ] && [ "$skills_owner" != "$actual_hermes_uid" ]; then
-        echo "[stage2] Fixing ownership of $HERMES_HOME/skills to hermes ($actual_hermes_uid)"
-        chown -R hermes:hermes "$HERMES_HOME/skills" 2>/dev/null || \
-            echo "[stage2] Warning: chown of $HERMES_HOME/skills failed (rootless container?) — continuing"
-    fi
-fi
-
 # Always reset ownership of $HERMES_HOME/profiles to hermes on every
 # boot. Profile dirs and files can land owned by root when commands
 # are invoked via `docker exec <container> hermes …` (which defaults

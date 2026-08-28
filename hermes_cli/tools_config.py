@@ -62,6 +62,7 @@ CONFIGURABLE_TOOLSETS = [
     ("video",           "🎬 Video Analysis",            "video_analyze (requires video-capable model)"),
     ("image_gen",       "🎨 Image Generation",          "image_generate"),
     ("video_gen",       "🎬 Video Generation",          "video_generate (text-to-video + image-to-video)"),
+    ("sarvam",          "🎙️ Sarvam AI",                 "STT, TTS, voice loop, LLM, translate (vault-backed per-user key)"),
     ("x_search",        "🐦 X (Twitter) Search",        "x_search (requires xAI OAuth or XAI_API_KEY)"),
     ("moa",             "🧠 Mixture of Agents",         "mixture_of_agents"),
     ("external_model",  "🔀 External Model (OpenRouter)", "call_openrouter_model - explicit routing only"),
@@ -1441,7 +1442,7 @@ def _get_platform_tools(
         ts_tools = set(resolve_toolset(ts_key))
         if not ts_tools or not ts_tools.issubset(platform_tool_universe):
             continue
-        if ts_tools.issubset(configurable_tool_universe):
+        if has_explicit_config and ts_tools.issubset(configurable_tool_universe):
             continue
         if not ts_tools.issubset(claimed):
             enabled_toolsets.add(ts_key)

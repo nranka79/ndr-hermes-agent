@@ -99,7 +99,7 @@ OPENAI_BASE_URL = os.getenv("STT_OPENAI_BASE_URL", "https://api.openai.com/v1")
 XAI_STT_BASE_URL = os.getenv("XAI_STT_BASE_URL", "https://api.x.ai/v1")
 ELEVENLABS_STT_BASE_URL = os.getenv("ELEVENLABS_STT_BASE_URL", "https://api.elevenlabs.io/v1")
 
-SUPPORTED_FORMATS = {".mp3", ".mp4", ".mpeg", ".mpga", ".m4a", ".wav", ".webm", ".ogg", ".aac", ".flac"}
+SUPPORTED_FORMATS = {".mp3", ".mp4", ".mpeg", ".mpga", ".m4a", ".wav", ".webm", ".ogg", ".oga", ".opus", ".3ga", ".aac", ".flac"}
 LOCAL_NATIVE_AUDIO_FORMATS = {".wav", ".aiff", ".aif"}
 MAX_FILE_SIZE = 25 * 1024 * 1024  # 25 MB
 
@@ -1827,3 +1827,191 @@ def _extract_transcript_text(transcription: Any) -> str:
             return value.strip()
 
     return str(transcription).strip()
+
+
+def transcribe_audio_segments(
+    file_path: str,
+    user_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Transcribe an audio file and return word/sentence segments.
+
+    Segments mode counterpart of :func:`transcribe_audio`. Routes through
+    the ``free_whisper_segments`` command-type STT provider (config.yaml),
+    which calls ``stt_wrapper.sh ... --segments`` against the free-whisper
+    universal gateway (whisper-first, internal AssemblyAI fallback carrying
+    the same per-user vocabulary as word_boost).
+
+    Args:
+        file_path: Absolute path to the audio file to transcribe.
+        user_id:   If provided, load the user's STT vocabulary and inject it
+                   as a recognition hint (same vault path as transcribe_audio).
+
+    Returns:
+        dict with keys:
+          - "success" (bool)
+          - "transcript" (str): Full joined text
+          - "segments" (list): [{"start": float, "end": float, "text": str}]
+          - "provider" (str, optional): "whisper" or "assemblyai"
+          - "error" (str, optional): Error message if success is False
+    """
+    error = _validate_audio_file(file_path)
+    if error:
+        return error
+
+    stt_config = _load_stt_config()
+    if not is_stt_enabled(stt_config):
+        return {
+            "success": False,
+            "transcript": "",
+            "segments": [],
+            "error": "STT is disabled in config.yaml (stt.enabled: false).",
+        }
+
+    initial_prompt: Optional[str] = None
+    hotwords: Optional[str] = None
+    if user_id:
+        try:
+            from tools.user_vocab import build_hotwords, build_initial_prompt, load_vocab
+            terms = load_vocab(user_id)
+            if terms:
+                initial_prompt = build_initial_prompt(terms)
+                hotwords = build_hotwords(terms)
+        except Exception as exc:
+            logger.debug("Failed to load vocab for user %s: %s", user_id, exc)
+
+    provider_config = _resolve_command_stt_provider_config(
+        "free_whisper_segments", stt_config
+    )
+    if provider_config is None:
+        return {
+            "success": False,
+            "transcript": "",
+            "segments": [],
+            "error": (
+                "stt.providers.free_whisper_segments (type: command) is not "
+                "configured — needed for segments-mode transcription."
+            ),
+        }
+
+    audio = Path(file_path).expanduser()
+    timeout = _get_command_stt_timeout(provider_config)
+    output_format = _get_command_stt_output_format(provider_config)
+    language = (
+        provider_config.get("language")
+        or stt_config.get("language")
+        or DEFAULT_COMMAND_STT_LANGUAGE
+    )
+
+    try:
+        with tempfile.TemporaryDirectory(prefix="hermes-cmd-stt-segments-") as tmpdir:
+            output_path = Path(tmpdir) / f"transcript.{output_format}"
+            placeholders = {
+                "input_path": str(audio.resolve()),
+                "output_path": str(output_path),
+                "output_dir": str(output_path.parent),
+                "format": output_format,
+                "language": str(language),
+                "model": "",
+                "initial_prompt": str(initial_prompt or ""),
+                "hotwords": str(hotwords or ""),
+            }
+            command = _render_command_stt_template(
+                str(provider_config.get("command") or ""), placeholders
+            )
+            logger.info(
+                "Transcribing %s via segments STT provider 'free_whisper_segments'...",
+                audio.name,
+            )
+            result = _run_command_stt(command, timeout)
+    except subprocess.TimeoutExpired:
+        return {
+            "success": False,
+            "transcript": "",
+            "segments": [],
+            "error": "Segments STT provider 'free_whisper_segments' timed out.",
+        }
+    except subprocess.CalledProcessError as exc:
+        detail = "; ".join(
+            part
+            for part in (
+                f"stderr: {exc.stderr.strip()}" if exc.stderr else "",
+                f"stdout: {exc.stdout.strip()}" if exc.stdout else "",
+            )
+            if part
+        ) or "no command output"
+        return {
+            "success": False,
+            "transcript": "",
+            "segments": [],
+            "error": (
+                f"Segments STT provider 'free_whisper_segments' exited with code "
+                f"{exc.returncode}: {detail}"
+            ),
+        }
+    except Exception as exc:
+        return {
+            "success": False,
+            "transcript": "",
+            "segments": [],
+            "error": f"Segments STT provider failed: {exc}",
+        }
+
+    import json
+
+    raw = ""
+    if output_path.exists():
+        try:
+            raw = output_path.read_text(encoding="utf-8").strip()
+        except UnicodeDecodeError:
+            raw = output_path.read_bytes().decode("utf-8", errors="replace").strip()
+    if not raw and result.stdout:
+        raw = result.stdout.strip()
+    if not raw:
+        return {
+            "success": False,
+            "transcript": "",
+            "segments": [],
+            "error": "Segments STT provider produced no output.",
+        }
+
+    try:
+        data = json.loads(raw)
+    except (ValueError, TypeError):
+        return {
+            "success": False,
+            "transcript": "",
+            "segments": [],
+            "error": (
+                "Segments STT provider returned non-JSON output "
+                f"(first 200 chars: {raw[:200]!r})."
+            ),
+        }
+
+    if data.get("success") is False:
+        return {
+            "success": False,
+            "transcript": "",
+            "segments": [],
+            "error": str(data.get("error") or "gateway reported failure"),
+        }
+
+    segments = data.get("segments") or []
+    normalized = []
+    for seg in segments:
+        if not isinstance(seg, dict):
+            continue
+        try:
+            normalized.append({
+                "start": float(seg.get("start", 0)),
+                "end": float(seg.get("end", 0)),
+                "text": str(seg.get("text", "")),
+            })
+        except (TypeError, ValueError):
+            continue
+
+    return {
+        "success": True,
+        "transcript": str(data.get("text") or ""),
+        "segments": normalized,
+        "provider": str(data.get("provider") or "unknown"),
+    }

@@ -76,7 +76,9 @@ from gateway.platforms.base import (
     cache_video_from_bytes,
     cache_document_from_bytes,
     resolve_proxy_url,
+    classify_media_by_probe,
     SUPPORTED_VIDEO_TYPES,
+    SUPPORTED_AUDIO_TYPES,
     SUPPORTED_DOCUMENT_TYPES,
     SUPPORTED_IMAGE_DOCUMENT_TYPES,
     utf16_len,
@@ -5503,9 +5505,15 @@ class TelegramAdapter(BasePlatformAdapter):
             try:
                 file_obj = await msg.voice.get_file()
                 audio_bytes = await file_obj.download_as_bytearray()
-                cached_path = cache_audio_from_bytes(bytes(audio_bytes), ext=".ogg")
+                ext = ".ogg"
+                if getattr(file_obj, "file_path", None):
+                    for candidate in SUPPORTED_AUDIO_TYPES:
+                        if file_obj.file_path.lower().endswith(candidate):
+                            ext = candidate
+                            break
+                cached_path = cache_audio_from_bytes(bytes(audio_bytes), ext=ext)
                 event.media_urls = [cached_path]
-                event.media_types = ["audio/ogg"]
+                event.media_types = [SUPPORTED_AUDIO_TYPES.get(ext, "audio/ogg")]
                 logger.info("[Telegram] Cached user voice at %s", cached_path)
             except Exception as e:
                 logger.warning("[Telegram] Failed to cache voice: %s", e, exc_info=True)
@@ -5513,9 +5521,16 @@ class TelegramAdapter(BasePlatformAdapter):
             try:
                 file_obj = await msg.audio.get_file()
                 audio_bytes = await file_obj.download_as_bytearray()
-                cached_path = cache_audio_from_bytes(bytes(audio_bytes), ext=".mp3")
+                ext = ".mp3"
+                if getattr(file_obj, "file_path", None):
+                    for candidate in SUPPORTED_AUDIO_TYPES:
+                        if file_obj.file_path.lower().endswith(candidate):
+                            ext = candidate
+                            break
+                cached_path = cache_audio_from_bytes(bytes(audio_bytes), ext=ext)
                 event.media_urls = [cached_path]
-                event.media_types = ["audio/mp3"]
+                audio_mime = (getattr(msg.audio, "mime_type", "") or "").lower()
+                event.media_types = [audio_mime or SUPPORTED_AUDIO_TYPES.get(ext, "audio/mpeg")]
                 logger.info("[Telegram] Cached user audio at %s", cached_path)
             except Exception as e:
                 logger.warning("[Telegram] Failed to cache audio: %s", e, exc_info=True)
@@ -5532,8 +5547,16 @@ class TelegramAdapter(BasePlatformAdapter):
                             break
                 cached_path = cache_video_from_bytes(bytes(video_bytes), ext=ext)
                 event.media_urls = [cached_path]
-                event.media_types = [SUPPORTED_VIDEO_TYPES.get(ext, "video/mp4")]
-                logger.info("[Telegram] Cached user video at %s", cached_path)
+                probe = classify_media_by_probe(cached_path)
+                if probe["ok"] and probe["kind"] == "audio":
+                    event.media_types = ["audio/mp4"]
+                    logger.info(
+                        "[Telegram] Cached user video reclassified as audio-only by probe (%s)",
+                        cached_path,
+                    )
+                else:
+                    event.media_types = [SUPPORTED_VIDEO_TYPES.get(ext, "video/mp4")]
+                    logger.info("[Telegram] Cached user video at %s", cached_path)
             except Exception as e:
                 logger.warning("[Telegram] Failed to cache video: %s", e, exc_info=True)
 
@@ -5607,6 +5630,10 @@ class TelegramAdapter(BasePlatformAdapter):
                     ext = video_mime_to_ext.get(doc.mime_type, "")
 
                 if not ext and doc.mime_type:
+                    audio_mime_to_ext = {v: k for k, v in SUPPORTED_AUDIO_TYPES.items()}
+                    ext = audio_mime_to_ext.get(doc.mime_type, "")
+
+                if not ext and doc.mime_type:
                     # SUPPORTED_IMAGE_DOCUMENT_TYPES has duplicate values (.jpg + .jpeg
                     # both map to image/jpeg); keep the first ext we encounter.
                     image_mime_to_ext: dict[str, str] = {}
@@ -5625,6 +5652,25 @@ class TelegramAdapter(BasePlatformAdapter):
                     await self.handle_message(event)
                     return
 
+                if ext in SUPPORTED_AUDIO_TYPES or doc_mime.startswith("audio/"):
+                    file_obj = await doc.get_file()
+                    audio_bytes = await file_obj.download_as_bytearray()
+                    audio_ext = ext if ext in SUPPORTED_AUDIO_TYPES else ".mp3"
+                    if ext not in SUPPORTED_AUDIO_TYPES and doc_mime:
+                        audio_mime_to_ext = {v: k for k, v in SUPPORTED_AUDIO_TYPES.items()}
+                        audio_ext = audio_mime_to_ext.get(doc_mime, audio_ext)
+                    cached_path = cache_audio_from_bytes(bytes(audio_bytes), ext=audio_ext)
+                    event.media_urls = [cached_path]
+                    event.media_types = [
+                        doc_mime
+                        if doc_mime.startswith("audio/")
+                        else SUPPORTED_AUDIO_TYPES.get(audio_ext, "audio/mpeg")
+                    ]
+                    event.message_type = MessageType.AUDIO
+                    logger.info("[Telegram] Cached user audio document at %s", cached_path)
+                    await self.handle_message(event)
+                    return
+
                 # NOTE: image-document handling is performed earlier in this
                 # function (ext in _TELEGRAM_IMAGE_EXTENSIONS or image/* mime),
                 # which returns before reaching here.  Any subsequent
@@ -5633,6 +5679,73 @@ class TelegramAdapter(BasePlatformAdapter):
 
                 # Check if supported
                 if ext not in SUPPORTED_DOCUMENT_TYPES:
+                    # Media-lookalike fallback: don't trust the extension. Real
+                    # uploads routinely arrive with misleading labels (WhatsApp
+                    # audio exports arrive as ".mpeg" with a "video/mpeg" MIME
+                    # label). Probe the bytes with ffprobe and route by actual
+                    # content; only genuinely unidentifiable files are rejected.
+                    try:
+                        file_obj = await doc.get_file()
+                        media_bytes = bytes(await file_obj.download_as_bytearray())
+                    except Exception as e:
+                        logger.warning(
+                            "[Telegram] Failed to download candidate media document %s: %s",
+                            original_filename or ext,
+                            e,
+                            exc_info=True,
+                        )
+                        media_bytes = None
+
+                    if media_bytes:
+                        probe_path = cache_document_from_bytes(
+                            media_bytes, original_filename or f"probe{ext or '.bin'}"
+                        )
+                        try:
+                            probe = classify_media_by_probe(probe_path)
+                            logger.info(
+                                "[Telegram] Probe %s (ext=%s, mime=%s) -> %s%s",
+                                original_filename or "unnamed",
+                                ext or "none",
+                                doc_mime or "none",
+                                probe.get("kind"),
+                                f" ({probe.get('detail')})" if probe.get("detail") else "",
+                            )
+                            if probe.get("ok") and probe.get("kind") == "video":
+                                cached_path = cache_video_from_bytes(media_bytes, ext=ext or ".mp4")
+                                event.media_urls = [cached_path]
+                                event.media_types = [
+                                    doc_mime
+                                    if doc_mime.startswith("video/")
+                                    else SUPPORTED_VIDEO_TYPES.get(ext or "", "video/mp4")
+                                ]
+                                event.message_type = MessageType.VIDEO
+                                logger.info(
+                                    "[Telegram] Cached user video document (probed) at %s",
+                                    cached_path,
+                                )
+                                await self.handle_message(event)
+                                return
+                            if probe.get("ok") and probe.get("kind") == "audio":
+                                cached_path = cache_audio_from_bytes(media_bytes, ext=ext or ".mp3")
+                                event.media_urls = [cached_path]
+                                event.media_types = [
+                                    doc_mime
+                                    if doc_mime.startswith("audio/")
+                                    else SUPPORTED_AUDIO_TYPES.get(ext or "", "audio/mpeg")
+                                ]
+                                event.message_type = MessageType.AUDIO
+                                logger.info(
+                                    "[Telegram] Cached user audio document (probed) at %s",
+                                    cached_path,
+                                )
+                                await self.handle_message(event)
+                                return
+                        finally:
+                            try:
+                                os.remove(probe_path)
+                            except OSError:
+                                pass
+
                     supported_list = ", ".join(sorted(SUPPORTED_DOCUMENT_TYPES.keys()))
                     event.text = (
                         f"Unsupported document type '{ext or 'unknown'}'. "

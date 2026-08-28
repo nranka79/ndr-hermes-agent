@@ -137,3 +137,9 @@ Infrastructure_Scripts/hetzner/railway_workflows_export.json
 # the auto-sync scripts (local + Hetzner auto-git-sync.sh) from silently
 # re-adding it on their next git add -A cycle.
 hermes-data/users.json
+
+# VPS runtime backups — never commit
+*.bak
+*.bak-*
+*.orig
+*.rej

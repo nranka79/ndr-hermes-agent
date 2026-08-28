@@ -1377,6 +1377,8 @@ def _build_media_placeholder(event) -> str:
             parts.append(f"[User sent an image: {url}]")
         elif mtype.startswith("audio/"):
             parts.append(f"[User sent audio: {url}]")
+        elif mtype.startswith("video/") or getattr(event, "message_type", None) == MessageType.VIDEO:
+            parts.append(f"[User sent a video: {url}]")
         else:
             parts.append(f"[User sent a file: {url}]")
     return "\n".join(parts)
@@ -7473,6 +7475,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Declare at outer scope so the audio-file-paths handling block below
         # remains safe when ``event.media_urls`` is empty (no inner block runs).
         audio_file_paths: list[str] = []
+        video_paths: list[str] = []
 
         if event.media_urls:
             image_paths = []
@@ -7481,13 +7484,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 mtype = event.media_types[i] if i < len(event.media_types) else ""
                 if mtype.startswith("image/") or event.message_type == MessageType.PHOTO:
                     image_paths.append(path)
+                # MessageType.VIDEO = video/call-recording attachments (mp4/webm)
+                # — always STT (call recordings) + file note so the agent never
+                # misses the attachment again.
+                elif event.message_type == MessageType.VIDEO:
+                    video_paths.append(path)
                 # MessageType.AUDIO = audio file attachment (e.g. .mp3, .m4a) — never STT
                 # MessageType.VOICE = voice message (Opus/OGG) — always STT
                 if event.message_type == MessageType.AUDIO:
                     audio_file_paths.append(path)
                 elif event.message_type == MessageType.VOICE or (
                     mtype.startswith("audio/")
-                    and event.message_type not in {MessageType.AUDIO, MessageType.DOCUMENT}
+                    and event.message_type
+                    not in {MessageType.AUDIO, MessageType.DOCUMENT, MessageType.VIDEO}
                 ):
                     audio_paths.append(path)
 
@@ -7569,6 +7578,31 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             )
                         except Exception:
                             pass
+
+            if video_paths:
+                message_text, _video_transcripts = await self._enrich_message_with_transcription(
+                    message_text,
+                    video_paths,
+                    user_id=source.user_id,
+                    kind="video",
+                )
+                # Echo transcripts for videos (call recordings) the same way
+                # as voice, so the user can verify STT quality immediately.
+                if _video_transcripts:
+                    _v_echo_adapter = self.adapters.get(source.platform)
+                    _v_echo_meta = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
+                    if _v_echo_adapter:
+                        for _tx in _video_transcripts:
+                            try:
+                                await _v_echo_adapter.send(
+                                    source.chat_id,
+                                    f'🎙️ "{_tx}"',
+                                    metadata=_v_echo_meta,
+                                )
+                            except Exception as _v_echo_exc:
+                                logger.debug(
+                                    "Video transcript echo failed (non-fatal): %s", _v_echo_exc,
+                                )
 
         if audio_file_paths:
             from tools.credential_files import to_agent_visible_cache_path as _to_agent_path
@@ -11447,15 +11481,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         user_text: str,
         audio_paths: List[str],
         user_id: Optional[str] = None,
+        kind: str = "voice",
     ) -> tuple[str, List[str]]:
         """
-        Auto-transcribe user voice/audio messages using the configured STT provider
-        and prepend the transcript to the message text.
+        Auto-transcribe user voice/audio/video messages using the configured
+        STT provider and prepend the transcript to the message text.
 
         Args:
             user_text:   The user's original caption / message text.
-            audio_paths: List of local file paths to cached audio files.
+            audio_paths: List of local file paths to cached media files.
             user_id:     Optional user ID for loading per-user STT vocabulary hints.
+            kind:        "voice" (default), "audio" or "video" — controls the
+                         phrasing injected into the agent context, and whether
+                         the cached file path is included in the note.
 
         Returns:
             A tuple of ``(enriched_text, successful_transcripts)``:
@@ -11466,6 +11504,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 list if every clip failed or STT is disabled. Callers can use
                 this to echo transcripts back to the user before the agent loop.
         """
+        is_video = kind == "video"
+        label = "video" if is_video else "voice message"
         if not getattr(self.config, "stt_enabled", True):
             notes = []
             for path in audio_paths:
@@ -11473,10 +11513,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 duration_str = await _probe_audio_duration(abs_path)
                 if duration_str:
                     notes.append(
-                        f"[The user sent a voice message: {abs_path} (duration: {duration_str})]"
+                        f"[The user sent a {label}: {abs_path} (duration: {duration_str})]"
                     )
                 else:
-                    notes.append(f"[The user sent a voice message: {abs_path}]")
+                    notes.append(f"[The user sent a {label}: {abs_path}]")
             if not notes:
                 return user_text, []
             prefix = "\n\n".join(notes)
@@ -11493,15 +11533,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         successful_transcripts: List[str] = []
         for path in audio_paths:
             try:
-                logger.debug("Transcribing user voice: %s", path)
+                logger.debug("Transcribing user %s: %s", kind, path)
                 result = await asyncio.to_thread(transcribe_audio, path, None, user_id)
                 if result["success"]:
                     transcript = result["transcript"]
                     successful_transcripts.append(transcript)
-                    enriched_parts.append(
-                        f'[The user sent a voice message~ '
-                        f'Here\'s what they said: "{transcript}"]'
-                    )
+                    if is_video:
+                        enriched_parts.append(
+                            f'[The user sent a video: {path}. '
+                            f'Here\'s what they said: "{transcript}"]'
+                        )
+                    else:
+                        enriched_parts.append(
+                            f'[The user sent a voice message~ '
+                            f'Here\'s what they said: "{transcript}"]'
+                        )
                 else:
                     error = result.get("error", "unknown error")
                     if (
@@ -11509,7 +11555,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         or error.startswith("Neither VOICE_TOOLS_OPENAI_KEY nor OPENAI_API_KEY is set")
                     ):
                         _no_stt_note = (
-                            "[The user sent a voice message but I can't listen "
+                            f"[The user sent a {label} but I can't listen "
                             "to it right now — no STT provider is configured. "
                             "A direct message has already been sent to the user "
                             "with setup instructions."
@@ -11524,13 +11570,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         enriched_parts.append(_no_stt_note)
                     else:
                         enriched_parts.append(
-                            "[The user sent a voice message but I had trouble "
+                            f"[The user sent a {label} but I had trouble "
                             f"transcribing it~ ({error})]"
                         )
             except Exception as e:
                 logger.error("Transcription error: %s", e)
                 enriched_parts.append(
-                    "[The user sent a voice message but something went wrong "
+                    f"[The user sent a {label} but something went wrong "
                     "when I tried to listen to it~ Let them know!]"
                 )
 
@@ -11552,19 +11598,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         session_key: str,
         source,
     ) -> str | None:
-        """Dequeue a pending queued message, auto-transcribing audio media.
+        """Dequeue a pending queued message, auto-transcribing audio/video media.
 
-        When a voice/audio message arrives during an active agent run, the
-        adapter stores the event in its pending queue and signals an interrupt
-        (see base.BaseAdapter.handle_message). The adapter path bypasses
-        _handle_message entirely, so the normal STT pipeline at message-receive
-        time never runs.
+        When a voice/audio/video message arrives during an active agent run,
+        the adapter stores the event in its pending queue and signals an
+        interrupt (see base.BaseAdapter.handle_message). The adapter path
+        bypasses _handle_message entirely, so the normal STT pipeline at
+        message-receive time never runs.
 
-        This helper fills that gap: when the dequeued event has audio media,
-        we transcribe inline, echo the raw transcript back to the user (same
-        "🎙️" format as the fresh-message path), and return enriched text.
-        Non-audio events fall back to _build_media_placeholder, matching the
-        original _dequeue_pending_text behavior.
+        This helper fills that gap: when the dequeued event has audio or
+        video media, we transcribe inline, echo the raw transcript back to
+        the user (same "🎙️" format as the fresh-message path), and return
+        enriched text. Non-audio/video events fall back to
+        _build_media_placeholder, matching the original _dequeue_pending_text
+        behavior.
         """
         event = adapter.get_pending_message(session_key)
         if not event:
@@ -11573,16 +11620,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         text = event.text or ""
 
         audio_paths: List[str] = []
+        video_paths: List[str] = []
         media_urls = getattr(event, "media_urls", None) or []
         media_types = getattr(event, "media_types", None) or []
+        event_type = getattr(event, "message_type", None)
         for i, path in enumerate(media_urls):
             mtype = media_types[i] if i < len(media_types) else ""
             is_audio = (
                 mtype.startswith("audio/")
-                or getattr(event, "message_type", None) in (MessageType.VOICE, MessageType.AUDIO)
+                or event_type in (MessageType.VOICE, MessageType.AUDIO)
             )
             if is_audio:
                 audio_paths.append(path)
+            elif event_type == MessageType.VIDEO:
+                video_paths.append(path)
 
         if audio_paths:
             enriched_text, successful_transcripts = await self._enrich_message_with_transcription(
@@ -11607,7 +11658,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             )
             return enriched_text or None
 
-        # Non-audio fallback: preserve original _dequeue_pending_text semantics.
+        if video_paths:
+            enriched_text, successful_transcripts = await self._enrich_message_with_transcription(
+                text, video_paths, user_id=source.user_id, kind="video",
+            )
+            if successful_transcripts:
+                echo_adapter = self.adapters.get(source.platform)
+                echo_meta = {"thread_id": source.thread_id} if source.thread_id else None
+                if echo_adapter:
+                    for tx in successful_transcripts:
+                        try:
+                            await echo_adapter.send(
+                                source.chat_id,
+                                f'🎙️ "{tx}"',
+                                metadata=echo_meta,
+                            )
+                        except Exception as echo_exc:
+                            logger.debug(
+                                "Video transcript echo failed (non-fatal): %s", echo_exc,
+                            )
+            return enriched_text or None
+
+        # Non-audio/video fallback: preserve original _dequeue_pending_text
+        # semantics — but never drop a captioned media event's attachment note.
         if not text and media_urls:
             text = _build_media_placeholder(event)
         return text or None

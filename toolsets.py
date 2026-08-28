@@ -31,9 +31,6 @@ from typing import List, Dict, Any, Set, Optional
 _HERMES_CORE_TOOLS = [
     # Web
     "web_search", "web_extract",
-    # Apify actor runner — managed scrapers on residential proxies for
-    # portal sites that block datacenter IPs (99acres/MagicBricks/Maps)
-    "apify_run_actor",
     # Terminal + process management
     "terminal", "process",
     # File manipulation
@@ -96,16 +93,26 @@ _HERMES_CORE_TOOLS = [
     "whatsapp_link",
     # GWS multi-account resolver -- maps account email/label -> vault service_name
     "gws_resolve_account",
-    # GWS token fetch -- internal plumbing for tools.gws_auth.load_credentials()
-    # when called from inside the execute_code sandbox. The tool's handler runs
-    # in the trusted main process; sandbox scripts never call it directly.
-    # Must be in _HERMES_CORE_TOOLS so every session's sandbox stub includes it,
-    # otherwise gws_auth.load_credentials() fails with ImportError in sandbox.
+    # GWS token fetch RPC tool (sandbox-only path to vault credentials via
+    # execute_code; registered under toolset "oauth"). Must be in core so the
+    # "oauth" toolset stays a subset of every platform's default composite —
+    # otherwise the recovery pass in _get_platform_tools drops it and the
+    # sandbox never generates the gws_fetch_token stub (build_service fails).
     "gws_fetch_token",
+    # Sarvam AI tools (vault-backed key, session-scoped; tools/sarvam_tools.py)
+    "sarvam_translate",
+    "sarvam_transliterate",
+    "sarvam_identify_language",
+    "sarvam_llm_complete",
+    "sarvam_stt_transcribe",
+    "sarvam_text_analytics",
+    "sarvam_tts",
+    "sarvam_voice",
     # Contacts/entities registry lookup (fuzzy/ranked search across the
     # Google Sheets registry) -- per-user OAuth via gws_auth, no SA/DWD.
     "contact_resolver",
     "entity_resolver",
+    "noun_learner",
     # Document OCR (Mistral OCR 4) -- gated on MISTRAL_API_KEY via check_fn
     "ocr_mistral",
 ]
@@ -139,7 +146,7 @@ TOOLSETS = {
     # Basic toolsets - individual tool categories
     "web": {
         "description": "Web research and content extraction tools",
-        "tools": ["web_search", "web_extract", "apify_run_actor"],
+        "tools": ["web_search", "web_extract"],
         "includes": []  # No other toolsets included
     },
     
@@ -148,6 +155,22 @@ TOOLSETS = {
         "tools": ["web_search"],
         "includes": []
     },
+    "sarvam": {
+        "description": "Sarvam AI (vault-backed key, session-scoped; tools/sarvam_tools.py) - STT, TTS, voice loop, LLM, translate, transliterate, language ID, text analytics.",
+        "tools": [
+            "sarvam_translate",
+            "sarvam_transliterate",
+            "sarvam_identify_language",
+            "sarvam_llm_complete",
+            "sarvam_stt_transcribe",
+            "sarvam_text_analytics",
+            "sarvam_tts",
+            "sarvam_voice",
+        ],
+        "includes": []
+    },
+
+
 
     "x_search": {
         "description": (
@@ -257,6 +280,14 @@ TOOLSETS = {
                        "like 'google.' from OAuth client_ids.",
         "tools": ["send_oauth_url", "kelsa_login", "kelsa_complete_login",
                   "kelsa_list_tools", "kelsa_call_tool"],
+        "includes": []
+    },
+
+    "general": {
+        "description": "General-purpose registry lookup tools: fuzzy/ranked contact and entity "
+                       "resolution plus noun-learner write-back across the Google Sheets "
+                       "registry (per-user OAuth via gws_auth)",
+        "tools": ["contact_resolver", "entity_resolver", "noun_learner"],
         "includes": []
     },
 

@@ -799,6 +799,39 @@ SUPPORTED_VIDEO_TYPES = {
     ".webm": "video/webm",
     ".mkv": "video/x-matroska",
     ".avi": "video/x-msvideo",
+    ".mpeg": "video/mpeg",
+    ".mpg": "video/mpeg",
+    ".m4v": "video/x-m4v",
+    ".3gp": "video/3gpp",
+    ".3g2": "video/3gpp2",
+    ".flv": "video/x-flv",
+    ".wmv": "video/x-ms-wmv",
+    ".ts": "video/mp2t",
+    ".m2ts": "video/mp2t",
+    ".ogv": "video/ogg",
+}
+
+SUPPORTED_AUDIO_TYPES = {
+    ".mp3": "audio/mpeg",
+    ".mp2": "audio/mpeg",
+    ".mpga": "audio/mpeg",
+    ".m4a": "audio/mp4",
+    ".m4b": "audio/mp4",
+    ".aac": "audio/aac",
+    ".flac": "audio/flac",
+    ".wav": "audio/wav",
+    ".ogg": "audio/ogg",
+    ".oga": "audio/ogg",
+    ".opus": "audio/ogg",
+    ".wma": "audio/x-ms-wma",
+    ".amr": "audio/amr",
+    ".aiff": "audio/aiff",
+    ".aif": "audio/aiff",
+    ".3ga": "audio/3gpp",
+    ".mka": "audio/x-matroska",
+    ".mid": "audio/midi",
+    ".midi": "audio/midi",
+    ".caf": "audio/x-caf",
 }
 
 
@@ -815,6 +848,74 @@ def cache_video_from_bytes(data: bytes, ext: str = ".mp4") -> str:
     filepath = cache_dir / filename
     filepath.write_bytes(data)
     return str(filepath)
+
+
+# ---------------------------------------------------------------------------
+# Media content sniffing
+#
+# Platforms decide kind from filename extension / MIME type, which WhatsApp
+# audio exports routinely defeat (an AAC-only track inside an ".mp4" document
+# is classified as a video and never transcribed). ffprobe classifies the
+# actual container/codec streams, so routing no longer trusts the extension.
+# ---------------------------------------------------------------------------
+
+_MEDIA_PROBE_RESULT = {
+    "ok": bool,
+    "kind": str,  # "video" | "audio" | "unknown" | "unreadable"
+    "detail": str,
+}
+
+
+def classify_media_by_probe(path: str) -> dict:
+    """ffprobe *path* and report whether it contains real video/audio streams.
+
+    Extension-agnostic: an AAC-only file inside an ".mp4" container reports
+    kind "audio"; a screen recording reports "video". Used by platform
+    adapters after caching so downstream routing (STT, vision, placeholder)
+    follows the true content instead of the filename.
+
+    Returns a dict with keys: ``ok``, ``kind``, ``detail``.
+    """
+    import subprocess
+
+    try:
+        proc = subprocess.run(
+            [
+                "ffprobe", "-v", "error",
+                "-show_entries", "stream=codec_type",
+                "-of", "csv=p=0",
+                str(path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except Exception as exc:
+        return {"ok": False, "kind": "unreadable", "detail": str(exc)[:200]}
+
+    if proc.returncode != 0:
+        return {
+            "ok": False,
+            "kind": "unreadable",
+            "detail": (proc.stderr or "").strip()[:200],
+        }
+
+    has_audio = False
+    has_video = False
+    for line in proc.stdout.splitlines():
+        stream = line.strip()
+        if stream == "audio":
+            has_audio = True
+        elif stream == "video":
+            has_video = True
+
+    if has_video:
+        kind = "video"
+    elif has_audio:
+        kind = "audio"
+    else:
+        kind = "unknown"
+    return {"ok": True, "kind": kind, "detail": ""}
 
 
 # ---------------------------------------------------------------------------
