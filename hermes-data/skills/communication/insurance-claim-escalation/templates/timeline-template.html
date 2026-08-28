@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Insurance Claim Timeline — Claim No. [CLAIM_NO]</title>
+<style>
+  @page { size: A4; margin: 1.8cm 1.5cm; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
+    font-size: 10pt;
+    line-height: 1.5;
+    color: #1a1a1a;
+    max-width: 190mm;
+    margin: 0 auto;
+    padding: 0;
+  }
+
+  /* ===== COVER / HEADER ===== */
+  .cover {
+    border-bottom: 3px solid #c0392b;
+    padding-bottom: 18px;
+    margin-bottom: 22px;
+  }
+  .cover h1 {
+    font-size: 22pt;
+    color: #c0392b;
+    letter-spacing: -0.5px;
+    margin-bottom: 4px;
+  }
+  .cover .subtitle {
+    font-size: 11pt;
+    color: #555;
+    margin-bottom: 14px;
+  }
+  .cover .meta-grid {
+    display: grid;
+    grid-template-columns: 170px 1fr 170px 1fr;
+    gap: 2px 8px;
+    font-size: 9pt;
+  }
+  .cover .meta-grid .label { font-weight: 600; color: #444; }
+  .cover .meta-grid .value { color: #1a1a1a; }
+
+  /* ===== STATUS BAR ===== */
+  .status-bar {
+    display: flex;
+    gap: 0;
+    margin: 18px 0 22px;
+    border-radius: 6px;
+    overflow: hidden;
+    font-size: 8.5pt;
+    font-weight: 600;
+    text-align: center;
+  }
+  .status-bar div { flex: 1; padding: 7px 4px; color: #fff; }
+  .sb-green { background: #27ae60; }
+  .sb-amber { background: #e67e22; }
+  .sb-red   { background: #c0392b; }
+  .sb-gray  { background: #95a5a6; }
+
+  /* ===== KEY STATS ROW ===== */
+  .stats-row {
+    display: flex;
+    gap: 12px;
+    margin-bottom: 24px;
+  }
+  .stat-card {
+    flex: 1;
+    background: #f8f9fa;
+    border-radius: 8px;
+    padding: 10px 12px;
+    border-left: 4px solid #c0392b;
+  }
+  .stat-card .num {
+    font-size: 18pt;
+    font-weight: 700;
+    color: #c0392b;
+  }
+  .stat-card .desc {
+    font-size: 7.5pt;
+    color: #666;
+    margin-top: 2px;
+  }
+
+  /* ===== TIMELINE ===== */
+  .section-title {
+    font-size: 14pt;
+    font-weight: 700;
+    color: #2c3e50;
+    border-bottom: 2px solid #2c3e50;
+    padding-bottom: 4px;
+    margin: 24px 0 16px;
+  }
+
+  .timeline { position: relative; padding-left: 28px; }
+  .timeline::before {
+    content: '';
+    position: absolute;
+    left: 9px;
+    top: 4px;
+    bottom: 4px;
+    width: 2.5px;
+    background: #d5dbdb;
+  }
+
+  .event {
+    position: relative;
+    margin-bottom: 16px;
+    padding: 10px 14px;
+    background: #fff;
+    border: 1px solid #e8e8e8;
+    border-radius: 7px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+  }
+  .event::before {
+    content: '';
+    position: absolute;
+    left: -24px;
+    top: 13px;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    border: 2.5px solid;
+    background: #fff;
+  }
+  .event.positive::before { border-color: #27ae60; background: #27ae60; }
+  .event.negative::before { border-color: #c0392b; background: #c0392b; }
+  .event.neutral::before  { border-color: #3498db; background: #3498db; }
+  .event.warning::before  { border-color: #e67e22; background: #e67e22; }
+  .event.failure::before  { border-color: #c0392b; background: #c0392b; }
+
+  .event .e-date {
+    font-size: 8pt;
+    color: #888;
+    font-weight: 600;
+    letter-spacing: 0.3px;
+    text-transform: uppercase;
+  }
+  .event .e-title {
+    font-size: 10.5pt;
+    font-weight: 700;
+    margin: 2px 0 4px;
+  }
+  .event .e-body { font-size: 9pt; color: #444; margin-bottom: 4px; }
+  .event .e-meta { font-size: 8pt; color: #888; }
+  .event .e-badge {
+    display: inline-block;
+    font-size: 7pt;
+    font-weight: 700;
+    padding: 2px 7px;
+    border-radius: 3px;
+    margin-right: 4px;
+    color: #fff;
+  }
+  .badge-green  { background: #27ae60; }
+  .badge-red    { background: #c0392b; }
+  .badge-amber  { background: #e67e22; }
+  .badge-blue   { background: #3498db; }
+  .badge-gray   { background: #95a5a6; }
+
+  /* ===== REGULATORY COMPARISON TABLE ===== */
+  .reg-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 9pt;
+    margin: 14px 0 22px;
+  }
+  .reg-table th {
+    background: #2c3e50;
+    color: #fff;
+    text-align: left;
+    padding: 7px 10px;
+    font-size: 8.5pt;
+  }
+  .reg-table td {
+    padding: 6px 10px;
+    border-bottom: 1px solid #eee;
+  }
+  .reg-table tr:nth-child(even) td { background: #f8f9fa; }
+  .reg-table .violation { color: #c0392b; font-weight: 600; }
+  .reg-table .compliant { color: #27ae60; font-weight: 600; }
+
+  /* ===== PERSONS TABLE ===== */
+  .persons-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    margin: 12px 0 20px;
+  }
+  .person-card {
+    border: 1px solid #ddd;
+    border-radius: 6px;
+    padding: 8px 12px;
+    font-size: 9pt;
+  }
+  .person-card .p-name { font-weight: 700; color: #2c3e50; }
+  .person-card .p-role { font-size: 8pt; color: #888; }
+  .person-card .p-org { font-size: 8pt; color: #555; }
+
+  /* ===== FAILURE ANALYSIS BOX ===== */
+  .blame-box {
+    background: #fff5f5;
+    border: 1px solid #f5c6cb;
+    border-radius: 7px;
+    padding: 12px 16px;
+    margin: 12px 0 20px;
+  }
+  .blame-box h4 { color: #c0392b; font-size: 10pt; margin-bottom: 6px; }
+  .blame-box ul { font-size: 9pt; padding-left: 18px; color: #444; }
+  .blame-box li { margin-bottom: 4px; }
+
+  /* ===== UTILITY ===== */
+  .page-break { page-break-before: always; }
+  .note {
+    background: #fff8e1;
+    border-left: 3px solid #f39c12;
+    padding: 8px 12px;
+    font-size: 9pt;
+    border-radius: 4px;
+    margin: 10px 0;
+  }
+  .legal-cite {
+    background: #eaf2f8;
+    border-left: 3px solid #3498db;
+    padding: 8px 12px;
+    font-size: 8.5pt;
+    border-radius: 4px;
+    margin: 6px 0;
+  }
+  .grid-2col {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    margin-bottom: 20px;
+  }
+
+  @media print {
+    body { font-size: 9pt; }
+    .event { break-inside: avoid; }
+    .page-break { page-break-before: always; }
+  }
+</style>
+</head>
+<body>
+
+<div class="cover">
+  <h1>Insurance Claim Timeline Report</h1>
+  <div class="subtitle">For Submission Before Insurance Ombudsman / IRDAI / Consumer Forum</div>
+  <div class="meta-grid">
+    <span class="label">Claim No.</span>
+    <span class="value">[CLAIM_NO]</span>
+    <span class="label">Policy No.</span>
+    <span class="value">[POLICY_NO]</span>
+    <span class="label">Insured</span>
+    <span class="value">[INSURED_NAME]</span>
+    <span class="label">Insurer</span>
+    <span class="value">[INSURER_NAME]</span>
+    <span class="label">Vehicle</span>
+    <span class="value">[VEHICLE_DETAILS]</span>
+    <span class="label">Surveyor</span>
+    <span class="value">[SURVEYOR_NAME]</span>
+    <span class="label">Date Prepared</span>
+    <span class="value">[DATE]</span>
+  </div>
+</div>
+
+<!-- STATUS BAR — customize phases -->
+<div class="status-bar">
+  <div class="sb-green">Claim Intimated<br><small>[DATE]</small></div>
+  <div class="sb-green">Survey Appointed<br><small>[DATE]</small></div>
+  <div class="sb-amber">Survey Completed<br><small>[DATE]</small></div>
+  <div class="sb-red">[FAILURE_PHASE]<br><small>[DATE]</small></div>
+  <div class="sb-gray">❌ No Resolution<br><small>[DAYS]+ Days</small></div>
+</div>
+
+<!-- KEY STATS -->
+<div class="stats-row">
+  <div class="stat-card">
+    <div class="num">[X]+</div>
+    <div class="desc">Days since claim intimated</div>
+  </div>
+  <div class="stat-card">
+    <div class="num">[X]+</div>
+    <div class="desc">Days vehicle at workshop</div>
+  </div>
+  <div class="stat-card">
+    <div class="num">[X]+</div>
+    <div class="desc">Days since survey report</div>
+  </div>
+  <div class="stat-card">
+    <div class="num">[X]</div>
+    <div class="desc">IRDAI 30-day deadline — [STATUS]</div>
+  </div>
+</div>
+
+<!-- FULL TIMELINE — repeat .event for each email/event -->
+<div class="section-title">Complete Event Timeline</div>
+<div class="timeline">
+
+  <div class="event positive">
+    <div class="e-date">MON, [DATE] — Day [X]</div>
+    <div class="e-title">📋 [EVENT TITLE]</div>
+    <div class="e-body">[DETAILS — who did what, key quotes in italics]</div>
+    <div class="e-meta"><span class="e-badge badge-green">✅ COMPLIANT</span> [COMMENTARY]</div>
+  </div>
+
+  <div class="event negative">
+    <div class="e-date">MON, [DATE] — Day [X]</div>
+    <div class="e-title">🔴 [FAILURE TITLE]</div>
+    <div class="e-body">[DETAILS OF FAILURE]</div>
+    <div class="e-meta"><span class="e-badge badge-red">🔴 REGULATORY VIOLATION</span> [WHICH REGULATION]</div>
+  </div>
+
+  <!-- ... add more events as needed ... -->
+
+</div>
+
+<!-- PAGE BREAK before regulatory analysis if needed -->
+<div class="page-break"></div>
+
+<!-- REGULATORY COMPLIANCE TABLE -->
+<div class="section-title">IRDAI Regulatory Compliance Analysis</div>
+
+<table class="reg-table">
+  <tr>
+    <th style="width:30%;">Regulatory Requirement</th>
+    <th style="width:18%;">Prescribed Timeline</th>
+    <th style="width:22%;">Actual Timeline</th>
+    <th style="width:30%;">Status</th>
+  </tr>
+  <!-- Add rows per regulation -->
+  <tr>
+    <td><strong>Reg. 10(X):</strong> [Requirement]</td>
+    <td>[Timeline]</td>
+    <td>[Actual]</td>
+    <td class="compliant">COMPLIANT</td>
+  </tr>
+  <tr>
+    <td><strong>Reg. 10(X):</strong> [Violated requirement]</td>
+    <td>[Timeline]</td>
+    <td>[Actual]</td>
+    <td class="violation">🔴 VIOLATED</td>
+  </tr>
+</table>
+
+<!-- FAILURE ANALYSIS -->
+<div class="section-title">Failure Analysis</div>
+
+<div class="blame-box">
+  <h4>🔴 Failure 1: [TITLE]</h4>
+  <ul>
+    <li>[Evidence point with quote from email]</li>
+    <li>[Impact on insured]</li>
+  </ul>
+</div>
+
+<!-- WHAT INSURED DID RIGHT -->
+<div class="section-title">What the Insured Did Right</div>
+
+<div class="grid-2col">
+  <div style="background:#e8f8f5; border:1px solid #a3e4d7; border-radius:6px; padding:8px 12px; font-size:9pt;">
+    <strong>✅ Day [X] — [Action]</strong><br>
+    <span style="color:#555;">[Detail]</span>
+  </div>
+  <!-- repeat for each positive action -->
+</div>
+
+<!-- EXECUTIVE SUMMARY -->
+<div class="section-title">Executive Summary</div>
+
+<div style="font-size:9.5pt; line-height:1.7; margin-bottom:20px;">
+  <p>[2-3 paragraph summary of the entire situation]</p>
+</div>
+
+<div style="border-top:2px solid #c0392b; padding-top:12px; text-align:center; font-size:8pt; color:#888;">
+  Document prepared [DATE] | Claim No. [CLAIM_NO] | Policy No. [POLICY_NO]
+</div>
+
+</body>
+</html>

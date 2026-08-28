@@ -1,0 +1,76 @@
+---
+name: real-estate-dpr
+description: "Prepare bank-ready Detailed Project Reports (DPRs) for real-estate projects — 10-section template, canonical data-source mapping (investor portfolio, firm dossiers, project folders, group deck), python-docx → native Google Doc pipeline, no-fabrication placeholder rules."
+version: 1.0.0
+author: Hermes
+license: MIT
+metadata:
+  hermes:
+    tags: [DPR, detailed-project-report, real-estate, project-finance, lender-appraisal, google-docs]
+---
+
+# Real Estate DPR (Detailed Project Report)
+
+Generate lender-ready "Detailed Project Report" documents for DRA Group (or similar real-estate developer) projects. Trigger phrases: "DPR", "detailed project report", "project finance pack", "lender appraisal docs", "bank submission documents", "generate DPRs for each project".
+
+## Canonical data sources (DRA)
+
+| Source | What it supplies | Location |
+|---|---|---|
+| Investor Portfolio spreadsheet | Financial model per project (land, units, saleable area, timelines, profitability, sold/unsold, achieved price, approvals status) — one tab per project + "Project Summary" tab | `1wDKS0SxtY0EF_-JUe2BfXzLSSwh4J5fo4y0sI_brFfw`, user-sheet gid = Project Summary |
+| Firm Dossiers Master sheet | Entity KYC (registered office, PAN/GST/Regn), director financials, project-wise documentation checklist with Drive links | `1rb9h7PZczba0kTDTjxkNM0ET1XW-eiuIUYrwHHRuuVs` |
+| Project folders on Drive | Title chain, approvals, brochures, firm docs — often contain files the checklist only names as TEXT (e.g. "Ranka Udaya Brochure.pdf.pdf" with no ID); walk 1–2 folder levels to inventory | per project |
+| Group portfolio deck PDF | Promoter/group profile, subsidiary ventures, project positioning | extract via `pdftotext -layout` |
+
+## Workflow
+
+1. **Scope**: pull the portfolio spreadsheet's "Project Summary" tab to enumerate projects + executing entities (often: Ranka Amber/DRA Realty, Ranka Oasis/DRA Realty+Seveganapalli, Ranka Udaya/DRA Thindlu, Ranka North Star/DRA Ranka Holdings).
+2. **Extract per-project data**: read each project tab (FORMATTED_VALUE) — land, tenure, JV share, FSI, BUA, saleable, units, floor count, timeline, approvals status, profitability (sales value, cost, profit, margin), sold/unsold (units, area, agreement value, received, achieved price).
+3. **Check project folders** for annexures the checklist doesn't link (brochures, specification PDFs, title-chain deeds, firm docs). Capture file IDs via `files().list`.
+4. **Build the 10-section DPR** (template outline in `templates/dpr-template.md`). Follow it exactly: Executive Summary → 1. Developer & Promoter → 2. Project Description & Scope → 3. Regulatory Approvals → 4. Technical & Engineering → 5. Project Cost & Means of Finance → 6. Financial Estimates & Projections → 7. Market Analysis & Commercial Viability → 8. Risk Analysis → 9. Security & Collateral → 10. Annexures. NOTE: user reordered 25-Aug-2026 — Cost (5) and Financials (6) now come BEFORE Market Analysis (7); all delivered DPRs + Master Template already reordered + renumbered (subsections too: 6.x→5.x, 7.x→6.x, 5.x→7.x).
+5. **Filling rules — never fabricate**: IRR, DSCR, NPV, cash-flow statements, competitor benchmarks, contractor/consultant profiles (beyond what's on file), and balance-sheet projections get red-italic placeholders `[ XXX — to be completed / source required ]` when the financial model / documents don't exist. State DPR figures are "management estimates (DRA Investor Portfolio, date)".
+6. **Annexures = real hyperlinks**: every referenced document gets name + Drive URL. Verify each Annexure link resolves BEFORE embedding (reuse google-workspace `sheets-hyperlink-and-link-verification.md`).
+7. **Generate + deliver**: python-docx → upload to a NEW Drive folder as NATIVE Google Docs (import conversion, `mimeType=application/vnd.google-apps.document` — banks/editors need editable docs, not .docx). Include `DPR Master Template` doc + `00 - DPR Pack Index` doc with links to all DPRs. Folder name pattern: `DRA Group - Project DPRs` (one folder per pack).
+8. **WORD-FORMAT-ONLY variant (user's explicit preference since Aug-2026)**: when the user asks for "Word format only" (they did for the Ranka DPRs), deliver the **.docx as-is** — do NOT convert to native Google Docs. v2 build embeds images INLINE (approved plans, floor plans, renders, site photos, RERA certificates, CAS pages, location maps — never as attachments), adds area-statement TABLES, names the entity partners/directors, adds Google lat/long + Maps link, and removes the consultant-profile section (4.3). Annexures keep hyperlinks AND key documents embedded as images (Section 10.1). Full asset map (Drive IDs), RERA numbers, entity/partner facts, coordinates, helpers and pitfalls: `references/dpr-word-image-pipeline.md`.
+8. **Verify**: `files().list` the folder; export each doc (`files().export(..., mimeType='text/plain')`) and confirm non-trivial content (title + Executive Summary anchor).
+9. **Competitor pricing (Section 5.2) — search the USER'S OWN profile first**: user asks "add competitive pricing analysis to the DPRs" → Drive search (`name contains 'pric'/'competitor'/'market'/'Ranka'`) for the project's market-research deck / comp sheet / R&D map (decks were already built for Ranka projects). Extract decks via Slides → PDF export → `pdftotext -layout` (competitor tables parse into 3-column lines). Compile a per-project comparable table (project, type, ₹/sqft band, status, distance) + a **'Positioning:' paragraph** comparing the project's assumed price against the competing band with sales evidence ("X units already booked at ₹Y"). Add source links (deck/sheet Drive URLs) under the table. Full recipe in `references/competitor-pricing-search.md`. For Ranka projects the **named-competitor sets with researched ₹/sqft already exist** in `property-pricing-sources/references/ranka-project-pricing-rnd-index.md` — reuse before any fresh web work. When regenerating docx to add this data, **re-upload via `files().update(fileId=...)` to keep delivered links alive**. Session record + per-project tables + the runner-data pitfall: `references/dpr-competitive-analysis-v3.md`.
+10. **Update drafted DPRs in place (native Google Docs)**: when Section 5.2 (or any section) needs filling after generation, locate the placeholder paragraph via `documents().get`, `deleteContentRange` the whole paragraph (start→end incl. newline), `insertText` the replacement at the SAME start index. Preserves doc IDs/links — no regeneration, no duplicate docs. Bullet lines prefixed `• `; Docs auto-linkifies bare URLs.
+11. **Financial statements (Sections 6.2 / 7.2 / 7.4)**: when the user asks "generate and add cash flow statements and balance sheet projections", apply the DRA capital policy — owned land → land value = developer equity; + 25% of development cost = capital equity; balance = 75% debt from investors/institutions (JDA projects: no land equity, just 25%/75%). Insert three branded tables: Financing Structure after 6.2 body, quarterly Cash Flow after the 7.2 heading, year-end Balance Sheet after the 7.4 heading, plus a methodology note. Full recipe, exact curves, and the Docs API table-insertion pitfalls (index shifting, cell insertion at startIndex+1, empty-cell skips, text-style backgrounds, FIXED_WIDTH, one-at-a-time deletes, 'Particulars' over-match) in `references/docs-api-financial-tables.md`. Offer BOTH debt-drawdown variants (cash-positive vs. construction-finance drawdown) — with the standard milestone receipt curve debt often computes to ₹0.
+12. **Executing-entity financials in Section 1.3**: when the user asks to "add entity financials for the executing entity for all project DPRs", ensure each DPR's 1.3 carries the *project's* executing entity's financials (the partnership firm if different from DRA Realty), not just the default DRA Realty table. Full map (entity→PAN, Drive firm-doc folders, ITR-5 extraction, honest-flag rule, PAN-correction warning) + Docs-API batch recipe: `references/executing-entity-financials.md`.**
+
+## Pitfalls
+
+- **Per-pass data lives in the RUNNER, not the builder — port it on every rewrite**: `market`, `comp_rows`, `positioning`, `annex_links` were set in the v1 runner (`run_dpr_docx.py`) but never ported to the v2 builder → all 4 DPRs shipped Section 5.2 as a placeholder despite real data existing. After ANY builder regeneration, reopen each .docx and assert the 5.2/competitor table's first row is `Competitor / Bench` (not a placeholder paragraph). Keep all per-pass overrides in one runner applied immediately before `build_dpr` calls.
+- **Never leave an auto-run loop at the bottom of the builder module** (`for name in [...]: build_dpr(P[name])`) — builders must be import-safe so runners can set data first. Cut the loop, drive from a runner.
+- **Regeneration = `files().update(fileId=...)`, not delete+create**: updating media on the existing file IDs preserves every link already delivered to the user; delete+create orphans links in chat history. Re-assert `anyone -> writer` after update (verified 4/4 Ranka DPRs, 24-Aug-2026).
+- **File download 403 vs export 403**: (a) Google-native files (Docs/Sheets/Slides) reject `get_media` — use `files().export(mimeType='text/plain')` (builder profiles are Google Docs; that's how partner/director names come out); (b) download-disabled shares reject even binary `get_media` — check the sharing setting or pivot.
+- **".pdf" that is actually a .docx**: drive file 'X_CAS.pdf' was a ZIP (`PK\x03\x04`). Check magic bytes before `pdftoppm`; if ZIP, parse `word/document.xml` via zipfile and build the area table from the extracted numbers.
+- **Delete/move rights vs owner**: files created under ndr@draas.com fail `files().delete` under psingh (403). Workaround: create a fresh folder, `files().update(addParents=<newFolder>, removeParents=<oldFolder>)` your own files, share the new folder — don't fight the old ones.
+- **RERA status goes stale fast**: 'Oasis RERA in process' was WRONG by Aug-2026 — TNRERA/30/LO/3130/2026 (07-08-2026) exists on Drive. Always re-search `name contains 'RERA' and name contains <project>` before writing statuses; certificates beat marketing/deck text.
+- **Rural/TN village geocoding**: Nominatim has no entry for Sevaganapalli (Hosur Taluk); anchor to the nearest mapped locality (Bagalur 12.8310,77.8658) and label 'verify pin' — never present estimate as exact.
+- **Deck vs sheet variance**: marketing deck figures can differ from the investor portfolio (e.g. Amber BUA 25,900 in deck vs 30,700 saleable in sheet). Prefer the investor-portfolio numbers — they are the lender-facing set; optionally note the variance.
+- **Placeholders are the feature**: banks reject invented DSCR/IRR; a red placeholder is honest and reusable once the model exists.
+- **docx hyperlinks need raw XML** (python-docx has no native hyperlink API): `part.relate_to(url, '.../relationships/hyperlink', is_external=True)` + build `<w:hyperlink>` element; see `references/dpr-build-pipeline.md` for the snippet.
+- **Site data**: plot/villa/unit counts and shares are JDA-specific — copy them verbatim from the portfolio tab (e.g. Oasis owned 8.86 ac + JDA 1.45 ac; landowner allocation reduces saleable).
+- **Entity identity**: always resolve the executing entity + its registered office from the firm dossiers sheet (firms vs company registration numbers differ — SJN-F*-*, CIN, PAN/GSTIN).
+- **Approvals table**: include status (Obtained/Filed/In process/Not available), document reference numbers (RERA, sanction, licence, EC ranges), and Drive links; mark "Not available" rows so sourcing items are visible.
+- **Slides/map export 403 ('Export on…') = download-disabled sharing, not an API fault**: files whose sharing setting has "Viewer and commenter can see the option to download, print, and copy" OFF return 403 from `files().export`; Google-native maps also reject `get_media` ("Only files with binary content can be downloaded"). Pivot: `session_search` for the pricing data, or mine live portals (NoBroker embedded `propertyTitle`/`price`/`carpetArea` JSON → compute psf). Check file accessibility BEFORE promising to embed deck figures.
+- **Docs API index math**: delete the placeholder paragraph FIRST, then `insertText` at the same start index (indices shift after deletion — inserting at the old index is correct because the range is now empty).
+- **Docs API table inserts shift ALL subsequent indices in a batch** — compute running offsets or insert one cell at a time; and never bulk-delete tables from a single snapshot (re-fetch doc between deletes). Full pitfall set in `references/docs-api-financial-tables.md`.
+- **Over-matching table headers**: the first cell 'Particulars' is shared by the pre-existing ITR table (1.3) AND a new Financing table — match on 2+ columns (e.g. second cell `Amount (₹ Cr)`) or restrict cleanup to after the 6.2 heading. Snapshot table data before any bulk purge; restore accidental deletes from the snapshot.
+- **Ambiguity of "search my profile"**: the user's Drive carries the pricing R&D — run the Drive name-search first; do NOT default to web research when project decks already exist on Drive.
+
+## Support files
+
+- `references/dpr-build-pipeline.md` — detailed data-source → section mapping, python-docx hyperlink + Google import snippets, per-project data anchors worked example (Amber).
+- `references/competitor-pricing-search.md` — Section 5.2 recipe: Drive research-deck discovery, Slides→PDF→pdftotext extraction, export-403 pivots, NoBroker listing parse, Docs API in-place update snippet, and the Ranka project research-file map (deck/comp-sheet IDs per project).
+- `references/dpr-competitive-analysis-v3.md` — 24-Aug-2026 v3 pass: the runner-data-split bug (5.2 shipped empty), import-safe builder fix, named-competitor ₹/sqft tables for all 4 Ranka projects, and stable-link upload via `files().update`.
+- `references/docs-api-financial-tables.md` — Sections 6.2/7.2/7.4 financial tables into native Docs: DRA capital policy (land equity + 25% + 75% debt), canonical per-project model inputs, quarterly curves, Docs API table-insertion recipe and all its index-shift/empty-cell/over-match pitfalls from the 24-Aug-2026 session.
+- `references/executing-entity-financials.md` — add a partnership firm's executing-entity financials to Section 1.3 (the "add entity financials for all projects" task): DRA Ranka executing-entity→PAN map, firm-doc Drive folders, ITR-5 balance-sheet extraction (partner capital, unsecured loans, WIP-land), the HONEST-FLAG rule for entities with no ITRs on file, and the Ranka Holdings PAN-correction warning.
+- `templates/dpr-template.md` — the 10-section DPR outline with cost / means-of-finance table skeletons.
+
+## Related skills
+
+- `google-workspace` (references/sheets-hyperlink-and-link-verification.md) — link verification before embedding.
+- `real-estate-financial-modeling` — the Excel cash-flow/IRR models that fill Section 7 placeholders.
+- `draas-due-diligence-pack` — survey-number-level land cross-references feeding Section 2/3.

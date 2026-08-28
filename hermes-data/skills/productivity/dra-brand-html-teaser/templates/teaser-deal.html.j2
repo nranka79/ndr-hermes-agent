@@ -1,0 +1,119 @@
+{# templates/teaser-deal.html.j2
+   Brownfield / commercial deal variant.
+   Variables: project_name, tagline, location, opportunity_body, stats (list of (num, lbl)), images (list of url), cta_link, cta_label, sender_email, brand (drahomes|draas|hybrid)
+#}<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ project_name }} — DRA Group Opportunity</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700&family=Poppins:wght@500;600;700;800&display=swap');
+    body { margin:0; padding:0; background:#f5f5f5; font-family:Roboto,sans-serif; color:#6b6b6b; }
+    table { border-collapse:collapse; }
+    a { color:#c1880a; text-decoration:none; }
+  </style>
+</head>
+<body>
+  <!--[if mso]>
+  <table role="presentation" width="640" align="center" style="width:640px;"><tr><td>
+  <![endif]-->
+  <table role="presentation" class="wrap" align="center" width="640" style="width:100%; max-width:640px; margin:0 auto; background:#ffffff;" cellpadding="0" cellspacing="0" border="0">
+
+    <!-- HEADER -->
+    <tr>
+      <td class="header" style="background:#1d1f22; padding:24px 32px; text-align:center;">
+        <img src="https://drahomes.in/images/dra-logo-w.svg" alt="DRA Homes" width="160" style="display:block; margin:0 auto; height:auto; max-height:48px;">
+      </td>
+    </tr>
+
+    <!-- HERO -->
+    <tr>
+      <td class="hero" style="background:linear-gradient(135deg,#1d1f22 0%, #363435 100%); color:#ffffff; padding:48px 32px; text-align:center;">
+        <h1 style="font-family:Poppins,sans-serif; font-weight:700; font-size:30px; line-height:36px; margin:0 0 12px; color:#FDB913; letter-spacing:0.5px;">{{ project_name }}</h1>
+        <p style="font-size:15px; line-height:22px; color:#d6d2d2; margin:0;">{{ tagline }}</p>
+      </td>
+    </tr>
+
+    <!-- LOCATION STRIP -->
+    <tr>
+      <td style="background:#FDB913; padding:14px 32px; text-align:center;">
+        <p style="font-family:Poppins,sans-serif; font-weight:600; font-size:13px; line-height:18px; color:#1d1f22; margin:0; text-transform:uppercase; letter-spacing:1px;">📍 {{ location }}</p>
+      </td>
+    </tr>
+
+    <!-- OPPORTUNITY -->
+    <tr>
+      <td class="section" style="padding:36px 32px 12px;">
+        <h2 style="font-family:Poppins,sans-serif; font-weight:600; font-size:18px; line-height:24px; color:#1d1f22; margin:0 0 16px; border-bottom:2px solid #FDB913; padding-bottom:8px;">The Opportunity</h2>
+        <p style="font-size:15px; line-height:24px; color:#444; margin:0;">{{ opportunity_body }}</p>
+      </td>
+    </tr>
+
+    <!-- KEY NUMBERS -->
+    <tr>
+      <td class="section" style="padding:12px 32px 36px; background:#f9f9f9;">
+        <h2 style="font-family:Poppins,sans-serif; font-weight:600; font-size:18px; line-height:24px; color:#1d1f22; margin:0 0 20px; border-bottom:2px solid #FDB913; padding-bottom:8px;">Key Numbers</h2>
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+          <tr>
+            {% for num, lbl in stats %}
+            <td class="stat" style="text-align:center; padding:18px 8px; background:#ffffff; border:1px solid #eeeeee; width:33%;">
+              <div class="stat-num" style="font-family:Poppins,sans-serif; font-weight:700; font-size:26px; line-height:30px; color:#FDB913; margin:0;">{{ num }}</div>
+              <div class="stat-lbl" style="font-size:11px; line-height:15px; color:#888888; text-transform:uppercase; letter-spacing:1px; margin-top:4px;">{{ lbl }}</div>
+            </td>
+            {% endfor %}
+          </tr>
+        </table>
+      </td>
+    </tr>
+
+    <!-- IMAGE GALLERY (optional) -->
+    {% if images %}
+    <tr>
+      <td class="section" style="padding:36px 32px;">
+        <h2 style="font-family:Poppins,sans-serif; font-weight:600; font-size:18px; line-height:24px; color:#1d1f22; margin:0 0 16px; border-bottom:2px solid #FDB913; padding-bottom:8px;">Site Visuals</h2>
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+          <tr>
+            {% for url in images[:3] %}
+            <td style="padding:4px; width:33%;">
+              <img src="{{ url }}" alt="Property photo" width="190" style="display:block; width:100%; max-width:190px; height:140px; object-fit:cover; border:1px solid #eeeeee;">
+            </td>
+            {% endfor %}
+          </tr>
+          {% if images|length > 3 %}
+          <tr>
+            {% for url in images[3:6] %}
+            <td style="padding:4px; width:33%;">
+              <img src="{{ url }}" alt="Property photo" width="190" style="display:block; width:100%; max-width:190px; height:140px; object-fit:cover; border:1px solid #eeeeee;">
+            </td>
+            {% endfor %}
+          </tr>
+          {% endif %}
+        </table>
+      </td>
+    </tr>
+    {% endif %}
+
+    <!-- CTA -->
+    <tr>
+      <td style="padding:36px 32px; text-align:center; background:#1d1f22;">
+        <p style="font-size:14px; line-height:20px; color:#d6d2d2; margin:0 0 18px;">Interested? Let's set up a quick call this week.</p>
+        <a href="{{ cta_link }}" class="cta" style="display:inline-block; background:#FDB913; color:#1d1f22; padding:14px 32px; font-family:Poppins,sans-serif; font-weight:600; font-size:14px; letter-spacing:1px; text-transform:uppercase; text-decoration:none; border-radius:2px;">{{ cta_label }}</a>
+      </td>
+    </tr>
+
+    <!-- FOOTER -->
+    <tr>
+      <td class="footer" style="background:#272727; color:#888888; padding:24px 32px; text-align:center; font-size:12px; line-height:18px;">
+        <p style="margin:0 0 6px; color:#ffffff; font-family:Poppins,sans-serif; font-weight:600; font-size:13px; letter-spacing:1px; text-transform:uppercase;">DRA Group</p>
+        <p style="margin:0 0 6px;">Chennai &middot; Bangalore</p>
+        <p style="margin:0;"><a href="https://drahomes.in" style="color:#FDB913; text-decoration:none;">drahomes.in</a> &middot; Sent by {{ sender_email }}</p>
+      </td>
+    </tr>
+
+  </table>
+  <!--[if mso]>
+  </td></tr></table>
+  <![endif]-->
+</body>
+</html>

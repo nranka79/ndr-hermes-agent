@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Insurance Claim Timeline — Claim No. [CLAIM_NO]</title>
+<style>
+  @page { size: A4; margin: 1.8cm 1.5cm; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', 'Helvetica Neue', Arial, sans-serif; font-size: 10pt; line-height: 1.5; color: #1a1a1a; max-width: 190mm; margin: 0 auto; }
+  .cover { border-bottom: 3px solid #c0392b; padding-bottom: 18px; margin-bottom: 22px; }
+  .cover h1 { font-size: 22pt; color: #c0392b; margin-bottom: 4px; }
+  .cover .subtitle { font-size: 11pt; color: #555; margin-bottom: 14px; }
+  .cover .meta-grid { display: grid; grid-template-columns: 170px 1fr 170px 1fr; gap: 2px 8px; font-size: 9pt; }
+  .cover .meta-grid .label { font-weight: 600; color: #444; }
+  .status-bar { display: flex; margin: 18px 0 22px; border-radius: 6px; overflow: hidden; font-size: 8.5pt; font-weight: 600; text-align: center; }
+  .status-bar div { flex: 1; padding: 7px 4px; color: #fff; }
+  .sb-green { background: #27ae60; } .sb-amber { background: #e67e22; } .sb-red { background: #c0392b; } .sb-gray { background: #95a5a6; }
+  .stats-row { display: flex; gap: 12px; margin-bottom: 24px; }
+  .stat-card { flex: 1; background: #f8f9fa; border-radius: 8px; padding: 10px 12px; border-left: 4px solid #c0392b; }
+  .stat-card .num { font-size: 18pt; font-weight: 700; color: #c0392b; }
+  .stat-card .desc { font-size: 7.5pt; color: #666; margin-top: 2px; }
+  .section-title { font-size: 14pt; font-weight: 700; color: #2c3e50; border-bottom: 2px solid #2c3e50; padding-bottom: 4px; margin: 24px 0 16px; }
+  .timeline { position: relative; padding-left: 28px; }
+  .timeline::before { content: ''; position: absolute; left: 9px; top: 4px; bottom: 4px; width: 2.5px; background: #d5dbdb; }
+  .event { position: relative; margin-bottom: 16px; padding: 10px 14px; background: #fff; border: 1px solid #e8e8e8; border-radius: 7px; box-shadow: 0 1px 3px rgba(0,0,0,0.04); }
+  .event::before { content: ''; position: absolute; left: -24px; top: 13px; width: 12px; height: 12px; border-radius: 50%; border: 2.5px solid; background: #fff; }
+  .event.positive::before { border-color: #27ae60; background: #27ae60; }
+  .event.negative::before { border-color: #c0392b; background: #c0392b; }
+  .event.neutral::before { border-color: #3498db; background: #3498db; }
+  .event.warning::before { border-color: #e67e22; background: #e67e22; }
+  .event.failure::before { border-color: #c0392b; background: #c0392b; }
+  .event .e-date { font-size: 8pt; color: #888; font-weight: 600; letter-spacing: 0.3px; text-transform: uppercase; }
+  .event .e-title { font-size: 10.5pt; font-weight: 700; margin: 2px 0 4px; }
+  .event .e-body { font-size: 9pt; color: #444; margin-bottom: 4px; }
+  .event .e-meta { font-size: 8pt; color: #888; }
+  .event .e-badge { display: inline-block; font-size: 7pt; font-weight: 700; padding: 2px 7px; border-radius: 3px; margin-right: 4px; color: #fff; }
+  .badge-green { background: #27ae60; } .badge-red { background: #c0392b; } .badge-amber { background: #e67e22; } .badge-blue { background: #3498db; }
+  .reg-table { width: 100%; border-collapse: collapse; font-size: 9pt; margin: 14px 0 22px; }
+  .reg-table th { background: #2c3e50; color: #fff; text-align: left; padding: 7px 10px; font-size: 8.5pt; }
+  .reg-table td { padding: 6px 10px; border-bottom: 1px solid #eee; }
+  .reg-table tr:nth-child(even) td { background: #f8f9fa; }
+  .reg-table .violation { color: #c0392b; font-weight: 600; }
+  .reg-table .compliant { color: #27ae60; font-weight: 600; }
+  .blame-box { background: #fff5f5; border: 1px solid #f5c6cb; border-radius: 7px; padding: 12px 16px; margin: 12px 0 20px; }
+  .blame-box h4 { color: #c0392b; font-size: 10pt; margin-bottom: 6px; }
+  .blame-box ul { font-size: 9pt; padding-left: 18px; color: #444; }
+  .right-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 20px; }
+  .right-grid .item { background: #e8f8f5; border: 1px solid #a3e4d7; border-radius: 6px; padding: 8px 12px; font-size: 9pt; }
+  .comm-table { width: 100%; border-collapse: collapse; font-size: 8.5pt; margin-bottom: 16px; }
+  .comm-table th { background: #2c3e50; color: #fff; text-align: left; padding: 5px 8px; font-size: 8pt; }
+  .comm-table td { padding: 3px 8px; border-bottom: 1px solid #eee; }
+  .comm-table .phase-header { background: #f0f0f0; font-weight: 700; padding: 4px 8px; font-size: 8pt; }
+  .note { background: #fff8e1; border-left: 3px solid #f39c12; padding: 8px 12px; font-size: 9pt; border-radius: 4px; margin: 10px 0; }
+  .page-break { page-break-before: always; }
+  @media print { body { font-size: 9pt; } .event { break-inside: avoid; } }
+</style>
+</head>
+<body>
+<div class="cover">
+  <h1>Insurance Claim Timeline Report</h1>
+  <div class="subtitle">For Submission Before Insurance Ombudsman / IRDAI / Consumer Forum</div>
+  <div class="meta-grid">
+    <span class="label">Claim No.</span><span class="value">[CLAIM_NO]</span>
+    <span class="label">Policy No.</span><span class="value">[POLICY_NO]</span>
+    <span class="label">Insured</span><span class="value">[INSURED_NAME]</span>
+    <span class="label">Insurer</span><span class="value">[INSURER_NAME]</span>
+    <span class="label">Vehicle</span><span class="value">[VEHICLE]</span>
+    <span class="label">Surveyor</span><span class="value">[SURVEYOR]</span>
+    <span class="label">Coordinator</span><span class="value">[COORDINATOR]</span>
+    <span class="label">Date Prepared</span><span class="value">[DATE]</span>
+  </div>
+</div>
+<div class="status-bar">
+  <div class="sb-green">Intimated<br><small>Day 0</small></div>
+  <div class="sb-green">Survey Appointed<br><small>Day 7</small></div>
+  <div class="sb-amber">Report<br><small>Day 35</small></div>
+  <div class="sb-red">Docs Lost<br><small>by Insurer</small></div>
+  <div class="sb-gray">No Payment<br><small>Till Date</small></div>
+</div>
+<div class="stats-row">
+  <div class="stat-card"><div class="num">[X]+</div><div class="desc">Days since claim</div></div>
+  <div class="stat-card"><div class="num">[Y]+</div><div class="desc">Days at workshop</div></div>
+  <div class="stat-card"><div class="num">[Z]+</div><div class="desc">Days since survey</div></div>
+  <div class="stat-card"><div class="num">[W]</div><div class="desc">IRDAI deadline remaining</div></div>
+</div>
+<div class="section-title">Timeline</div>
+<div class="timeline">
+  <div class="event positive"><div class="e-date">DATE — Day 0</div><div class="e-title">📋 Claim Intimated</div><div class="e-body">Details...</div><div class="e-meta"><span class="e-badge badge-green">✅ COMPLIANT</span></div></div>
+</div>
+<div class="section-title">Regulatory Compliance</div>
+<table class="reg-table">
+  <tr><th>Regulation</th><th>Requirement</th><th>Actual</th><th>Status</th></tr>
+  <tr><td>10(1)</td><td>Acknowledge within 24h</td><td>Next day</td><td class="compliant">✅</td></tr>
+  <tr><td>10(2)</td><td>Document custody</td><td>Lost docs</td><td class="violation">🔴 VIOLATED</td></tr>
+  <tr><td>10(5)</td><td>Payment within 30 days</td><td>No payment</td><td class="violation">🔴 VIOLATED</td></tr>
+</table>
+<div class="section-title">Communication</div>
+<table class="comm-table">
+  <tr><th>Date</th><th>From</th><th>To</th><th>Key Statement</th></tr>
+  <tr><td colspan="4" class="phase-header">PHASE 1: Initiation</td></tr>
+</table>
+<div class="section-title">Failures</div>
+<div class="blame-box"><h4>🔴 Failure</h4><ul><li>Evidence...</li></ul></div>
+<div class="section-title">Insured Compliance</div>
+<div class="right-grid"><div class="item"><strong>✅ Done Right</strong><br><span>Detail</span></div></div>
+</body>
+</html>

@@ -1,0 +1,417 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<style>
+  @page { size: A4 landscape; margin: 0; }
+  @page cover { @bottom-left { content: none; } @bottom-right { content: none; } }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Calibri', 'Segoe UI', Arial, sans-serif; color: #1A1A2E; }
+
+  /* === BRAND COLORS (override per project) === */
+  :root {
+    --navy: #0F1A33;
+    --navyMid: #1B2A4A;
+    --gold: #C9A84C;
+    --goldBright: #D4B96A;
+    --cream: #F8F6F0;
+    --text: #1A1A2E;
+    --textMid: #4A4A5A;
+    --textLight: #7A7A8A;
+    --accent1: #1A7A7A;
+  }
+
+  /* === COVER PAGE === */
+  .cover {
+    width: 297mm; height: 210mm;
+    display: flex; flex-direction: column; justify-content: center; align-items: center;
+    position: relative; overflow: hidden;
+    page: cover;
+  }
+  .cover::after {
+    content: ''; position: absolute; bottom: 0; left: 0; right: 0;
+    height: 30mm;
+    background: linear-gradient(90deg, var(--gold) 0%, var(--goldBright) 30%, var(--gold) 70%, #B8942E 100%);
+  }
+  .cover-top-accent { position: absolute; top: 0; left: 0;
+    width: 8mm; height: 24mm; background: var(--gold); }
+  .cover-content { position: relative; z-index: 2; text-align: center; }
+  .cover-label { color: var(--gold); font-size: 14pt; letter-spacing: 6pt; text-transform: uppercase;
+    margin-bottom: 30px; font-weight: 300; }
+  .cover-title { color: #FFFFFF; font-size: 48pt; font-weight: 700; letter-spacing: 2pt;
+    line-height: 1.1; margin-bottom: 12px; }
+  .cover-subtitle { color: var(--goldBright); font-size: 20pt; font-weight: 300; letter-spacing: 3pt;
+    margin-bottom: 40px; }
+  .cover-desc { color: rgba(255,255,255,0.8); font-size: 11pt; line-height: 1.6;
+    max-width: 500px; margin: 0 auto 50px; }
+  .cover-address { position: absolute; bottom: 50mm; left: 0; right: 0; text-align: center;
+    color: rgba(255,255,255,0.6); font-size: 10pt; letter-spacing: 1pt; }
+  .cover-footer { position: absolute; bottom: 10mm; left: 0; right: 0; z-index: 3;
+    display: flex; justify-content: space-between; padding: 0 20mm;
+    color: #0F1A33; font-size: 9pt; font-weight: 600; }
+
+  /* === FULL-PAGE IMAGE SLIDES (contains, no crop) === */
+  .img-slide {
+    width: 297mm; height: 210mm;
+    page-break-after: always;
+    background-color: var(--navy);
+    background-size: contain;
+    background-repeat: no-repeat;
+    background-position: center center;
+  }
+
+  /* === CONTENT SLIDES === */
+  .slide { width: 297mm; height: 210mm; position: relative; overflow: hidden; page-break-after: always; }
+  .slide-inner { padding: 20mm 22mm 22mm 22mm; height: 100%; }
+  .slide-title { font-size: 26pt; font-weight: 700; color: var(--navy); margin-bottom: 4px; line-height: 1.2; }
+  .slide-title-bar { width: 40mm; height: 3px; background: var(--gold); margin: 6px 0 16px 0; }
+  .slide-subtitle { font-size: 11pt; color: var(--textLight); margin-bottom: 20px; }
+  .slide-footer { position: absolute; bottom: 0; left: 0; right: 0; height: 8mm;
+    background: var(--navy); display: flex; align-items: center;
+    padding: 0 22mm; color: var(--gold); font-size: 8pt; justify-content: space-between; }
+
+  /* === LAYOUT HELPERS === */
+  .row { display: flex; gap: 12px; margin-bottom: 12px; }
+  .two-col { display: flex; gap: 16px; }
+  .two-col > div { flex: 1; }
+  .plan-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+
+  /* === CARDS === */
+  .card { background: var(--cream); border-radius: 6px; padding: 14px 16px; border-left: 3px solid var(--gold); }
+  .card-dark { background: var(--navyMid); border-radius: 6px; padding: 14px 16px; color: #FFFFFF; }
+  .card-dark .num { color: var(--goldBright); font-size: 28pt; font-weight: 700; display: block; }
+  .card-dark .lbl { color: rgba(255,255,255,0.8); font-size: 9pt; }
+  .num { color: var(--navy); font-size: 24pt; font-weight: 700; display: block; }
+  .lbl { color: var(--textMid); font-size: 9pt; margin-top: 2px; }
+  .plan-card { background: var(--cream); border-radius: 6px; padding: 12px;
+    text-align: center; border: 1px solid #E5E7EB; }
+  .plan-card h4 { color: var(--navy); font-size: 11pt; margin-bottom: 4px; }
+  .plan-card p { color: var(--textLight); font-size: 9pt; }
+  .parking-card { flex: 1; background: var(--cream); border-radius: 8px; padding: 16px;
+    text-align: center; border: 2px solid #E5E7EB; }
+  .parking-card .icon { font-size: 28pt; margin-bottom: 4px; }
+  .parking-card .count { font-size: 32pt; font-weight: 700; color: var(--navy); }
+  .parking-card .detail { font-size: 9pt; color: var(--textMid); }
+  .parking-card .req { font-size: 8pt; color: var(--textLight); }
+
+  /* === TABLES === */
+  table { width: 100%; border-collapse: collapse; font-size: 10pt; }
+  th { background: var(--navyMid); color: #FFFFFF; padding: 8px 10px; text-align: left; font-weight: 600; }
+  th:first-child { border-radius: 4px 0 0 0; }
+  th:last-child { border-radius: 0 4px 0 0; }
+  td { padding: 7px 10px; border-bottom: 1px solid #E5E7EB; }
+  tr:nth-child(even) td { background: var(--cream); }
+
+  /* === LISTS === */
+  .spec-list { list-style: none; padding: 0; }
+  .spec-list li { padding: 6px 0 6px 24px; position: relative; font-size: 10pt;
+    border-bottom: 1px solid #F0EDE6; }
+  .spec-list li::before { content: '▸'; position: absolute; left: 4px; color: var(--gold); font-weight: 700; }
+
+  /* === CONTACT BAR === */
+  .contact-bar { background: var(--navyMid); border-radius: 6px; padding: 14px 20px;
+    display: flex; justify-content: space-between; align-items: center; margin-top: 16px; }
+  .contact-bar .info { color: #FFFFFF; font-size: 10pt; }
+  .contact-bar .info strong { color: var(--goldBright); }
+</style>
+</head>
+<body>
+
+<!-- ==================== PAGE 1: COVER ==================== -->
+<!-- Replace the background-image URL with the project's best render -->
+<section class="cover" style="background: linear-gradient(rgba(15,26,51,0.65), rgba(27,42,74,0.75)), url('file:///path/to/render.jpg') center/cover no-repeat;">
+  <div class="cover-top-accent"></div>
+  <div class="cover-content">
+    <div class="cover-label">Office / Retail / Residential for Lease</div>
+    <div class="cover-title">PROJECT<br>NAME</div>
+    <div class="cover-subtitle">Location, City</div>
+    <div class="cover-desc">
+      Tagline — one line describing the opportunity.
+    </div>
+  </div>
+  <div class="cover-address">Street Address, Area, City — State Pincode</div>
+  <div class="cover-footer">
+    <span>DRA HOMES</span>
+    <span>✦ LEASING ENQUIRY OPEN ✦</span>
+    <span>PRESENTATION · MONTH YEAR</span>
+  </div>
+</section>
+
+<!-- ==================== PAGE 2: RENDER ==================== -->
+<section class="img-slide" style="background-image: url('file:///path/to/render2.jpg');"></section>
+
+<!-- ==================== PAGE 3: AS-ON-DATE PHOTO ==================== -->
+<!-- Extract progress photos from weekly report's "PROGRESS PHOTOGRAPHS" page -->
+<section class="img-slide" style="background-image: url('file:///path/to/progress-photo.jpg');"></section>
+
+<!-- ==================== PAGE 4: LOCATION MAP ==================== -->
+<section class="slide">
+  <div class="slide-inner">
+    <div class="slide-title">Location Advantage</div>
+    <div class="slide-title-bar"></div>
+    <div class="slide-subtitle">Address line — City Pincode</div>
+
+    <div class="two-col" style="height: calc(100% - 80px);">
+      <div style="display:flex; flex-direction:column; height:100%;">
+        <!-- Clickable map: replace href with Google Maps short link, src with screenshot -->
+        <a href="https://maps.app.goo.gl/SHORTLINK" target="_blank" style="flex:1; text-decoration:none; display:block;">
+          <div style="height:100%; background:#F0EDE6; border-radius:8px; overflow:hidden; position:relative;">
+            <img src="file:///path/to/map-screenshot.jpg" 
+                 style="width:100%; height:100%; object-fit:cover; display:block;">
+            <div style="position:absolute; top:12px; left:12px; background:var(--navyMid); color:var(--gold); padding:6px 12px; border-radius:4px; font-size:10pt; font-weight:700;">★ SITE</div>
+            <div style="position:absolute; bottom:8px; right:8px; background:rgba(15,26,51,0.8); color:#FFFFFF; padding:4px 10px; border-radius:4px; font-size:8pt;">
+              Tap to open in Google Maps ↗
+            </div>
+          </div>
+        </a>
+        <div style="background:var(--navyMid); color:rgba(255,255,255,0.7); padding:4px 10px; border-radius:0 0 6px 6px; font-size:8pt; text-align:center;">
+          📍 Full street address
+        </div>
+      </div>
+
+      <div style="display:flex; flex-direction:column; gap:8px;">
+        <div class="card-dark" style="flex:0;">
+          <span style="color:var(--goldBright); font-size:11pt; font-weight:700;">📍 Premium Location</span>
+        </div>
+        <div class="card" style="flex:1;">
+          <h4 style="color:var(--navy); font-size:11pt; margin-bottom:8px;">Connectivity</h4>
+          <ul class="spec-list">
+            <li>Railway Station — X km</li>
+            <li>City Centre — X km</li>
+            <li>Airport — X km</li>
+            <li>Metro station — X km</li>
+          </ul>
+        </div>
+        <div class="card" style="flex:1;">
+          <h4 style="color:var(--navy); font-size:11pt; margin-bottom:8px;">Neighbourhood</h4>
+          <ul class="spec-list">
+            <li>Landmark A — X km</li>
+            <li>Landmark B — X km</li>
+          </ul>
+        </div>
+        <div class="card" style="flex:1;">
+          <h4 style="color:var(--navy); font-size:11pt; margin-bottom:8px;">Access</h4>
+          <ul class="spec-list">
+            <li>X.Xm wide access road</li>
+            <li>Connectivity to arterial roads</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="slide-footer">
+    <span>PROJECT NAME · Location</span>
+    <span>4</span>
+  </div>
+</section>
+
+<!-- ==================== PAGE 5: PROJECT SNAPSHOT ==================== -->
+<section class="slide">
+  <div class="slide-inner">
+    <div class="slide-title">Project Snapshot</div>
+    <div class="slide-title-bar"></div>
+    <div class="slide-subtitle">Key facts & figures</div>
+
+    <!-- Four KPI cards -->
+    <div class="row" style="gap:10px;">
+      <div class="card-dark" style="text-align:center; flex:1;"><span class="num">X,XXX</span><span class="lbl">Site Area (Sq.ft)</span></div>
+      <div class="card-dark" style="text-align:center; flex:1;"><span class="num">X,XX,XXX</span><span class="lbl">Total Built-Up Area (Sq.ft)</span></div>
+      <div class="card-dark" style="text-align:center; flex:1;"><span class="num">Stilt+X</span><span class="lbl">Floors</span></div>
+      <div class="card-dark" style="text-align:center; flex:1;"><span class="num">XX.Xm</span><span class="lbl">Building Height</span></div>
+    </div>
+
+    <div class="two-col" style="gap:14px; margin-top:6px;">
+      <!-- Left: Details table -->
+      <div class="card" style="padding:0; overflow:hidden;">
+        <table>
+          <tr><th style="width:45%;">Parameter</th><th>Details</th></tr>
+          <tr><td>Project Name</td><td>Project Name</td></tr>
+          <tr><td>Type</td><td>Commercial / Residential / Mixed</td></tr>
+          <tr><td>Location</td><td>Area, City</td></tr>
+          <tr><td>Total FSI Area</td><td>X,XXX Sq.ft</td></tr>
+          <tr><td>Saleable Area</td><td>X,XXX Sq.ft</td></tr>
+          <tr><td>Architect</td><td>Firm Name</td></tr>
+          <tr><td>Completion</td><td><strong>Month Year</strong></td></tr>
+        </table>
+      </div>
+      <!-- Right: Unit breakdown -->
+      <div>
+        <div class="card" style="margin-bottom:8px;">
+          <h4 style="color:var(--navy); font-size:11pt; margin-bottom:6px;">Unit / Office Breakdown</h4>
+          <table>
+            <tr><th>Unit</th><th>Carpet</th><th>Plinth</th><th>Saleable</th></tr>
+            <tr><td>Office 01</td><td>X,XXX sqft</td><td>X,XXX sqft</td><td>X,XXX sqft</td></tr>
+            <tr><td>Office 02</td><td>X,XXX sqft</td><td>X,XXX sqft</td><td>X,XXX sqft</td></tr>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="slide-footer">
+    <span>PROJECT NAME · Location</span>
+    <span>5</span>
+  </div>
+</section>
+
+<!-- ==================== PAGE 6: FLOOR PLANS ==================== -->
+<section class="slide">
+  <div class="slide-inner">
+    <div class="slide-title">Floor Plan Configurations</div>
+    <div class="slide-title-bar"></div>
+    <div class="slide-subtitle">Flexible options to suit diverse requirements</div>
+
+    <div class="plan-grid">
+      <div class="plan-card"><div style="font-size:24pt; margin-bottom:4px;">🏢</div>
+        <h4>Configuration A</h4><p>~X,XXX sqft plinth</p><p>Description</p></div>
+      <div class="plan-card"><div style="font-size:24pt; margin-bottom:4px;">🏢</div>
+        <h4>Configuration B</h4><p>~X,XXX sqft plinth</p><p>Description</p></div>
+      <div class="plan-card"><div style="font-size:24pt; margin-bottom:4px;">🏢</div>
+        <h4>Configuration C</h4><p>~X,XXX sqft each</p><p>Description</p></div>
+      <div class="plan-card"><div style="font-size:24pt; margin-bottom:4px;">🏢</div>
+        <h4>Configuration D</h4><p>~X,XXX sqft each</p><p>Description</p></div>
+    </div>
+
+    <div style="margin-top:10px;">
+      <div style="display:flex; gap:10px;">
+        <div class="card" style="flex:1; text-align:center;">
+          <span class="num">X,XXX</span>
+          <span class="lbl">Ground / Stilt Floor (Sq.ft)</span>
+          <p style="font-size:8pt; color:var(--textLight); margin-top:2px;">Description</p>
+        </div>
+        <div class="card" style="flex:1; text-align:center;">
+          <span class="num">X,XXX</span>
+          <span class="lbl">Typical Floor Plinth (Sq.ft)</span>
+          <p style="font-size:8pt; color:var(--textLight); margin-top:2px;">Floors X-X</p>
+        </div>
+        <div class="card" style="flex:1; text-align:center;">
+          <span class="num">XX%</span>
+          <span class="lbl">Floor Plate Efficiency</span>
+          <p style="font-size:8pt; color:var(--textLight); margin-top:2px;">Carpet-to-Plinth ratio</p>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="slide-footer">
+    <span>PROJECT NAME · Location</span>
+    <span>6</span>
+  </div>
+</section>
+
+<!-- ==================== PAGE 7: PARKING + STP + SERVICES ==================== -->
+<section class="slide">
+  <div class="slide-inner">
+    <div class="slide-title">Parking & Infrastructure</div>
+    <div class="slide-title-bar"></div>
+    <div class="slide-subtitle">Ample parking with comprehensive building services</div>
+
+    <div class="two-col" style="gap:14px; height:calc(100% - 80px);">
+      <div style="display:flex; flex-direction:column; gap:8px;">
+        <h3 style="color:var(--navy); font-size:14pt;">🅿️ Parking</h3>
+        <div class="parking-row" style="display:flex; gap:16px;">
+          <div class="parking-card">
+            <div class="icon">🚗</div><div class="count">XX</div>
+            <div class="detail">Car Parking Spaces</div>
+            <div class="req">Required: XX | Achieved: XX</div>
+          </div>
+          <div class="parking-card">
+            <div class="icon">🛵</div><div class="count">XXX</div>
+            <div class="detail">Two-Wheeler Parking</div>
+            <div class="req">Required: XXX | Achieved: XXX</div>
+          </div>
+        </div>
+        <div class="card" style="margin-top:4px;">
+          <h4 style="color:var(--navy); font-size:10pt;">Electrical Infrastructure</h4>
+          <ul class="spec-list">
+            <li>Transformer on site</li>
+            <li>Electrical Meter Room</li>
+            <li>AHU Rooms on each floor</li>
+            <li>Elevator / Lift shafts</li>
+          </ul>
+        </div>
+      </div>
+
+      <div style="display:flex; flex-direction:column; gap:8px;">
+        <h3 style="color:var(--navy); font-size:14pt;">♻️ STP & Services</h3>
+        <div class="card-dark" style="text-align:center;">
+          <div style="font-size:32pt; margin-bottom:4px;">🌊</div>
+          <span class="num" style="color:var(--goldBright);">XXX KLD</span>
+          <span class="lbl">Sewage Treatment Plant — Technology</span>
+        </div>
+        <div class="card" style="flex:1;">
+          <h4 style="color:var(--navy); font-size:11pt; margin-bottom:6px;">STP Features</h4>
+          <ul class="spec-list">
+            <li>Technology: SBR / MBBR / Other</li>
+            <li>Capacity: XXX KLD</li>
+            <li>Fresh air duct on every floor</li>
+            <li>Exhaust duct on every floor</li>
+          </ul>
+        </div>
+        <div class="card" style="flex:1;">
+          <h4 style="color:var(--navy); font-size:11pt; margin-bottom:6px;">Building Services</h4>
+          <ul class="spec-list">
+            <li>Fire shaft & staircase on each floor</li>
+            <li>Triple-height lobby</li>
+            <li>Physically challenged-accessible toilets</li>
+            <li>Male & Female WC on each floor</li>
+            <li>Pantry on each floor</li>
+            <li><strong>⚡ Adequate power supply</strong></li>
+            <li><strong>🔋 100% power backup</strong></li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="slide-footer">
+    <span>PROJECT NAME · Location</span>
+    <span>7</span>
+  </div>
+</section>
+
+<!-- ==================== PAGE 8: CONTACT ==================== -->
+<section class="slide">
+  <div class="slide-inner" style="display:flex; flex-direction:column; justify-content:center; align-items:center; text-align:center;">
+    <div style="max-width:600px;">
+      <div style="font-size:36pt; margin-bottom:16px;">📋</div>
+      <div class="slide-title" style="font-size:30pt;">Interested in Leasing?</div>
+      <div class="slide-title-bar" style="margin:8px auto 14px;"></div>
+      <p style="font-size:12pt; color:var(--textMid); line-height:1.6; margin-bottom:24px;">
+        Project description — flexible configurations available.
+      </p>
+
+      <div style="display:flex; gap:12px; justify-content:center; margin-bottom:24px;">
+        <div class="card" style="text-align:center; padding:16px 24px;">
+          <div style="font-size:10pt; color:var(--textMid);">Completion</div>
+          <div style="font-size:20pt; font-weight:700; color:var(--navy);">Month Year</div>
+        </div>
+        <div class="card" style="text-align:center; padding:16px 24px;">
+          <div style="font-size:10pt; color:var(--textMid);">Total Built-Up</div>
+          <div style="font-size:20pt; font-weight:700; color:var(--navy);">X,XX,XXX sqft</div>
+        </div>
+        <div class="card" style="text-align:center; padding:16px 24px;">
+          <div style="font-size:10pt; color:var(--textMid);">Parking</div>
+          <div style="font-size:20pt; font-weight:700; color:var(--navy);">XX Cars · XXX Bikes</div>
+        </div>
+      </div>
+
+      <div class="contact-bar">
+        <div class="info"><strong>DRA HOMES</strong><br>Chennai | Bangalore</div>
+        <div class="info"><strong>📍</strong> Project Address</div>
+        <div class="info"><strong>📞</strong> Enquire for leasing details</div>
+      </div>
+
+      <p style="font-size:8pt; color:var(--textLight); margin-top:20px; line-height:1.4;">
+        Disclaimer: This document is for informational purposes only and does not constitute an offer or contract.
+        All areas, dimensions, and specifications are tentative and subject to final statutory approvals.
+        Images are artistic impressions. Verify all details with DRA Homes sales team.
+        DRA Homes — Building Trust, Delivering Excellence.
+      </p>
+    </div>
+  </div>
+  <div class="slide-footer">
+    <span>PROJECT NAME · Location</span>
+    <span>8</span>
+  </div>
+</section>
+
+</body>
+</html>

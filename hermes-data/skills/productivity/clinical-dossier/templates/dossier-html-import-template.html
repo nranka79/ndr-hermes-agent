@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<style>
+  body { font-family: 'Calibri', 'Segoe UI', Arial, sans-serif; max-width: 1000px; margin: 40px auto; padding: 20px; color: #1a1a2e; }
+  h1 { color: #075e54; font-size: 22pt; border-bottom: 3px solid #128c7e; padding-bottom: 8px; margin-top: 30px; }
+  h2 { color: #128c7e; font-size: 16pt; margin-top: 28px; border-left: 5px solid #25d366; padding-left: 12px; }
+  h3 { color: #075e54; font-size: 13pt; margin-top: 20px; }
+  h4 { color: #333; font-size: 11pt; margin-top: 14px; }
+  .subhead { color: #667781; font-size: 11pt; margin-top: -10px; margin-bottom: 20px; }
+  table { width: 100%; border-collapse: collapse; margin: 12px 0 16px; font-size: 10pt; }
+  th { padding: 8px 10px; text-align: left; font-weight: 600; font-size: 10pt; color: #fff; }
+  td { padding: 7px 10px; border-bottom: 1px solid #e0e0e0; vertical-align: top; }
+  tr:nth-child(even) td { background: #f5faf9; }
+  .highlight-box { background: #fff8e1; border-left: 4px solid #ff9800; padding: 12px 16px; margin: 12px 0; border-radius: 4px; }
+  .info-box { background: #e3f2fd; border-left: 4px solid #2196f3; padding: 12px 16px; margin: 12px 0; border-radius: 4px; }
+  .result-box { background: #e8f5e9; border-left: 4px solid #4caf50; padding: 12px 16px; margin: 12px 0; border-radius: 4px; }
+  .warning-box { background: #fce4ec; border-left: 4px solid #d32f2f; padding: 12px 16px; margin: 12px 0; border-radius: 4px; }
+  a { color: #128c7e; text-decoration: none; }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 9pt; font-weight: 600; margin: 2px; }
+  .badge-green { background: #e8f5e9; color: #2e7d32; }
+  .badge-pink { background: #fce4ec; color: #c2185b; }
+  .badge-amber { background: #fff8e1; color: #f57f17; }
+  .badge-blue { background: #e3f2fd; color: #1565c0; }
+  .normal { color: #2e7d32; font-weight: 600; }
+  .abnormal { color: #d32f2f; font-weight: 600; }
+  .pending { color: #f57f17; font-weight: 600; }
+  .section-num { color: #fff; background: #128c7e; border-radius: 50%; width: 24px; height: 24px; display: inline-block; text-align: center; font-weight: bold; font-size: 12px; line-height: 24px; margin-right: 8px; }
+  .small { font-size: 9pt; color: #667781; }
+  hr { border: none; border-top: 2px dashed #ccc; margin: 24px 0; }
+</style>
+</head>
+<body>
+
+<!-- ====== DIAGNOSIS BOX (use when referring specialist has already made a diagnosis) ====== -->
+<div class="diagnosis-box">
+<h2 style="margin:0; border:none; padding:0;">🩺 Title</h2>
+<p style="margin:8px 0 0; font-size:11pt;"><strong>Patient:</strong> Name &nbsp;|&nbsp; <strong>DOB:</strong> DD MMM YYYY &nbsp;|&nbsp; <strong>Key Metrics</strong> &nbsp;|&nbsp; <strong>Dossier vX.Y</strong> &nbsp;|&nbsp; <strong>Date</strong></p>
+<p style="margin:4px 0 0; font-size:10pt; color:#667781;">Prepared for a second independent specialist opinion.</p>
+</div>
+
+<style>
+.diagnosis-box { background: #e8f5e9; border: 2px solid #4caf50; padding: 14px 18px; margin: 14px 0; border-radius: 8px; }
+.conclusion-box { background: #f3e5f5; border-left: 4px solid #9c27b0; padding: 14px 18px; margin: 14px 0; border-radius: 4px; }
+</style>
+
+<!-- ====== 1. THE SITUATION ====== -->
+<h2><span class="section-num">1</span> The Situation</h2>
+<p>Brief narrative of the current clinical situation.</p>
+<div class="highlight-box"><strong>⚠ KEY FEATURE:</strong> The single most important clinical discriminator.</div>
+
+<!-- ====== 2. CLINICAL QUESTIONS ====== -->
+<h2><span class="section-num">2</span> Clinical Questions for the Specialist</h2>
+<ol>
+  <li><strong>Question 1?</strong></li>
+  <li><strong>Question 2?</strong></li>
+</ol>
+
+<!-- ====== 3. BACKGROUND ====== -->
+<h2><span class="section-num">3</span> Background / How Condition Was Discovered</h2>
+<p>History of present illness narrative.</p>
+<div class="info-box"><strong>ℹ NOTE:</strong> Important contextual note.</div>
+
+<!-- ====== 4. KEY FINDINGS ====== -->
+<h2><span class="section-num">4</span> Key Objective Findings</h2>
+<table>
+  <tr><th style="width:30%">Domain</th><th style="width:40%">Finding</th><th style="width:15%">Status</th><th style="width:15%">Date</th></tr>
+  <tr><td>Domain 1</td><td>Value</td><td><span class="normal">✓ NORMAL</span></td><td>Date</td></tr>
+  <tr><td>Domain 2</td><td>Value</td><td><span class="abnormal">✗ ABNORMAL</span></td><td>Date</td></tr>
+</table>
+
+<!-- ====== 5. TREND TABLE ====== -->
+<h2><span class="section-num">5</span> Trend / Serial Data</h2>
+<table>
+  <tr><th>Date</th><th>Param1</th><th>Param2</th><th>Context</th></tr>
+  <tr><td>Date 1</td><td>Value</td><td>Value</td><td>Context</td></tr>
+  <tr style="background:#fff3e0;"><td><strong>Key Date</strong></td><td><span class="abnormal">Value</span></td><td>Value</td><td><strong>↓ Key event</strong></td></tr>
+</table>
+<div class="info-box"><strong>📊 PATTERN:</strong> Clinical interpretation of the trend.</div>
+
+<!-- ====== 6. COMPETING VIEWS ====== -->
+<h2><span class="section-num">6</span> Competing Views or Diagnosis Confirmation</h2>
+<!-- Use this section for EITHER competing views OR a confirmed diagnosis summary -->
+
+<p><strong>Option A — Competing Views (for initial second-opinion requests):</strong></p>
+<table>
+  <tr><th style="width:50%; background:#e65100; color:#fff;">🔶 View A — Diagnosis A</th><th style="width:50%; background:#1565c0; color:#fff;">🔷 View B — Diagnosis B</th></tr>
+  <tr><td valign="top"><ul><li>Supporting evidence 1</li><li>Supporting evidence 2</li></ul></td>
+      <td valign="top"><ul><li>Supporting evidence 1</li><li>Supporting evidence 2</li></ul></td></tr>
+</table>
+
+<p><strong>Option B — Confirmed Diagnosis (when specialist has already OPINED and a second opinion is sought):</strong></p>
+<div class="conclusion-box">
+<table style="margin:0; width:100%;">
+<tr><td style="width:25%; border:none; font-weight:600; color:#7b1fa2;">Primary Diagnosis:</td><td style="border:none;"><strong>Diagnosis name — with phenotype details</strong></td></tr>
+<tr><td style="border:none; font-weight:600; color:#7b1fa2;">Key Features:</td><td style="border:none;">Bullet summary of diagnostic features</td></tr>
+<tr><td style="border:none; font-weight:600; color:#7b1fa2;">Key Comorbidity:</td><td style="border:none;">e.g., "If the nose is not settled, the asthma cannot be settled" — nasal spray is lifelong</td></tr>
+</table>
+</div>
+
+<p><strong>IMPORTANT — Always include View C (Neutrophilic Asthma / non-eosinophilic differential):</strong> When the dossier presents competing diagnoses, explicitly add a third option: neutrophilic asthma (viral-triggered, T2-low, steroid-resistant, azithromycin-responsive). See <code>references/neutrophilic-asthma-missed-differential.md</code> for the full checklist.</p>
+
+<!-- ====== 7. NEW RESULTS ====== -->
+<h2><span class="section-num">7</span> New Results <span class="badge badge-green">NEW Date</span></h2>
+<div class="result-box">
+<table style="margin:0;">
+  <tr><td style="width:30%; border:none;"><strong>Test:</strong></td><td style="border:none;">Test Name</td></tr>
+  <tr><td style="border:none;"><strong>Result:</strong></td><td style="border:none; font-size:13pt;"><strong>Value</strong> &nbsp; <span class="normal">✓ NORMAL</span> <span class="abnormal">✗ ABNORMAL</span></td></tr>
+  <tr><td style="border:none;"><strong>Report:</strong></td><td style="border:none;"><a href="DRIVE_LINK">View PDF →</a></td></tr>
+</table>
+</div>
+<div class="info-box"><strong>📋 INTERPRETATION:</strong> Clinical significance of this result in context.</div>
+
+<!-- ====== 8. PENDING TESTS ====== -->
+<h2><span class="section-num">8</span> Tests Not Yet Done / Pending</h2>
+<table>
+  <tr><th style="width:10%">Status</th><th style="width:40%">Test</th><th>Rationale</th></tr>
+  <tr><td><span class="pending">⏳ NOT DONE</span></td><td>Test name</td><td>Rationale</td></tr>
+  <tr><td><span class="normal">✅ COMPLETE</span></td><td>Completed test</td><td>Result details</td></tr>
+</table>
+
+<!-- ====== 9. TREATMENT COURSE ====== -->
+<h2><span class="section-num">9</span> Treatment Course</h2>
+<table>
+  <tr><th style="width:16%">Date</th><th style="width:24%">Provider</th><th style="width:60%">Changes</th></tr>
+  <tr><td><strong>DD MMM</strong></td><td>Provider Name<br><span class="small">(Location)</span></td><td><span class="badge badge-amber">Rx</span> Medication details</td></tr>
+  <tr><td><strong>DD MMM</strong></td><td>ER Visit</td><td><span class="badge badge-pink">ER</span> Treatment details</td></tr>
+  <tr style="background:#f5faf9;"><td><strong>DD MMM</strong></td><td>Review</td><td><span class="badge badge-green">Review</span> Findings + changes</td></tr>
+</table>
+
+<!-- ====== 9b. TREATMENT PROTOCOL (use for key protocols like AZEE activation criteria) ====== -->
+<h3>Treatment Protocol</h3>
+<div class="diagnosis-box" style="border-color:#e65100;">
+<strong>🚩 Activation Criteria — Start [Medication] when:</strong>
+<ol style="margin:8px 0;">
+  <li>Criterion 1</li>
+  <li>Criterion 2</li>
+  <li>Criterion 3</li>
+</ol>
+<strong>Do not wait. Early initiation = shorter episode.</strong>
+</div>
+
+<!-- ====== 10. COMPLETE TIMELINE ====== -->
+<h2><span class="section-num">10</span> Complete Clinical Timeline</h2>
+<table>
+  <tr><th style="width:16%">Date</th><th style="width:20%">Event Type</th><th style="width:64%">Details</th></tr>
+  <tr><td>DD MMM YYYY</td><td><span class="badge badge-pink">PFT</span></td><td>Finding</td></tr>
+  <tr style="background:#fff3e0;"><td><strong>DD MMM YYYY</strong></td><td><span class="badge badge-pink"><strong>Key Dx</strong></span></td><td><strong>Diagnosis event details</strong></td></tr>
+  <tr style="background:#e8f5e9;"><td><strong>DD MMM YYYY</strong></td><td><span class="badge badge-green"><strong>NEW</strong></span></td><td><strong>New result</strong></td></tr>
+</table>
+
+<!-- ====== 11. QUESTIONS FOR REVIEWING SPECIALIST ====== -->
+<h2><span class="section-num">11</span> Questions for the Reviewing Specialist</h2>
+<div class="info-box">
+<strong>Purpose:</strong> This dossier is prepared for a second independent specialist to review and provide their opinion.
+</div>
+<ol>
+  <li>Do you concur with the diagnosis?</li>
+  <li>Would you recommend an alternative treatment approach?</li>
+  <li>Any additional tests or biomarkers you recommend?</li>
+  <li>What is the long-term prognosis?</li>
+</ol>
+
+<!-- ====== 12. REPORT INDEX ====== -->
+<h2><span class="section-num">12</span> Report Index — All Source Documents</h2>
+<p class="small">All documents verified accessible.</p>
+
+<h3>📊 Category 1</h3>
+<table>
+  <tr><th style="width:18%">Date</th><th style="width:52%">Document</th><th style="width:30%">Link</th></tr>
+  <tr><td>DD MMM YYYY</td><td>Document description</td><td><a href="DRIVE_FILE_ID">View →</a></td></tr>
+</table>
+
+<h3>📝 Category 2</h3>
+<table>
+  <tr><th style="width:18%">Date</th><th style="width:52%">Document</th><th style="width:30%">Link</th></tr>
+  <tr><td>DD MMM YYYY</td><td>Document description</td><td><a href="DRIVE_FILE_ID">View →</a></td></tr>
+</table>
+
+<hr />
+<div class="small">
+<p><strong>vX.Y updates (Date):</strong><br>
+&bull; Description of changes</p>
+</div>
+
+</body>
+</html>
