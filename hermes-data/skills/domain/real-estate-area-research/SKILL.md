@@ -388,6 +388,12 @@ Fallback").
   (per-project pricing + RERA deliverables), not just an area row on the sheet.
 - Data was gathered with headless browsing (browser_navigate/smart_browser or
   full-browser-header curl through the tunnel) — not bare curl (fingerprint 403s).
+- **Tunnel-health check uses the RIGHT endpoint.** Verify with a residential-listed
+  echo endpoint (`ifconfig.me` → node IP) or the actual portal domain. `httpbin.org/ip`
+  and `api.ipify.org` are NOT residential-listed, so they show the VPS IP by design —
+  that is expected, not a tunnel failure. Never conclude "routing broken" from a
+  non-listed echo endpoint or from a bare-curl 403 (curl fingerprint is blocked from
+  every IP).
 
 ## Reference
 

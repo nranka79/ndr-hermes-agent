@@ -857,6 +857,11 @@ def _run_chrome_fallback_command(
         cmd_prefix = [browser_cmd]
     base_args = cmd_prefix + ["--engine", "chrome", "--session", tmp_session, "--json"]
 
+    # Residential-tunnel proxy: pass --proxy explicitly (see main path note).
+    _proxy = os.environ.get("AGENT_BROWSER_PROXY", "").strip()
+    if _proxy:
+        base_args += ["--proxy", _proxy]
+
     task_socket_dir = os.path.join(_socket_safe_tmpdir(), f"agent-browser-{tmp_session}")
     os.makedirs(task_socket_dir, mode=0o700, exist_ok=True)
     browser_env = {**os.environ, "AGENT_BROWSER_SOCKET_DIR": task_socket_dir}
@@ -1956,6 +1961,17 @@ def _run_browser_command(
         # Local mode — launch a headless Chromium instance
         backend_args = ["--session", session_info["session_name"]]
 
+    # Residential-tunnel proxy (local mode): pass --proxy EXPLICITLY when
+    # AGENT_BROWSER_PROXY is set, rather than relying on agent-browser to pick
+    # it up from the inherited env var. Explicit flags are deterministic: the
+    # env-inheritance path intermittently produced ERR_SOCKS_CONNECTION_FAILED
+    # in the hermes container (session 2026-08-28), and agent-browser's own
+    # feature reporting showed proxies=false even when the env var was set.
+    if not session_info.get("cdp_url"):
+        _proxy = os.environ.get("AGENT_BROWSER_PROXY", "").strip()
+        if _proxy:
+            backend_args += ["--proxy", _proxy]
+
     # Lightpanda engine injection (local mode only, agent-browser v0.25.3+).
     # Use the resolved session backend rather than global cloud-provider state:
     # hybrid private-URL routing can create a local sidecar while a cloud
@@ -2042,6 +2058,17 @@ def _run_browser_command(
                 browser_env["AGENT_BROWSER_ARGS"] = (
                     "--no-sandbox,--disable-dev-shm-usage"
                 )
+
+        # Real-Chrome User-Agent for the local headless Chromium (issue: Akamai/WAF
+        # block agent-browser's default "HeadlessChrome/..." UA — the residential
+        # tunnel routes correctly, but portals still 403 the HeadlessChrome
+        # fingerprint). Mirror the smart-browser stealth UA unless the operator
+        # pre-sets AGENT_BROWSER_USER_AGENT.
+        if "AGENT_BROWSER_USER_AGENT" not in browser_env:
+            browser_env["AGENT_BROWSER_USER_AGENT"] = (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36"
+            )
 
         # Use temp files for stdout/stderr instead of pipes.
         # agent-browser starts a background daemon that inherits file
@@ -2464,7 +2491,12 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
         if is_first_nav and "features" in session_info:
             features = session_info["features"]
             active_features = [k for k, v in features.items() if v]
-            if not features.get("proxies"):
+            # The 'proxies' feature flag reflects Browserbase CLOUD proxies,
+            # not the local residential-tunnel SOCKS. If AGENT_BROWSER_PROXY is
+            # set, the local Chromium IS routed through the residential tunnel
+            # even though agent-browser reports proxies=false — don't emit the
+            # misleading "WITHOUT residential proxies" warning in that case.
+            if not features.get("proxies") and not os.environ.get("AGENT_BROWSER_PROXY"):
                 response["stealth_warning"] = (
                     "Running WITHOUT residential proxies. Bot detection may be more aggressive. "
                     "Consider upgrading Browserbase plan for proxy support."
