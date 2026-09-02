@@ -554,15 +554,11 @@ class TelegramAdapter(BasePlatformAdapter):
                     exc_info=True,
                 )
 
-        allowed_csv = os.getenv("TELEGRAM_ALLOWED_USERS", "").strip()
-        if not allowed_csv:
-            # Fail-closed: no allowlist means deny by default.
-            # The runner auth path in _is_user_authorized() handles
-            # GATEWAY_ALLOW_ALL_USERS; this fallback must not silently
-            # allow everyone (fixes #24457).
-            return os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}
-        allowed_ids = {uid.strip() for uid in allowed_csv.split(",") if uid.strip()}
-        return "*" in allowed_ids or normalized_user_id in allowed_ids
+        # Vault is the single source of truth for authorization. The runner
+        # auth path (_is_user_authorized, via authz_mixin) resolves against
+        # the vault fail-closed. If that path is unavailable here, DENY —
+        # never fall back to env allowlists, which would bypass the vault.
+        return False
 
     @classmethod
     def _metadata_thread_id(cls, metadata: Optional[Dict[str, Any]]) -> Optional[str]:

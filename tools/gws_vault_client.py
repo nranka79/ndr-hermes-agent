@@ -294,6 +294,30 @@ def resolve(identity_type: str, identity_value: str) -> Optional[str]:
     return resp.get("user_id")
 
 
+def check_access(identity_type: str, identity_value: str, app: str) -> bool:
+    """Authorize a user for an app/channel via the vault. Fail-closed.
+
+    Returns ``True`` ONLY when the vault (reachable) resolves the identity to
+    a known user AND that user is granted ``app``. Any failure — vault
+    unreachable, unknown identity, missing/negative grant, unknown app —
+    returns ``False``. This is the single authorization primitive every
+    platform/adapter should call; see the vault server's ``check_access`` op.
+    """
+    try:
+        resp = _send_recv({
+            "op": "check_access",
+            "identity_type": str(identity_type).strip(),
+            "identity_value": str(identity_value).strip(),
+            "app": str(app).strip(),
+            "vault_secret": VAULT_SECRET,
+        })
+    except Exception:
+        return False
+    if not resp.get("ok"):
+        return False
+    return bool(resp.get("allowed"))
+
+
 def resolve_by_phone(phone: str) -> Optional[str]:
     """Resolve a phone number to a canonical user_id.
 

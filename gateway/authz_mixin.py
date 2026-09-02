@@ -217,32 +217,35 @@ class GatewayAuthorizationMixin:
         if self.pairing_store.is_approved(platform_name, user_id):
             return True
 
-        # Vault identity check: users provisioned via admin.ahfl.in or
-        # manage_user are authorized immediately, no gateway restart needed.
-        # Vault is the single source of truth for identity.
-        # Falls through to env-allowlist checks below when vault is
-        # unreachable — preserves pre-existing behavior for operators
-        # relying on TELEGRAM_ALLOWED_USERS.
+        # Vault is the SINGLE source of truth for Telegram user access.
+        # A sender is authorized ONLY when the vault resolves them to a known
+        # user AND check_access("telegram") grants the app. Fail-closed:
+        #   - not in the vault                     -> deny
+        #   - in the vault but telegram not granted-> deny
+        #   - vault unreachable / error            -> deny (no env fallback)
+        # Admins get all apps by default; employees need the explicit
+        # permissions.apps.telegram toggle (managed via admin.ahfl.in).
         if source.platform == Platform.TELEGRAM and user_id:
             try:
                 from tools import gws_vault_client as vault
                 vault_user_id = vault.resolve("telegram", user_id)
+                if not vault_user_id:
+                    logger.info(
+                        "Telegram user %s not found in vault — deny (fail-closed)", user_id,
+                    )
+                    return False
+                allowed = vault.check_access("telegram", user_id, "telegram")
+                if not allowed:
+                    logger.info(
+                        "Telegram user %s denied by vault app access (telegram)", user_id,
+                    )
+                    return False
+                return True
             except Exception:
-                pass
-            else:
-                if vault_user_id:
-                    try:
-                        _identity = vault.get_identity(vault_user_id, session_uid=vault_user_id)
-                    except Exception:
-                        _identity = None
-                    _apps = ((_identity or {}).get("permissions", {}) or {}).get("apps", {}) or {}
-                    if _apps.get("telegram") is False:
-                        logger.info(
-                            "Telegram user %s blocked by admin App Access "
-                            "(permissions.apps.telegram=False)", user_id,
-                        )
-                        return False
-                    return True
+                logger.warning(
+                    "Vault unreachable for Telegram user %s — deny (fail-closed)", user_id,
+                )
+                return False
 
         # Check platform-specific and global allowlists
         platform_allowlist = os.getenv(platform_env_map.get(source.platform, ""), "").strip()
