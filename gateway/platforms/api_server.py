@@ -1955,6 +1955,27 @@ class APIServerAdapter(BasePlatformAdapter):
         from gateway.platforms.identity_resolver import user_identity
         _user_id, _user_email, _draas_user_id = user_identity(request)
 
+        # Fire agent:start / agent:end gateway event hooks for this endpoint too
+        # (mirrors gateway/run.py's Telegram path) so hooks like task-tracker also
+        # see chat.ahfl.in traffic. gateway_runner/hooks may be absent depending on
+        # how this adapter was constructed; a hook failure must never affect the
+        # chat response, hence the defensive getattr + try/except at every call site.
+        _hook_ctx = {
+            "platform": "api_server",
+            "user_id": _user_id or "",
+            "chat_id": "api",
+            "thread_id": "",
+            "chat_type": "api",
+            "session_id": session_id,
+            "message": str(user_message)[:500],
+        }
+        try:
+            _gw = getattr(self, "gateway_runner", None)
+            if _gw is not None and getattr(_gw, "hooks", None) is not None:
+                await _gw.hooks.emit("agent:start", _hook_ctx)
+        except Exception:
+            pass
+
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:29]}"
         model_name = body.get("model", self._model_name)
         created = int(time.time())
@@ -2051,6 +2072,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 request, completion_id, model_name, created, _stream_q,
                 agent_task, agent_ref, session_id=session_id,
                 gateway_session_key=gateway_session_key,
+                hook_ctx=_hook_ctx,
             )
 
         # Non-streaming: run the agent (with optional Idempotency-Key)
@@ -2086,6 +2108,18 @@ class APIServerAdapter(BasePlatformAdapter):
                 )
 
         final_response = result.get("final_response") or ""
+
+        try:
+            _gw = getattr(self, "gateway_runner", None)
+            if _gw is not None and getattr(_gw, "hooks", None) is not None:
+                await _gw.hooks.emit("agent:end", {
+                    **_hook_ctx,
+                    "session_id": result.get("session_id") or _hook_ctx.get("session_id"),
+                    "response": str(final_response)[:500],
+                })
+        except Exception:
+            pass
+
         is_partial = bool(result.get("partial"))
         is_failed = bool(result.get("failed"))
         completed = bool(result.get("completed", True))
@@ -2167,7 +2201,7 @@ class APIServerAdapter(BasePlatformAdapter):
     async def _write_sse_chat_completion(
         self, request: "web.Request", completion_id: str, model: str,
         created: int, stream_q, agent_task, agent_ref=None, session_id: str = None,
-        gateway_session_key: str = None,
+        gateway_session_key: str = None, hook_ctx: dict = None,
     ) -> "web.StreamResponse":
         """Write real streaming SSE from agent's stream_delta_callback queue.
 
@@ -2264,6 +2298,17 @@ class APIServerAdapter(BasePlatformAdapter):
             try:
                 result, agent_usage = await agent_task
                 usage = agent_usage or usage
+                if hook_ctx is not None:
+                    try:
+                        _gw = getattr(self, "gateway_runner", None)
+                        if _gw is not None and getattr(_gw, "hooks", None) is not None:
+                            await _gw.hooks.emit("agent:end", {
+                                **hook_ctx,
+                                "session_id": (result or {}).get("session_id") or hook_ctx.get("session_id"),
+                                "response": str((result or {}).get("final_response") or "")[:500],
+                            })
+                    except Exception:
+                        pass
             except Exception as exc:
                 logger.warning("Agent task %s failed, usage data lost: %s", completion_id, exc)
 
