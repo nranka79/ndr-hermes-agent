@@ -380,7 +380,16 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         # - Qwen 3.7 uses Anthropic Messages under /v1/messages
         # Keep the provider base at /v1 and select api_mode per-model.
         inference_base_url="https://opencode.ai/zen/go/v1",
-        api_key_env_vars=("OPENCODE_GO_API_KEY",),
+        # Multi-key rotation: the credential pool (agent/credential_pool.py)
+        # seeds one PooledCredential per env var here and already handles
+        # cooldown/exhaustion + rotation (same mechanism already used in
+        # production for anthropic/xai-oauth/nous/zai/kimi-coding) — it was
+        # just never given more than one key to rotate. OPENCODE_API_KEY is
+        # the existing second OpenCode Go account (tracked as such by the
+        # quota dashboard); OPENCODE_GO_KEY_3 matches the env var name the
+        # opencode-go-key-rotator CLI plugin already uses, so one key value
+        # covers both the CLI plugin and Hermes itself.
+        api_key_env_vars=("OPENCODE_GO_API_KEY", "OPENCODE_API_KEY", "OPENCODE_GO_KEY_3"),
         base_url_env_var="OPENCODE_GO_BASE_URL",
     ),
     "kilocode": ProviderConfig(
