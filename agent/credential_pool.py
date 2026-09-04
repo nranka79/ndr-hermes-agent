@@ -2030,6 +2030,18 @@ def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool
             "CLAUDE_CODE_OAUTH_TOKEN",
             "ANTHROPIC_API_KEY",
         ]
+    elif env_vars:
+        # Auto-support a numbered key series (BASE_2, BASE_3, ... BASE_20)
+        # off the provider's first declared env var, for every api_key
+        # provider — same convention tools/key_rotation.py already uses
+        # for Tavily/Apify/Firecrawl. This means adding a Nth key for ANY
+        # provider (opencode-go, deepseek, xai, ...) is just a new env var
+        # + container restart, never a code change to this registry.
+        base = env_vars[0]
+        for i in range(2, 21):
+            candidate = f"{base}_{i}"
+            if candidate not in env_vars:
+                env_vars.append(candidate)
 
     for env_var in env_vars:
         # Prefer ~/.hermes/.env over os.environ
