@@ -104,6 +104,38 @@ HERMES_GWS_SCOPES = [
     # testing OAuth clients are fine, a public-facing app would need CASA
     # verification before this scope is usable for external users.
     "https://www.googleapis.com/auth/youtube",
+    # Google Health API (scopes verified 2026-09-05 against
+    # developers.google.com/health). NOT the legacy Google Fit REST API
+    # (fitness.googleapis.com, closed to new signups since 2024-05-01, shutting
+    # down entirely by end of 2026) -- this is the Fitbit-descended API at
+    # health.googleapis.com/v4.
+    #
+    # IMPORTANT: there is NO non-suffixed "read+write superset" scope. Every
+    # data bundle has an explicit .readonly and .writeonly pair; .writeonly
+    # grants ONLY writing data this app itself adds (create/edit/delete our own
+    # entries) and does NOT grant reads. Full read+write therefore needs BOTH
+    # forms per bundle. (The earlier non-suffixed strings were invalid, so every
+    # call 403d with ACCESS_TOKEN_SCOPE_INSUFFICIENT.)
+    #
+    # All googlehealth.* are restricted scopes: fine for the internal/testing
+    # OAuth client with accounts on the Cloud Console Test Users list (100-user
+    # cap); going public needs Google restricted-scope (CASA) verification.
+    #
+    # Reads -- user device/app health data ("all available records"):
+    "https://www.googleapis.com/auth/googlehealth.activity_and_fitness.readonly",
+    "https://www.googleapis.com/auth/googlehealth.health_metrics_and_measurements.readonly",
+    "https://www.googleapis.com/auth/googlehealth.nutrition.readonly",
+    "https://www.googleapis.com/auth/googlehealth.sleep.readonly",
+    "https://www.googleapis.com/auth/googlehealth.ecg.readonly",
+    "https://www.googleapis.com/auth/googlehealth.irn.readonly",
+    "https://www.googleapis.com/auth/googlehealth.location.readonly",
+    "https://www.googleapis.com/auth/googlehealth.profile.readonly",
+    # Writes -- Hermes-created entries (food/nutrition, exercise, body metrics):
+    "https://www.googleapis.com/auth/googlehealth.nutrition.writeonly",
+    "https://www.googleapis.com/auth/googlehealth.activity_and_fitness.writeonly",
+    "https://www.googleapis.com/auth/googlehealth.health_metrics_and_measurements.writeonly",
+    # Optional niche writes (add on request): googlehealth.logged_symptoms.writeonly,
+    # googlehealth.mindfulness.writeonly, googlehealth.reproductive_health.writeonly.
 ]
 
 _REDIRECT_URI = "https://transcribe.ahfl.in/gws/auth/callback"
