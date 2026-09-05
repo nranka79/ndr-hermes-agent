@@ -15,14 +15,14 @@ Instructions for AI coding assistants and developers working on the hermes-agent
 
 | Field | Value |
 |---|---|
-| Host | `178.105.35.94` |
+| Host | `91.99.219.247` |
 | DNS | `transcribe.ahfl.in` |
 | User | `root` |
 | App root (on VPS) | `/opt/hermes/` |
 
 **Connect:**
 ```bash
-ssh root@178.105.35.94
+ssh root@91.99.219.247
 ```
 
 #### Local SSH key (Windows) — to find
@@ -31,16 +31,20 @@ ssh root@178.105.35.94
 - `C:\Users\ruhaan\.ssh\id_ed25519`
 - `C:\Users\ruhaan\.ssh\config` ← may have a `Host transcribe.ahfl.in` block
 
-From Git Bash: `ssh root@178.105.35.94`. If non-default key, check `~/.ssh/config` for a matching `Host` block.
+From Git Bash: `ssh root@91.99.219.247`. If non-default key, check `~/.ssh/config` for a matching `Host` block.
 
 ### Platform
 
 - **Provider:** Hetzner VPS, self-hosted
 - **Orchestration:** Docker Compose (NOT Railway — that account is disabled/dead)
-- **Compose file:** `/opt/hermes/docker-compose.yml`
-- **Local mirror:** `Infrastructure_Scripts/hetzner/docker-compose.yml`
+- **Compose files:** `/opt/hermes/docker-compose.prod.yml` + `/opt/hermes/docker-compose.override.yml` (old `docker-compose.yml` is legacy/superseded)
 
 ### Services
+
+> Note (2026-09): this table reflects the legacy `docker-compose.yml` layout.
+> Production now runs the consolidated `docker-compose.prod.yml` stack (hermes,
+> hermes-apps, hermes-automation, browser-egress, llm-gateway, hermes-utilities,
+> postgres, redis) + honcho-* via the override. See CLAUDE.md "Services".
 
 | Service | Image / Build | Host Port | Public URL |
 |---|---|---|---|
@@ -48,9 +52,7 @@ From Git Bash: `ssh root@178.105.35.94`. If non-default key, check `~/.ssh/confi
 | redis | `redis:7-alpine` | internal | — |
 | n8n | custom `./n8n-custom/Dockerfile` | `127.0.0.1:5678` | https://transcribe.ahfl.in |
 | n8n-worker | same image, `cmd: worker` | internal | — |
-| hermes | `./hermes-agent/Dockerfile` | internal | Telegram @NDRHermes_bot (primary) |
-| hermes-bot2 | `./hermes-agent/Dockerfile` (separate image tag: `hermes-hermes-bot2`) | internal | Telegram, secondary bot |
-| hermes-bot3 | `./hermes-agent/Dockerfile` (separate image tag: `hermes-hermes-bot3`) | internal | Telegram, tertiary bot |
+| hermes | `./hermes-agent/Dockerfile` | internal | Telegram @NDRHermes_bot (single bot) |
 | smart-browser | `./smart-browser/Dockerfile` | internal | — |
 | voice | `./voice-app/Dockerfile` | `127.0.0.1:3000` | https://voice.ahfl.in |
 | admin-app | `./admin-app/Dockerfile` | `127.0.0.1:8081` | https://admin.ahfl.in |
@@ -68,16 +70,8 @@ python3 setup_oauth_credentials.py && exec hermes gateway run -v
 **Volumes:**
 - `/opt/hermes/hermes-data` → `/data/hermes` (this is `HERMES_HOME` inside the container)
 
-> **Shared skills tree (2026-07-31):** `hermes-bot2`/`hermes-bot3` mount
-> `/opt/hermes/hermes-data/skills` read-only at `/data/hermes/skills` — **one
-> canonical skills dir for all 3 bots** (union of the previously per-bot trees;
-> newest-version-wins on conflicts; per-bot dirs preserved as
-> `hermes-data-botN/skills.bak-20260731-075050` for rollback). Any new skill
-> must be added to `/opt/hermes/hermes-data/skills/` once — it appears on all
-> bots. Do NOT copy skills into `hermes-data-botN/skills/` anymore (shadowed by
-> the mount). Note: the RO mount makes `skills_sync.py` fail harmlessly on
-> bot2/bot3 at boot (stage2-hook logs a warning and continues); bot1 owns the
-> rw copy.
+> **Skills tree:** `/opt/hermes/hermes-data/skills` is the canonical skills
+> dir, bind-mounted into the bot; add new skills there.
 
 **Temporary bind mounts (subagent-polling fix, Jun 2026 — REMOVE once image is rebuilt):**
 - `…/hermes-agent/hermes_state.py` → `/opt/hermes/hermes_state.py` (ro)
@@ -85,57 +79,31 @@ python3 setup_oauth_credentials.py && exec hermes gateway run -v
 
 **Logging:** `json-file`, 50MB × 5 files, tag=`hermes`
 
-### Deployment — MANDATORY: use `deploy_bots.sh`, never a bare `--build hermes`
+### Deployment (single bot)
 
-`hermes`, `hermes-bot2`, and `hermes-bot3` (see "Multi-bot Telegram setup"
-below) each build and tag their **own separate Docker image**
-(`hermes-hermes`, `hermes-hermes-bot2`, `hermes-hermes-bot3`) from the
-identical `./hermes-agent` build context — there is no shared `image:` key
-in `docker-compose.yml`. **Rebuilding one does NOT rebuild the others,
-silently, with no warning or error.**
-
-Always deploy any `hermes-agent` code change with:
+There is ONE Hermes bot (the `hermes` service). Deploy a `hermes-agent` code
+change from the host with:
 ```bash
-/opt/hermes/deploy_bots.sh
-# == cd /opt/hermes && docker compose up -d --build hermes hermes-bot2 hermes-bot3
+cd /opt/hermes
+docker compose -f docker-compose.prod.yml -f docker-compose.override.yml up -d --build hermes
 ```
-(local mirror of the script: `Infrastructure_Scripts/hetzner/deploy_bots.sh`)
-
-**NEVER** run `docker compose up -d --build hermes` alone for a real code
-change — bot1 gets the fix, bot2/bot3 silently keep running whatever was
-last built for them.
-
-**Real incident this caused (diagnosed 2026-07-29, fixed 2026-07-30):**
-bot2/bot3 drifted ~12 days behind bot1's code because someone (human or
-agent) had been running bare `--build hermes` deploys. The drift window
-swallowed two Kelsa CRM fixes:
-- `kelsa_login`/`kelsa_complete_login`/`kelsa_list_tools`/`kelsa_call_tool`
-  toolset registration fix (2026-07-19, `toolsets.py`)
-- Kelsa OAuth HTTPS-callback fix (2026-07-20, `tools/kelsa_auth.py`
-  `REDIRECT_URI` default changed from a `127.0.0.1` placeholder to
-  `https://transcribe.ahfl.in/kelsa/auth/callback`)
-
-Effect: bot3 (stalest image) reported "Kelsa MCP/OAuth not found" — the
-tools were never registered on its running process at all. Separately, a
-user's Kelsa OAuth flow run from bot1 (which had *also* not been rebuilt
-recently enough) produced a broken `http://127.0.0.1:<port>/callback` URL:
-finding no `kelsa_login` tool available, the agent fell back to the legacy
-`hermes mcp add Kelsa-Read --auth oauth` CLI command, whose OAuth flow
-(`tools/mcp_oauth.py`) is designed for a human running the CLI locally with
-a real localhost listener — meaningless inside a headless container.
-
-**Fix + verification pattern:** run `deploy_bots.sh` (rebuild + restart all
-3 together), then confirm the fix actually landed in the *running* process
-(not just in source on disk / bind mounts) with something like:
+`tools/`, `skills/`, `toolsets.py` etc. are bind-mounted, so a change confined
+to those only needs `docker restart hermes-hermes-1`; a rebuild is only needed
+for dependency/Dockerfile changes. After deploying, confirm the fix landed in
+the *running* process (not just source on disk), e.g.:
 ```bash
-docker exec <container> python3 -c "
+docker exec hermes-hermes-1 python3 -c "
 from tools.registry import registry
 print(sorted(e.name for e in registry._tools.values() if 'kelsa' in e.name))
 import tools.kelsa_auth as ka
 print(ka.REDIRECT_URI)
 "
 ```
-on ALL THREE containers, not just one.
+
+> Historical note (retired 2026-09-05): the old multi-bot setup used a
+> `deploy_bots.sh` (rebuild hermes+bot2+bot3 together) because a bare
+> `--build hermes` silently left bot2/bot3 on stale code (2026-07-30 Kelsa
+> drift incident). Single-bot now; bot2/bot3 and `deploy_bots.sh` are gone.
 
 ### Environment Variables — hermes service
 
@@ -375,22 +343,23 @@ alert-latest.json), sheet writes + Telegram delivery verified.
 
 ```bash
 cd /opt/hermes
+CF="-f docker-compose.prod.yml -f docker-compose.override.yml"
 
 # View logs
-docker compose logs -f hermes
-docker compose logs -f n8n
+docker compose $CF logs -f hermes
+docker compose $CF logs -f hermes-automation   # n8n
 
 # Restart a service
-docker compose restart hermes
+docker compose $CF restart hermes
 
 # Rebuild + restart hermes after code change
-docker compose up -d --build hermes
+docker compose $CF up -d --build hermes
 
 # Exec into the hermes container
-docker compose exec hermes bash
+docker compose $CF exec hermes bash
 
 # Check all service status
-docker compose ps
+docker compose $CF ps
 ```
 
 ### Maintenance

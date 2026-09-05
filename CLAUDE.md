@@ -101,20 +101,30 @@ Briefing") — check there first, keep both in sync.
 ### SSH
 | Field | Value |
 |---|---|
-| Host | `178.105.35.94` (DNS: `transcribe.ahfl.in`) |
+| Host | `91.99.219.247` (DNS: `transcribe.ahfl.in`) |
 | User | `root` |
 | App root | `/opt/hermes/` |
-| Compose file | `/opt/hermes/docker-compose.yml` (local mirror: `Infrastructure_Scripts/hetzner/docker-compose.yml`) |
+| Compose files | `/opt/hermes/docker-compose.prod.yml` + `/opt/hermes/docker-compose.override.yml` (override adds gws-service + honcho-*). The old `docker-compose.yml` is legacy/superseded -- do NOT deploy from it. |
 
-Connect: `ssh root@178.105.35.94` (key: `~/.ssh/hetzner_new` or check `~/.ssh/config`).
+Connect: `ssh root@91.99.219.247` (key: `~/.ssh/hetzner_new`).
 
-### Services (docker compose)
-postgres, redis, n8n, n8n-worker, hermes, hermes-bot2, hermes-bot3,
-smart-browser, voice, free-whisper, loki, promtail, grafana, oauth2-proxy,
-open-webui, oauth2-proxy-chat.
+> Migration note (2026-09): production moved from the old playground box
+> `178.105.35.94` to `91.99.219.247` and consolidated onto
+> `docker-compose.prod.yml`. A single-bot model replaced the old
+> hermes/bot2/bot3 setup -- there is now ONE Hermes bot.
 
-Bot: @NDRHermes_bot (Telegram, primary). Chat UI: https://chat.ahfl.in (Open
-WebUI, behind Google-SSO oauth2-proxy-chat).
+### Services (docker compose, production)
+`hermes` (single Telegram bot + agent gateway :8642), `hermes-apps` (admin-app
++ voice + free-whisper + open-webui + oauth2-proxy-chat), `hermes-automation`
+(n8n + worker), `browser-egress` (smart-browser sidecar), `llm-gateway`
+(key-rotating LLM proxy), `hermes-utilities` (tunnel router + gws-service),
+`postgres`, `redis`. Via `docker-compose.override.yml`: `honcho-api`,
+`honcho-deriver`, `honcho-model-sync`. The **gws-vault** runs on the host as a
+systemd service (`gws-vault.service`, socket `/run/gws-vault/vault.sock`) -- NOT
+a container.
+
+Bot: @NDRHermes_bot (Telegram, single bot). Chat UI: https://chat.ahfl.in
+(Open WebUI, behind Google-SSO oauth2-proxy-chat).
 
 ### Hermes container
 - Startup: `python3 setup_oauth_credentials.py && exec hermes gateway run -v`
@@ -123,73 +133,45 @@ WebUI, behind Google-SSO oauth2-proxy-chat).
   `/run/gws-vault/vault.sock` (bind-mounted into the hermes container),
   gated by `GWS_VAULT_SECRET`. Hermes never reads token files directly.
 
-### Deployment — MANDATORY: use `deploy_bots.sh`, never a bare `--build hermes`
+### Deployment (single bot)
 
-`hermes`, `hermes-bot2`, and `hermes-bot3` each build and tag their **own
-separate Docker image** (`hermes-hermes`, `hermes-hermes-bot2`,
-`hermes-hermes-bot3`) from the identical `./hermes-agent` build context —
-there's no shared `image:` key in `docker-compose.yml`. **Rebuilding one
-does NOT rebuild the others, silently, with no warning.**
-
-Always deploy any `hermes-agent` code change with:
+There is ONE Hermes bot (the `hermes` service). Deploy any `hermes-agent` code
+change from the host with:
 ```bash
-/opt/hermes/deploy_bots.sh
-# == docker compose up -d --build hermes hermes-bot2 hermes-bot3 (run from /opt/hermes)
+cd /opt/hermes
+docker compose -f docker-compose.prod.yml -f docker-compose.override.yml up -d --build hermes
 ```
-**NEVER** run `docker compose up -d --build hermes` alone for a real code
-change — it looks like it worked (bot1 gets the fix) but leaves bot2/bot3
-frozen on old code with zero error.
+`tools/`, `skills/`, `toolsets.py` etc. are bind-mounted, so a change confined
+to those only needs `docker restart hermes-hermes-1` to re-import; a rebuild is
+only required for dependency/Dockerfile changes.
 
-**Real incident this caused (found + fixed 2026-07-30):** bot2/bot3 drifted
-~12 days behind bot1's code (first diagnosed 2026-07-29, which is why
-`Infrastructure_Scripts/hetzner/deploy_bots.sh` exists at all). The drift
-window silently swallowed two Kelsa CRM fixes — the `kelsa_login` toolset
-registration fix (2026-07-19) and the OAuth HTTPS-callback fix (2026-07-20)
-— so bot3 reported "Kelsa MCP/OAuth not found" (tools never registered on
-its stale image) while a user's Kelsa OAuth flow, run from a similarly
-stale bot1 process that hadn't itself been rebuilt since before those
-fixes, produced a broken `http://127.0.0.1:<port>/callback` URL (the agent,
-finding no `kelsa_login` tool, fell back to the legacy `hermes mcp add
---auth oauth` CLI flow, which is designed for a human running it locally,
-not a headless container). Fixed by running `deploy_bots.sh` (rebuild +
-restart all 3 together) and verifying `kelsa_login`/`kelsa_list_tools`/
-`kelsa_call_tool` are actually registered and `tools/kelsa_auth.py`'s
-`REDIRECT_URI` resolves to `https://transcribe.ahfl.in/kelsa/auth/callback`
-on all three running containers, not just source on disk.
+> Historical note (retired 2026-09-05): the old multi-bot setup used a
+> `deploy_bots.sh` that rebuilt hermes+bot2+bot3 together, because a bare
+> `--build hermes` silently left bot2/bot3 on stale code (the 2026-07-30 Kelsa
+> drift incident). With the single-bot move, bot2/bot3 and `deploy_bots.sh` are
+> gone (`deploy_bots.sh` renamed `.retired` on the host) -- the footgun is gone.
 
 ### Useful commands (run on the server)
 ```bash
 cd /opt/hermes
-docker compose logs -f hermes            # or hermes-bot2 / hermes-bot3
-docker compose restart hermes            # or hermes-bot2 / hermes-bot3
-./deploy_bots.sh                          # rebuild + restart ALL 3 bots together — use this, not --build hermes
-docker compose exec hermes bash          # or hermes-bot2 / hermes-bot3
+CF="-f docker-compose.prod.yml -f docker-compose.override.yml"
+docker compose $CF logs -f hermes
+docker compose $CF restart hermes
+docker compose $CF up -d --build hermes   # redeploy after a code change
+docker compose $CF exec hermes bash
 ```
 
-### Multi-bot Telegram setup (2026-07)
-3 separate telegram bot services in docker-compose, same "brain" (shared
-`users.json`, `hermes-data/users/` GBrain dirs, `honcho.json`, `SOUL.md`),
-but each with its OWN `HERMES_HOME` (own `config.yaml`, own session/state
-DB) — no chat-history bleed between bots for the same user:
+### Single-bot Telegram setup
 
-| Service | Bot token env var | HERMES_HOME (host path) |
-|---|---|---|
-| `hermes` (primary) | `TELEGRAM_BOT_TOKEN` | `/opt/hermes/hermes-data` |
-| `hermes-bot2` | `TELEGRAM_BOT_TOKEN_2` | `/opt/hermes/hermes-data-bot2` |
-| `hermes-bot3` | `TELEGRAM_BOT_TOKEN_3` | `/opt/hermes/hermes-data-bot3` |
-
-Each `config.yaml` is a **runtime file only — NOT git-tracked, not in this
-repo** (the `hermes-data/` folder tracked in the repo is a seed copy with
-just `SOUL.md` + `users.json`, distinct from the live runtime dirs above).
-
-All 3 bots share the SAME `hermes-agent` source (bind-mounted `tools/`,
-`skills/`, `toolsets.py`, etc.) but run it inside 3 SEPARATE, independently
-built images — see "Deployment" above. Code being right in git/on disk does
-NOT mean a given bot's running process has it; only a rebuild of that
-specific bot's image does.
+One Telegram bot service (`hermes`, token `TELEGRAM_BOT_TOKEN`,
+`HERMES_HOME=/data/hermes` from host `/opt/hermes/hermes-data`). The former
+`hermes-bot2`/`hermes-bot3` services (`TELEGRAM_BOT_TOKEN_2/_3`,
+`hermes-data-bot2/3`) were removed 2026-09-05. `config.yaml` is a runtime file
+only -- NOT git-tracked (the repo's `hermes-data/` is a seed copy with just
+`SOUL.md` + `users.json`).
 
 ### Default Model — Telegram Bots (2026-07-14)
-All 3 bots' `config.yaml` top-level `model:` block set to:
+The bot's `config.yaml` top-level `model:` block set to:
 ```yaml
 model:
   provider: opencode-go
@@ -198,14 +180,14 @@ model:
   api_mode: anthropic_messages
 ```
 Changed `default` from previous `minimax-m3` → `deepseek-v4-flash`.
-`provider: opencode-go` was already correct on all 3, untouched. Per-tool/
+`provider: opencode-go` was already correct, untouched. Per-tool/
 subagent model overrides further down each `config.yaml` were already on
 `opencode-go` + `deepseek-v4-flash` — untouched, no change needed there.
 Edited directly on the VPS via SSH (files aren't git-tracked, so no repo
 diff for the value itself — this note is the record of the change).
 Requires a gateway restart per bot to take effect (`config.yaml` read at
 process startup, not hot-reloaded) — restart via `docker compose restart
-hermes` / `hermes-bot2` / `hermes-bot3`, or via the bot's own
+hermes`, or via the bot's own
 telegram-triggered gateway restart.
 
 ---
