@@ -469,6 +469,91 @@ def build_service(api: str, version: str, service_name: str = _DEFAULT_SERVICE):
     return build(api, version, credentials=creds)
 
 
+# --- Google Health API (health.googleapis.com/v4) -------------------------
+# Google Health refuses any access token that also carries non-health scopes
+# (DISALLOWED_OAUTH_SCOPES) and requires the exact suffixed googlehealth.*
+# strings (ACCESS_TOKEN_SCOPE_INSUFFICIENT otherwise). Our vault token is one
+# bundled grant (gmail+calendar+...+googlehealth), so build_service /
+# load_credentials CANNOT be used against the Health API. Instead we down-scope:
+# run the OAuth refresh grant asking for ONLY the googlehealth.* scopes -- Google
+# returns an access token scoped to just those, which the Health data plane
+# accepts. Requires the account to have consented the googlehealth.* scopes
+# (HERMES_GWS_SCOPES) first via get_auth_url().
+
+GOOGLE_HEALTH_BASE = "https://health.googleapis.com/v4"
+
+
+def google_health_scopes() -> list:
+    """The googlehealth.* subset of HERMES_GWS_SCOPES (read + write)."""
+    return [sc for sc in HERMES_GWS_SCOPES if "googlehealth" in sc]
+
+
+def google_health_access_token(service_name: str = "google-gmail") -> str:
+    """Mint a Google-Health-only OAuth access token for the session user.
+
+    Down-scopes the bundled vault refresh token to ONLY the ``googlehealth.*``
+    scopes, so the returned bearer is accepted by ``health.googleapis.com``
+    (which rejects tokens carrying gmail/calendar/etc. scopes). Identity comes
+    from the session, same as :func:`build_service`. Raises ``RuntimeError`` if
+    the account has no googlehealth scopes granted (re-consent first).
+    """
+    import urllib.request, urllib.parse, urllib.error
+    creds = load_credentials(service_name)
+    granted = set(creds.scopes or [])
+    want = [sc for sc in google_health_scopes() if sc in granted]
+    if not want:
+        raise RuntimeError(
+            "account for service %r has no googlehealth.* scopes granted -- "
+            "re-consent via get_auth_url() first." % service_name
+        )
+    form = urllib.parse.urlencode({
+        "client_id": creds.client_id,
+        "client_secret": creds.client_secret,
+        "refresh_token": creds.refresh_token,
+        "grant_type": "refresh_token",
+        "scope": " ".join(want),
+    }).encode()
+    try:
+        with urllib.request.urlopen(
+            urllib.request.Request("https://oauth2.googleapis.com/token", data=form),
+            timeout=30,
+        ) as resp:
+            return json.loads(resp.read())["access_token"]
+    except urllib.error.HTTPError as e:
+        raise RuntimeError("health token mint failed: %s %r" % (e.code, e.read()[:200]))
+
+
+def google_health_request(method, path, service_name: str = "google-gmail",
+                          params: dict = None, json_body: dict = None):
+    """Call the Google Health API and return parsed JSON (``{}`` if empty body).
+
+    ``path`` is relative to ``health.googleapis.com/v4`` (leading slash
+    optional), e.g. ``"users/me/dataTypes/sleep/dataPoints"``. ``params`` are
+    query params (send the ``filter`` value raw; only ``>=`` / ``<`` operators
+    are allowed). ``json_body`` sends a JSON POST/PATCH body. Reads need the
+    matching ``*.readonly`` scope; create/edit/delete of OUR OWN entries need
+    ``*.writeonly``. Raises ``RuntimeError`` on non-2xx.
+    """
+    import urllib.request, urllib.parse, urllib.error
+    token = google_health_access_token(service_name)
+    url = "%s/%s" % (GOOGLE_HEALTH_BASE, path.lstrip("/"))
+    if params:
+        url += "?" + urllib.parse.urlencode(params)
+    data = json.dumps(json_body).encode() if json_body is not None else None
+    headers = {"Authorization": "Bearer " + token}
+    if data is not None:
+        headers["Content-Type"] = "application/json"
+    req = urllib.request.Request(url, data=data, headers=headers, method=method.upper())
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            body = resp.read()
+            return json.loads(body) if body else {}
+    except urllib.error.HTTPError as e:
+        raise RuntimeError("health API %s %s -> %s %s" % (
+            method, path, e.code, e.read().decode()[:300]))
+
+
+
 def get_auth_url(login_hint: str = None) -> str:
     """Generate an OAuth authorization URL for the current session's user.
 
