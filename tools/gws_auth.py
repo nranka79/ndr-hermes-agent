@@ -104,6 +104,18 @@ HERMES_GWS_SCOPES = [
     # testing OAuth clients are fine, a public-facing app would need CASA
     # verification before this scope is usable for external users.
     "https://www.googleapis.com/auth/youtube",
+    # Google Health API (2026-09-05): NOT the legacy Google Fit REST API
+    # (fitness.googleapis.com, closed to new signups since 2024-05-01,
+    # shutting down entirely by end of 2026) -- this is the newer
+    # Fitbit-descended API at developers.google.com/health, authorized via
+    # standard Google OAuth. Both scopes below are the non-readonly (read +
+    # write) forms, each a superset of its own .readonly variant. Also
+    # 'restricted' scopes like the YouTube one above -- same internal/testing
+    # OAuth client is fine, no CASA review needed unless this goes public.
+    # Access is limited to specific Google accounts via the OAuth consent
+    # screen's Test Users list (Google Cloud Console), NOT in this file.
+    "https://www.googleapis.com/auth/googlehealth.activity_and_fitness",
+    "https://www.googleapis.com/auth/googlehealth.health_metrics_and_measurements",
 ]
 
 _REDIRECT_URI = "https://transcribe.ahfl.in/gws/auth/callback"
