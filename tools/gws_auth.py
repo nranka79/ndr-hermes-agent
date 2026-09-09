@@ -162,6 +162,7 @@ EMAIL_TO_SERVICE = {
     "vkdas@draas.com":        "google-draas",
     "pm2.blr@draas.com":      "google-draas",
     "sales1.blr@draas.com":   "google-draas",
+    "admin3.blr@draas.com":  "google-draas",
     "ndr@ahfl.in":            "google-ahfl",
     "nishantranka@gmail.com": "google-gmail",
 }
