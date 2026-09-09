@@ -13,18 +13,20 @@ op.  This means a token authorized from any channel is readable from every
 channel, and a user with only a phone/Telegram/Slack id (no email) is handled
 identically to one with an email.
 
-Service naming convention (``EMAIL_TO_SERVICE``):
+Service naming convention (``_service_for_email``, derived from the email
+domain's registrable part — NOT a hand-maintained map):
     google              — default / legacy / primary
-    google-draas        — ndr@draas.com
-    google-ahfl         — ndr@ahfl.in
-    google-gmail        — nishantranka@gmail.com
+    google-draas        — any @draas.com account
+    google-ahfl         — any @ahfl.in account
+    google-gmail        — any @gmail.com account
 
 When a user authorizes via the OAuth callback, the token's email is extracted
 from the Google ``id_token`` (JWT) returned in the token exchange response.
-The email is looked up in ``EMAIL_TO_SERVICE``, and the token is automatically
-stored under the correct service key.  If the email is not recognised, the
-caller is asked to define a new service name — no manual ``service_name``
-parameter needed for the default callback flow.
+The email's DOMAIN is used to derive the service key automatically, so a new
+@draas.com user (e.g. admin3.blr@draas.com) is filed under ``google-draas``
+with no code change.  ``EMAIL_TO_SERVICE`` remains only as an explicit
+per-email override for accounts that must map to a non-derived key — no
+manual ``service_name`` parameter is needed for the default callback flow.
 
 Usage from skill code (terminal or execute_code):
     from tools.gws_auth import build_service, get_auth_url
@@ -147,14 +149,20 @@ _REDIRECT_URI = "https://transcribe.ahfl.in/gws/auth/callback"
 # email is available and the user has no gws_service field in users.json.
 _DEFAULT_SERVICE = "google"
 
-# Map well-known emails to their vault service names so the agent
-# can look up the right token by email address, and so the OAuth
-# callback can auto-detect the service name from the id_token email.
+# Explicit per-email overrides for the domain-derived default.  The service
+# key for a Google account is normally DERIVED from the account's email
+# domain (see ``_service_for_email`` below): any @draas.com account ->
+# google-draas, @ahfl.in -> google-ahfl, @gmail.com -> google-gmail, etc.
+# Entries in this dict are consulted FIRST for accounts that must map to a
+# non-derived key (e.g. a personal account deliberately filed under a work
+# domain's key).  Keeping the well-known draas.com accounts here is harmless
+# — each entry equals what domain derivation would produce anyway.
 #
 # Service-name format is enforced by the vault server at
 # tools/gws_vault_client.py:42 — must match ``^[a-z][a-z0-9-]{0,49}$``
-# (lowercase, alphanumeric + hyphens only — NO dots, NO underscores).
-# This is also the value stored in users.json under "gws_service".
+# (lowercase, alphanumeric + hyphens only — NO dots, NO underscores), so the
+# derived name uses the registrable domain WITHOUT its TLD (google-draas for
+# draas.com — NOT google-draas.com, which would be rejected by the vault).
 EMAIL_TO_SERVICE = {
     "ndr@draas.com":          "google-draas",
     "psingh@draas.com":       "google-draas",
@@ -162,10 +170,36 @@ EMAIL_TO_SERVICE = {
     "vkdas@draas.com":        "google-draas",
     "pm2.blr@draas.com":      "google-draas",
     "sales1.blr@draas.com":   "google-draas",
-    "admin3.blr@draas.com":  "google-draas",
+    "admin3.blr@draas.com":   "google-draas",
     "ndr@ahfl.in":            "google-ahfl",
     "nishantranka@gmail.com": "google-gmail",
 }
+
+
+def _service_for_email(email: str) -> str | None:
+    """Derive the vault service key for a Google account from its email domain.
+
+    Convention: ``google-<registrable-domain>`` — the email domain minus its
+    TLD.  Any @draas.com account -> ``google-draas``, @ahfl.in ->
+    ``google-ahfl``, @gmail.com -> ``google-gmail``.  This is what makes the
+    OAuth callback self-healing: a brand-new @draas.com user (e.g.
+    admin3.blr@draas.com) files under ``google-draas`` — the same key as
+    every other draas.com account — with no code change or manual mapping.
+
+    Explicit per-email overrides in ``EMAIL_TO_SERVICE`` win.  Returns
+    ``None`` for unparseable emails.
+    """
+    email = (email or "").strip().lower()
+    svc = EMAIL_TO_SERVICE.get(email)
+    if svc:
+        return svc
+    if "@" not in email or email.startswith("@"):
+        return None
+    domain = email.rsplit("@", 1)[1]
+    labels = domain.split(".")
+    base = ".".join(labels[:-1]) if len(labels) > 1 else domain
+    base = re.sub(r"[^a-z0-9-]+", "-", base).strip("-") or "acct"
+    return f"google-{base}"
 
 
 class UnknownGoogleAccountError(ValueError):
@@ -333,21 +367,15 @@ def _detect_service_from_credentials(creds: Credentials) -> str | None:
 
     Priority:
       1. Extract email from the ID token embedded in the credentials.
-      2. Look up the email in ``EMAIL_TO_SERVICE``.
+      2. Derive the service name from the email's domain via
+         ``_service_for_email`` (explicit ``EMAIL_TO_SERVICE`` override first).
 
     Returns the service name or ``None`` if unresolvable.
     """
     id_token = getattr(creds, "id_token", None)
     email = _decode_id_token_email(id_token) if id_token else None
     if email:
-        svc = EMAIL_TO_SERVICE.get(email)
-        if svc:
-            return svc
-        raise UnknownGoogleAccountError(
-            f"Authorized Google account {email} is not in EMAIL_TO_SERVICE. "
-            f"Please tell me what service name to use for this account "
-            f"(e.g. google-{email.split('@')[0]})."
-        )
+        return _service_for_email(email)
     return None
 
 
@@ -668,13 +696,13 @@ def exchange_and_store(code: str, service_name: str | None = None) -> str:
     (Telegram, Open Web UI) is readable from every channel and the read path
     can satisfy the vault's ``session_uid == user_id`` check.
 
-    The vault service key is chosen from the *authorized* Google account's
-    email (decoded from the id_token) via ``EMAIL_TO_SERVICE`` — NOT from any
-    profile default — so authorizing a second account never overwrites the
-    first.
+    The vault service key is derived from the *authorized* Google account's
+    email domain (decoded from the id_token) via :func:`_service_for_email` —
+    NOT from any profile default — so authorizing a second account never
+    overwrites the first, and a brand-new @draas.com user (e.g.
+    admin3.blr@draas.com) is filed under ``google-draas`` automatically.
 
-    Returns the chosen service name (or ``UNKNOWN:{email}:{svc}`` for accounts
-    not yet mapped in ``EMAIL_TO_SERVICE``).
+    Returns the chosen service name.
     """
     tid = _current_telegram_id()
 
@@ -699,13 +727,14 @@ def exchange_and_store(code: str, service_name: str | None = None) -> str:
             _ensure_email_in_identity(uid, authorized_email)
         return service_name
 
-    # Service is chosen from the AUTHORIZED account's email so a second
-    # account never clobbers the first.  Uses id_token when the openid scope
-    # is present, else falls back to the Gmail profile (gmail.modify scope).
+    # Service is chosen from the AUTHORIZED account's email DOMAIN so a second
+    # account never clobbers the first and a new @<domain> user needs no code
+    # change.  Uses id_token when the openid scope is present, else falls back
+    # to the Gmail profile (gmail.modify scope).
     email = authorized_email
 
     if email:
-        svc = EMAIL_TO_SERVICE.get(email)
+        svc = _service_for_email(email)
         if svc:
             save_credentials(flow.credentials, svc)
             _ensure_email_in_identity(uid, email)
@@ -714,19 +743,7 @@ def exchange_and_store(code: str, service_name: str | None = None) -> str:
             )
             return svc
 
-        # Unknown email — store under a vault-valid fallback key so the token
-        # is never lost.  Service names must match ^[a-z][a-z0-9-]{0,49}$.
-        local = re.sub(r"[^a-z0-9-]+", "-", email.split("@")[0].lower()).strip("-") or "acct"
-        fallback_svc = f"google-{local}"
-        save_credentials(flow.credentials, fallback_svc)
-        _ensure_email_in_identity(uid, email)
-        logger.info(
-            "GWS token stored user_id=%s fallback_service=%s email=%s",
-            uid, fallback_svc, email,
-        )
-        return f"UNKNOWN:{email}:{fallback_svc}"
-
-    # No id_token at all — last resort default key.
+    # No id_token / unparseable email — last resort default key.
     save_credentials(flow.credentials, _DEFAULT_SERVICE)
     logger.warning(
         "No id_token for user_id=%s — stored service=%s",
@@ -745,15 +762,16 @@ def has_token(service_name: str = _DEFAULT_SERVICE) -> bool:
 
 
 def register_email_service(email: str, service_name: str) -> str:
-    """Register an email-to-service mapping and rename any fallback token.
+    """Register an explicit email-to-service override and rename any legacy token.
 
-    Call this when the user tells the agent what service name to use for an
-    account that was authorized under a fallback key (``UNKNOWN:...`` result).
-    Identity is derived from the session context ONLY.
+    Since 2026-09-09 the callback derives the service key from the email
+    DOMAIN automatically (see :func:`_service_for_email`), so this is only
+    needed for accounts that must map to a NON-derived key.  Identity is
+    derived from the session context ONLY.
 
-    1. Adds ``email -> service_name``  to ``EMAIL_TO_SERVICE``.
-    2. If a fallback key ``google-{local}`` exists, moves the token
-       to the new service name and deletes the fallback.
+    1. Adds ``email -> service_name`` to ``EMAIL_TO_SERVICE`` (explicit override).
+    2. If a legacy fallback key ``google-{local}`` (pre-domain-derivation)
+       exists, moves the token to the new service name and deletes the fallback.
 
     Returns a status message.
     """

@@ -84,7 +84,7 @@ def _user_service_emails(tid: str) -> dict[str, str]:
     a global default (e.g. ``ndr@draas.com`` for ``google-draas``) that was
     causing the model to tell a non-Nishant user "the token is for ndr@draas.com".
     """
-    from tools.gws_auth import EMAIL_TO_SERVICE, canonical_uid
+    from tools.gws_auth import _service_for_email, canonical_uid
     from tools import gws_vault_client as vault
     uid = canonical_uid(tid)
     if not uid:
@@ -98,7 +98,7 @@ def _user_service_emails(tid: str) -> dict[str, str]:
     user_emails = identity.get("identities", {}).get("email", [])
     result = {}
     for email in user_emails:
-        svc = EMAIL_TO_SERVICE.get(email.lower())
+        svc = _service_for_email(email.lower())
         if svc:
             result[svc] = email
     return result
@@ -107,20 +107,25 @@ def _user_service_emails(tid: str) -> dict[str, str]:
 def _resolve_one(account: str) -> dict:
     """Resolve a single account string to {email, service_name} or an error dict.
 
-    Returns ``{"email": ..., "service_name": ...}`` when the input was a
-    known email address (directly from ``EMAIL_TO_SERVICE``). Returns
+    Returns ``{"email": ..., "service_name": ...}`` when the input was an
+    email address — a known ``EMAIL_TO_SERVICE`` override, or any parseable
+    email resolved domain-derived via ``_service_for_email``. Returns
     ``{"service_name": ...}`` (no fixed email) when the input was a short
     alias or a raw service name -- in those cases ownership is checked
     against any of the session user's own emails that map to that service.
     """
-    from tools.gws_auth import EMAIL_TO_SERVICE
+    from tools.gws_auth import EMAIL_TO_SERVICE, _service_for_email
 
     raw = account.strip()
     key = raw.lower()
 
-    # Already a known email.
+    # Known email (explicit override), or any parseable email (domain-derived).
     if key in EMAIL_TO_SERVICE:
         return {"email": key, "service_name": EMAIL_TO_SERVICE[key]}
+    if "@" in key:
+        svc = _service_for_email(key)
+        if svc:
+            return {"email": key, "service_name": svc}
 
     # Short alias -> service_name (no fixed email -- per-user resolution).
     if key in _ALIAS_TO_SERVICE:
@@ -130,11 +135,13 @@ def _resolve_one(account: str) -> dict:
     if _SERVICE_NAME_RE.match(key) and key in set(EMAIL_TO_SERVICE.values()):
         return {"service_name": key}
 
+    # Unknown label / invalid email (unparseable addresses are rejected by
+    # _service_for_email above and fall through to here).
     return {
         "error": (
-            f"'{account}' is not a known GWS account. Known emails: "
-            f"{sorted(EMAIL_TO_SERVICE.keys())}. Known short labels: "
-            f"{sorted(_ALIAS_TO_SERVICE.keys())}."
+            f"'{account}' is not a known GWS account. Pass an email address "
+            f"(any @domain resolves to google-<domain>, e.g. @draas.com -> "
+            f"google-draas) or a short label: {sorted(_ALIAS_TO_SERVICE.keys())}."
         )
     }
 
@@ -154,9 +161,12 @@ def gws_resolve_account_tool(args, **kw):
 
     # No account given -> list every known service + auth status.
     # Each service shows the session user's OWN email (not a global default).
+    # Union explicit EMAIL_TO_SERVICE services with the domain-derived
+    # services for the session user's own emails, so a new @draas.com user
+    # sees google-draas even when the explicit map doesn't know their email.
     if not account:
         user_svc_emails = _user_service_emails(tid)
-        seen_services = sorted(set(EMAIL_TO_SERVICE.values()))
+        seen_services = sorted(set(EMAIL_TO_SERVICE.values()) | set(user_svc_emails))
         results = []
         for svc in seen_services:
             user_email = user_svc_emails.get(svc)
