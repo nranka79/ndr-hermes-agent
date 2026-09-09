@@ -23,22 +23,29 @@ Always consult this skill before writing any GWS API code. Do NOT rely on traini
 
 ### Account Resolution
 
-Every known account is mapped in `tools.gws_auth.EMAIL_TO_SERVICE`. Call `gws_resolve_account()` (no args) to list every known account with live auth status in one shot — before any "search across my accounts" request:
+The vault service key for a Google account is **derived from the email's
+domain** (`tools.gws_auth._service_for_email`): any `@draas.com` →
+`google-draas`, `@ahfl.in` → `google-ahfl`, `@gmail.com` → `google-gmail`,
+any other `@domain` → `google-<registrable-domain>`. `EMAIL_TO_SERVICE`
+holds only explicit per-email overrides. Call `gws_resolve_account()` (no
+args) to list every known service with live auth status in one shot —
+before any "search across my accounts" request:
 
 ```python
-from tools.gws_auth import EMAIL_TO_SERVICE
-# Current mapping (as of 2026-07-29):
+from tools.gws_auth import EMAIL_TO_SERVICE, _service_for_email
+# Every @draas.com account → 'google-draas', e.g.:
 #   psingh@draas.com → 'google-draas'
 #   ndr@draas.com    → 'google-draas'
 #   rnr@draas.com    → 'google-draas'
 #   vkdas@draas.com  → 'google-draas'
 #   pm2.blr@draas.com→ 'google-draas'
 #   sales1.blr@draas.com→ 'google-draas'
+#   admin3.blr@draas.com→ 'google-draas'
 #   ndr@ahfl.in      → 'google-ahfl'
 #   nishantranka@gmail.com → 'google-gmail'
 ```
 
-**IMPORTANT:** All `@draas.com` emails share the same `google-draas` service (same Google Workspace org). When resolving for a non-Nishant user, pass their mapped `service_name` explicitly to bridge calls.
+**IMPORTANT:** All `@draas.com` emails share the same `google-draas` service (same Google Workspace org). When resolving for a non-Nishant user, pass their mapped `service_name` explicitly to bridge calls. A brand-new `@draas.com` account needs no mapping — its token auto-files under `google-draas`.
 
 ### `build_service()` — Session Identity & Telegram ID Override
 
@@ -509,6 +516,7 @@ def get_full_path(service, file_id, depth=0):
 #### `permissions.create(fileId=..., body={ type, role, emailAddress, expirationTime }, sendNotificationEmail=True)`
 - **type**: `"user"` (specific user), `"group"`, `"domain"`, `"anyone"`
 - **role**: `"owner"`, `"organizer"`, `"fileOrganizer"`, `"writer"`, `"commenter"`, `"reader"` — for NDR's "give them 30-day viewer access" requests use `role="reader"` + `expirationTime` (ISO 8601 UTC `Z`, ≤ 365 days out) — auto-revokes after the window
+- **⚠️ `expirationTime` is REJECTED for `type="anyone"` (403 "Expiration dates cannot be set on...", verified 2026-09-08).** Time-boxed expiry only works for `user` / `group` / `domain` permissions. For a link-share that must lapse, share to the specific `user` email with expiry instead; `anyone` + expiry is not possible via the API — either grant `anyone` without expiry or skip sharing entirely (file stays private in the owner account and the owner can still open it — acceptable when the target is NDR's own Drive).
 - **⚠️ Response does NOT echo `expirationTime`** — create/update return `exp=None` even when the expiry was stored. Always verify with `permissions().list()` afterwards.
 - Returns permission object with `id`
 
@@ -696,6 +704,8 @@ Common RRULE patterns:
 - Returns: `{ properties, sheets: [{ properties, ... }], namedRanges }`
 - Sheets have `sheetId` (numeric) and `title` (name)
 
+**Pitfall — `spreadsheets().get()` on a Drive folder returns 400 "Request contains an invalid argument" (hit 2026-08-31).** A Drive name search (`name contains 'X'`) happily returns FOLDERS alongside spreadsheets; calling the Sheets API on a folder ID fails with this generic 400, not a clear "not a spreadsheet". Same for `.xlsx` uploads that were never converted. **Always check `mimeType` first via `drive.files().get(fileId=..., fields='mimeType,modifiedTime,createdTime,owners')`** — `application/vnd.google-apps.folder` → list children instead; `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet` → xlsx, handle as binary (get_media + openpyxl/zipfile), not Sheets API.
+
 ---
 
 ## Tasks API (`tasks`, `v1`)
@@ -752,6 +762,7 @@ Not directly supported — delete and re-create.
 5. **Drive `files.list`** — Always add `and trashed = false` unless you want deleted files.
 6. **Drive `files().delete()` is permanent** — Unlike most Google Drive UI operations (which move to trash), the v3 API `files().delete()` **permanently deletes** the file/folder immediately. There is no undo, and the item does NOT appear in trash. If you want the API equivalent of "move to trash" (recoverable), use `files().update(fileId, body={'trashed': True})` instead. When deleting a folder, its children are also permanently deleted — move children out FIRST before deleting the parent.
 6. **Drive corpora** — Default is `"user"` which only searches My Drive. For shared drives, use `"allDrives"` or provide `driveId`.
+6a. **Drive `about().get(fields='rootFolderId')` → HttpError 400 "Invalid field selection rootFolderId"** (hit 2026-09-01). The about resource rejects that field mask. Detect the My Drive root differently: during a parent-chain walk, a folder whose `parents` array is empty/missing IS the drive root. Files visible via `sharedWithMe=true` but never added to My Drive have NO `parents` — treat that as "direct share / not in My Drive", not root.
 7. **Gmail base64** — Always use `base64.urlsafe_b64encode()` / `base64.urlsafe_b64decode()`. Standard base64 may produce +/ characters that fail.
 8. **Calendar timeMin/timeMax** — Must use RFC 3339 format with timezone (e.g. `+05:30`). Calendar rejects bare UTC for Indian events.
 9. **Sheets empty cells** — Are omitted from values arrays. Map by column index, not adjacency.

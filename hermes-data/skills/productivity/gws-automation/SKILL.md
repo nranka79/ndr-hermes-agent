@@ -10,7 +10,14 @@ license: MIT
 
 Class-level skill for any session that needs to read/write Gmail, Drive, Docs, Calendar, or Sheets through the hermes auth helpers.
 
-**API reference companion:** For raw endpoint signatures, query syntax decision trees, field masks, and pagination patterns without the DRAAS-specific workflow context, load `skill_view("google-workspace-api")`. Covers Gmail, Drive, People, Calendar, Sheets, Tasks, and Admin SDK.
+**API reference companion:** Raw endpoint signatures, query syntax trees, field masks, pagination — load `skill_view("google-workspace-api")`. Covers Gmail, Drive, People, Calendar, Sheets, Tasks, Admin SDK.
+
+**Cron GWS identity:** terminal + HERMES_SESSION_USER_ID=<job owner>; sandbox can't build GWS. Recipe: not-spam-whitelist refs/cron-session-identity.md
+**GWS service key derivation:** token stored under `google-<registrable-domain>` from the authorized email's domain (any @draas.com → `google-draas`). No fallback keys — refs/fallback-service-key.md
+
+**Credential/password recovery sweep:** when the user asks "do I have the login/password for <service> stored anywhere?" run the multi-surface sweep — Drive fullText+name across ALL vault accounts, Gmail self-notes (`to:me from:me`, `in:sent`, `subject:`), Takeout zips for Keep exports, gbrain with HOME prefix. Google Keep has NO official API — user searches keep.google.com manually. Retirement/brokerage statement emails are notification-only (no balances in body). GOTCHAs: `messages().list(threadId=...)` raises TypeError (use `q=f"threadid:{id}"`); `files().export()` rejects Office files (use `get_media()` + zipfile). Full checklist: references/credential-password-recovery-sweep.md.
+
+**People API createContact (2026-08-30):** the Person JSON uses `names` / `phoneNumbers` / `biographies` — there is **NO `notes` field** (API returns 400 "Unknown name 'notes'"). Check duplicates first with `people().searchContacts(query=..., readMask='names,phoneNumbers')`. Detail + worked example: references/people-api-contacts.md.
 
 **Docs/Drive API quirks (2026-08):** `docs_get` may return the body as a JSON **string**, not a dict — guard with `json.loads()` before `.get()`. `docs_create` takes `body=` (NOT `content=`). To place a new doc in a specific Drive folder: create it, then `drive.files().update(fileId=..., addParents=<parent>, removeParents="root", fields="id,parents")`. If a create response is lost, find the file by name: `drive.files().list(q=f"name = '{title}' and trashed = false")`. Verify content by re-reading and asserting key phrases.
 
@@ -881,7 +888,7 @@ created = service.files().create(body=shortcut, fields='id,name,webViewLink').ex
 
 ### Multi-Account Pattern (Important — Nishant)
 
-Nishant has **three Google accounts**, each with its own OAuth token stored in the vault under the Telegram ID (`ndr`) with a service key mapped by `EMAIL_TO_SERVICE`:
+Nishant has **three Google accounts**, each with its own OAuth token stored in the vault under the Telegram ID (`ndr`) with a service key derived from the account's email domain:
 
 | Account | Service key | Vault storage |
 |---------|-------------|---------------|
@@ -899,17 +906,7 @@ EMAIL_TO_SERVICE = {
 }
 ```
 
-**New-account registration (root-owned source file constraint):** `/opt/hermes/tools/gws_auth.py` is root-owned (uid=0) while the process runs as `hermes` (uid=10000). You CANNOT add a new email→service mapping directly to the source file. Use `register_email_service()` at runtime to add the mapping in-memory and optionally rename a fallback token if one exists (the OAuth callback auto-stores under a fallback key like `google-o3infotec` for unknown emails):
-
-```python
-from tools.gws_auth import register_email_service
-result = register_email_service("ndr@o3infotec.com", "google-o3infotec")
-# Returns: "Registered ndr@o3infotec.com -> google-o3infotec (no fallback token to rename)."
-```
-
-The mapping persists for the process lifetime but NOT across container restarts. For permanent persistence the entry must be added to the static file via a deployment update.
-
-The OAuth callback at `transcribe.ahfl.in/gws/auth/callback` auto-detects the authorized Google account email from the `id_token` JWT and stores the token under the correct service key. No manual renaming needed.
+**New-account registration is NOT needed (domain-derived keys since 2026-09-09):** the OAuth callback at `transcribe.ahfl.in/gws/auth/callback` derives the vault service key from the authorized account's email DOMAIN (`tools.gws_auth._service_for_email`): any @draas.com → `google-draas`, @ahfl.in → `google-ahfl`, @gmail.com → `google-gmail`, any other @domain → `google-<registrable-domain>`. A brand-new @draas.com user (e.g. admin3.blr@draas.com) files under `google-draas` automatically — NO registration, NO mapping, NO manual rename. `EMAIL_TO_SERVICE` is only an explicit per-email override; do not call `register_email_service()` for domain-mapped accounts. See `references/fallback-service-key.md`.
 
 Additionally, the primary account has forwarding rules that label incoming `ndr@ahfl.in` emails with `ndr@ahfl.in` (auto) and `ahfl` (manual).
 
@@ -1006,7 +1003,7 @@ for uid in ['ndr@draas.com', 'ndr', 'sales1.blr@draas.com']:
 
 See `references/gws-auth-vault-down-exchange.md` for the vault-down fallback, and `references/vault-token-discovery.md` for the full discovery pattern.
 
-**Current system (Jul 2026):** `gws_auth.py` stores all tokens in the **gws-vault** (Unix socket daemon), keyed by Telegram numeric ID with service names mapped through `EMAIL_TO_SERVICE`. The callback at `transcribe.ahfl.in/gws/auth/callback` auto-detects the authorized Google account email from the OAuth `id_token` JWT and stores the token under the correct vault service key. No file renaming needed.
+**Current system (Sep 2026):** `gws_auth.py` stores all tokens in the **gws-vault** (Unix socket daemon), keyed by canonical UID with service keys derived from the authorized account's email DOMAIN (`_service_for_email`). The callback at `transcribe.ahfl.in/gws/auth/callback` auto-detects the authorized Google account email from the OAuth `id_token` JWT and derives the service key from its domain. No file renaming, no registration needed.
 
 ### Vault-Based Authorization Flow
 
@@ -1038,7 +1035,7 @@ print(get_auth_url('ndr', login_hint='ndr@ahfl.in'))
 **Prefer `send_oauth_url()` for user-facing flows** — it auto-detects the session channel (Telegram button, CLI print, or markdown link) and never exposes the URL to the agent. See `references/send-oauth-url-tool-guide.md` for the workaround when the "oauth" toolset isn't loaded.
 
 **Step 2 — User clicks link, authorizes the account**  
-Callback auto-detects email from `id_token` JWT → maps via `EMAIL_TO_SERVICE` → stores under `ndr/google-ahfl`.
+Callback auto-detects email from `id_token` JWT → derives service key from the email domain → stores under `ndr/google-ahfl`.
 
 **Step 3 — Repeat** for each additional account. No manual file renaming needed.
 
@@ -1049,44 +1046,7 @@ svcs = vault.list_services("ndr", session_uid="ndr")
 # Should show ['google-draas', 'google-ahfl', 'google-gmail']
 ```
 
-**If a token is stored but `EMAIL_TO_SERVICE` didn't know the email:**
-When the user authorised an account not in `EMAIL_TO_SERVICE`, the callback stores it under a fallback key like `google:email_encoded` and returns `"UNKNOWN:email:fallback_key"`. Use `register_email_service()` to map it:
-```python
-from tools.gws_auth import register_email_service
-result = register_email_service("new@example.com", "google-newexample", "ndr")
-print(result)  # "Registered new@example.com -> google-newexample and moved fallback token."
-```
-
-**Brand-new account setup — register BEFORE OAuth (Jul 2026):** When you're setting up a Google account that has NO token at all and isn't in `EMAIL_TO_SERVICE`, call `register_email_service()` FIRST to create the email→service mapping, THEN generate the OAuth URL. This ensures the HTTPS callback knows the correct service key to store the token under.
-
-```python
-# Step 1: Check if account is known
-from tools.gws_auth import EMAIL_TO_SERVICE
-if "newuser@gmail.com" not in EMAIL_TO_SERVICE:
-    # Step 2: Register the mapping first (from terminal or execute_code)
-    from tools.gws_auth import register_email_service
-    status = register_email_service(
-        "newuser@gmail.com",         # email
-        "google-newuser",            # service name (google-{label})
-        "[REDACTED-TID]"                 # user's telegram ID
-    )
-    print(status)
-
-# Step 3: Generate OAuth URL (from terminal only — see get-auth-url-env-pitfall.md)
-# cd /opt/hermes && /opt/hermes/.venv/bin/python3 -c "
-# import sys; sys.path.insert(0, '/opt/hermes')
-# from tools.gws_auth import get_auth_url
-# print(get_auth_url('[REDACTED-TID]', login_hint='newuser@gmail.com'))
-# "
-
-# Step 4: User opens URL, authorizes → callback auto-stores under google-newuser
-```
-
-Without this pre-registration, a new account's callback falls back to `UNKNOWN:email:fallback_key`, requiring a second `register_email_service()` call. Pre-registering avoids the extra step.
-
-**Choosing service_name:** `google-{local-part}` (lowercased, hyphens replacing dots/special chars). Examples: `rmurjani@gmail.com` → `google-rmurjani`.
-
-**Persistence caveat:** `register_email_service()` modifies `EMAIL_TO_SERVICE` in the module's in-memory dict, which survives process restarts but NOT container restarts — the source file `/opt/hermes/tools/gws_auth.py` (root-owned) is the canonical dict. For permanent mappings across reboots, the entry must be added to the static dict in that file via a deployment update. The in-memory registration is sufficient for immediate OAuth flow but the agent should note after successful auth that the mapping may need to be hardened for long-term use.
+**Service key is derived from the email DOMAIN (since 2026-09-09):** the callback files tokens under `google-<registrable-domain>` derived from the authorized email — `ndr@ahfl.in` → `google-ahfl`, `admin3.blr@draas.com` → `google-draas`, etc. There is NO `UNKNOWN:email:fallback_key` path anymore and no need to pre-register accounts. `register_email_service()` exists only for an explicit override to a NON-derived key (e.g. an account deliberately filed under another domain's key).
 
 ### Pitfalls
 
