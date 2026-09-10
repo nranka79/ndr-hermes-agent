@@ -213,6 +213,22 @@ TOOLSET_REQUIREMENTS: Dict[str, dict] = registry.get_toolset_requirements()
 _last_resolved_tool_names: List[str] = []
 
 
+def _include_rpc_only(tool_names: List[str]) -> List[str]:
+    """Append RPC-only tools (e.g. gws_fetch_token) to a resolved name list.
+
+    RPC-only tools are filtered OUT of the LLM-facing schema but still need to
+    be in ``_last_resolved_tool_names`` so the execute_code sandbox generates
+    their RPC stubs (build_service in the sandbox depends on gws_fetch_token).
+    """
+    try:
+        from toolsets import _RPC_ONLY_TOOLS
+    except Exception:  # pragma: no cover — defensive
+        _RPC_ONLY_TOOLS = frozenset()
+    if not _RPC_ONLY_TOOLS:
+        return list(tool_names)
+    return sorted(set(tool_names) | set(_RPC_ONLY_TOOLS))
+
+
 # =============================================================================
 # Legacy toolset name mapping  (old _tools-suffixed names -> tool name lists)
 # =============================================================================
@@ -322,7 +338,7 @@ def get_tool_definitions(
             # Update _last_resolved_tool_names so downstream callers see
             # consistent state even on a cache hit.
             global _last_resolved_tool_names
-            _last_resolved_tool_names = [t["function"]["name"] for t in cached]
+            _last_resolved_tool_names = _include_rpc_only([t["function"]["name"] for t in cached])
             # Return a shallow copy of the list but share the dict references —
             # schemas are treated as read-only by all known callers.
             return list(cached)
@@ -489,7 +505,7 @@ def _compute_tool_definitions(
             print("🛠️  No tools selected (all filtered out or unavailable)")
 
     global _last_resolved_tool_names
-    _last_resolved_tool_names = [t["function"]["name"] for t in filtered_tools]
+    _last_resolved_tool_names = _include_rpc_only([t["function"]["name"] for t in filtered_tools])
 
     # Sanitize schemas for broad backend compatibility. llama.cpp's
     # json-schema-to-grammar converter (used by its OAI server to build
@@ -532,6 +548,20 @@ def _compute_tool_definitions(
             filtered_tools = assembly.tool_defs
     except Exception as e:  # pragma: no cover — never break tool loading
         logger.warning("Tool search assembly skipped: %s", e)
+
+    # RPC-only tools (e.g. gws_fetch_token) are callable internally (sandbox
+    # RPC stubs) but must never appear in the LLM-facing tool schema. Applied
+    # LAST so _last_resolved_tool_names / available_tool_names (used by the
+    # execute_code sandbox stub generator) still include them.
+    try:
+        from toolsets import _RPC_ONLY_TOOLS
+    except Exception:  # pragma: no cover — defensive
+        _RPC_ONLY_TOOLS = frozenset()
+    if _RPC_ONLY_TOOLS and filtered_tools:
+        filtered_tools = [
+            t for t in filtered_tools
+            if t.get("function", {}).get("name") not in _RPC_ONLY_TOOLS
+        ]
 
     return filtered_tools
 
@@ -1109,8 +1139,12 @@ def handle_function_call(
         try:
             if function_name == "execute_code":
                 # Prefer the caller-provided list so subagents can't overwrite
-                # the parent's tool set via the process-global.
+                # the parent's tool set via the process-global. Always re-add
+                # RPC-only tools (e.g. gws_fetch_token) so the sandbox still
+                # generates their stubs even though they're hidden from the
+                # LLM-facing schema.
                 sandbox_enabled = enabled_tools if enabled_tools is not None else _last_resolved_tool_names
+                sandbox_enabled = _include_rpc_only(list(sandbox_enabled))
                 def _dispatch(next_args: Dict[str, Any]) -> Any:
                     return registry.dispatch(
                         function_name, next_args,

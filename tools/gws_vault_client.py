@@ -181,6 +181,36 @@ def get_token(user_id: str, service: str, *, session_uid: Optional[str] = None) 
     return resp.get("token_json", "")
 
 
+def get_gws_credentials(session_uid: str, target: str) -> dict:
+    """Admin-only domain-wide-delegation (DWD) credential read.
+
+    Returns the vault's raw response for ``get_gws_credentials``: either
+    ``{"ok":true,"mode":"user",...,"token_json":<own OAuth token>}`` or
+    ``{"ok":true,"mode":"dwd",...,"token_json":<DWD service-account key>}``.
+
+    SECURITY — read this before using:
+      * The response may carry ``token_json``: the target's personal Google
+        token (user mode) or the system admin's DWD service-account key
+        (dwd mode). That material is a domain-master credential in dwd mode.
+      * Only trusted-process code (native tool handlers running in the Hermes
+        gateway) may call this, and such handlers MUST construct their tool
+        result from the API *data* only — ``token_json`` must never be placed
+        in any value returned to the model, logged, or written to disk.
+      * The execute_code sandbox cannot reach this socket (GWS_VAULT_SOCKET is
+        scrubbed from the sandbox env), so this path is trusted-only by
+        construction.
+      * ``session_uid`` must resolve to a vault admin (role=="admin" or
+        ``permissions.vault_admin``); the server fails closed otherwise.
+    """
+    resp = _send_recv({
+        "op": "get_gws_credentials",
+        "session_uid": str(session_uid).strip(),
+        "target": str(target).strip(),
+    })
+    _raise_for_response(resp)
+    return resp
+
+
 def get_access_token(user_id: str, service: str) -> dict:
     """Return the full stored token as a dict for user_id/service.
 

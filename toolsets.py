@@ -26,6 +26,73 @@ Usage:
 from typing import List, Dict, Any, Set, Optional
 
 
+# GWS operations exposed to the model as native tools — two layers built on the
+# shared engine in tools/gws_ops.py:
+#   gws_*     → operate on the SESSION USER's own account (OAuth; trusted process)
+#   gws_dwd_* → domain-wide delegation on ANY account in an allowed domain
+#               (impersonation; trusted process; data-only returns; never sends)
+# Both are registered by tools/gws_ops_tools.py and tools/gws_dwd_tools.py.
+_GWS_OPS = [
+    "gws_gmail_search",
+    "gws_gmail_get",
+    "gws_gmail_thread_get",
+    "gws_gmail_list_labels",
+    "gws_gmail_labels_modify",
+    "gws_gmail_draft_create",
+    "gws_gmail_reply_draft",
+    "gws_gmail_draft_list",
+    "gws_gmail_draft_delete",
+    "gws_gmail_trash",
+    "gws_gmail_untrash",
+    "gws_drive_list",
+    "gws_drive_get",
+    "gws_drive_create_folder",
+    "gws_drive_create_file",
+    "gws_drive_move",
+    "gws_drive_update",
+    "gws_drive_delete",
+    "gws_drive_transfer_ownership",
+    "gws_drive_permissions_list",
+    "gws_drive_permissions_add",
+    "gws_drive_permissions_remove",
+]
+
+_GWS_DWD_OPS = [
+    "gws_dwd_resolve",
+    "gws_dwd_gmail_search",
+    "gws_dwd_gmail_get",
+    "gws_dwd_gmail_thread_get",
+    "gws_dwd_gmail_list_labels",
+    "gws_dwd_gmail_labels_modify",
+    "gws_dwd_gmail_draft_create",
+    "gws_dwd_gmail_reply_draft",
+    "gws_dwd_gmail_draft_list",
+    "gws_dwd_gmail_draft_delete",
+    "gws_dwd_gmail_trash",
+    "gws_dwd_gmail_untrash",
+    "gws_dwd_drive_list",
+    "gws_dwd_drive_get",
+    "gws_dwd_drive_create_folder",
+    "gws_dwd_drive_create_file",
+    "gws_dwd_drive_move",
+    "gws_dwd_drive_update",
+    "gws_dwd_drive_delete",
+    "gws_dwd_drive_transfer_ownership",
+    "gws_dwd_drive_permissions_list",
+    "gws_dwd_drive_permissions_add",
+    "gws_dwd_drive_permissions_remove",
+]
+
+# Tools that are registered + callable internally (sandbox RPC stubs, e.g.
+# gws_fetch_token) but must NEVER be presented to the LLM as callable tools.
+# They stay in _HERMES_CORE_TOOLS so the execute_code sandbox still generates
+# their RPC stubs; model_tools._compute_tool_definitions filters them out of
+# the LLM-facing schema list at the very end.
+_RPC_ONLY_TOOLS = frozenset({
+    "gws_fetch_token",
+})
+
+
 # Shared tool list for CLI and all messaging platform toolsets.
 # Edit this once to update all platforms simultaneously.
 _HERMES_CORE_TOOLS = [
@@ -94,11 +161,14 @@ _HERMES_CORE_TOOLS = [
     # GWS multi-account resolver -- maps account email/label -> vault service_name
     "gws_resolve_account",
     # GWS token fetch RPC tool (sandbox-only path to vault credentials via
-    # execute_code; registered under toolset "oauth"). Must be in core so the
-    # "oauth" toolset stays a subset of every platform's default composite —
-    # otherwise the recovery pass in _get_platform_tools drops it and the
-    # sandbox never generates the gws_fetch_token stub (build_service fails).
+    # execute_code; registered under toolset "oauth"). RPC-only: filtered out of
+    # the LLM-facing schema by model_tools via _RPC_ONLY_TOOLS, but kept in core
+    # so the execute_code sandbox still generates its stub (build_service works).
     "gws_fetch_token",
+    # GWS native operations (trusted-process, data-only returns). OAuth =
+    # session user's own account; DWD = impersonate any allowed-domain account.
+    *_GWS_OPS,
+    *_GWS_DWD_OPS,
     # Sarvam AI tools (vault-backed key, session-scoped; tools/sarvam_tools.py)
     "sarvam_translate",
     "sarvam_transliterate",
@@ -280,6 +350,15 @@ TOOLSETS = {
                        "like 'google.' from OAuth client_ids.",
         "tools": ["send_oauth_url", "kelsa_login", "kelsa_complete_login",
                   "kelsa_list_tools", "kelsa_call_tool"],
+        "includes": []
+    },
+
+    "gws-dwd": {
+        "description": "Domain-wide delegation (DWD): act on ANY Google Workspace account "
+                       "in an allowed domain (including non-vault accounts like ex-employees) "
+                       "via the system service-account key. Trusted-process, data-only returns; "
+                       "sending email is permanently blocked (draft-only).",
+        "tools": _GWS_DWD_OPS,
         "includes": []
     },
 
