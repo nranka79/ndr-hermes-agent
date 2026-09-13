@@ -9,7 +9,8 @@ ENABLE_FORWARD_USER_INFO_HEADERS=true is set in its environment.  It adds:
 
 This module reads that email header, looks it up in the vault (via
 _user_registry), and returns the full user record so the API server can wire
-up the correct user_id (Telegram ID), OAuth vault scope, Honcho memory
+up the correct user_id (canonical vault id — an email for SSO-only users, a
+numeric Telegram ID for Telegram users), OAuth vault scope, Honcho memory
 bucket, and system-prompt profile — identically to how a Telegram session
 is handled.
 
@@ -25,6 +26,22 @@ logger = logging.getLogger(__name__)
 
 # Header injected by Open WebUI when ENABLE_FORWARD_USER_INFO_HEADERS=true.
 HEADER_USER_EMAIL = "X-OpenWebUI-User-Email"
+
+
+def _first_alias(record: dict, kind: str) -> str:
+    """Return the first alias of *kind* from a vault identity record, or ''.
+
+    The vault stores aliases nested under ``identities`` (e.g.
+    ``identities.email``), not as top-level fields.  Reads both the nested
+    list and a legacy top-level scalar so both record shapes resolve.
+    """
+    try:
+        values = (record or {}).get("identities", {}).get(kind, []) or []
+        if values:
+            return str(values[0])
+    except Exception:
+        pass
+    return str((record or {}).get(kind, "") or "")
 
 
 def resolve_from_request(request) -> Optional[dict]:
@@ -46,8 +63,8 @@ def resolve_from_request(request) -> Optional[dict]:
         _, record = find_user_by_identity("email", email)
         if record:
             logger.debug(
-                "API server identity resolved: email=%s draas_user_id=%s",
-                email, record.get("draas_user_id", ""),
+                "API server identity resolved: email=%s user_id=%s draas_user_id=%s",
+                email, record.get("user_id", ""), _first_alias(record, "draas_user_id"),
             )
         else:
             logger.warning(
@@ -72,15 +89,19 @@ def telegram_id_from_record(record: dict) -> str:
 def user_identity(request) -> Tuple[str, str, str]:
     """Convenience wrapper: resolve request → (user_id, user_email, draas_user_id).
 
-    ``user_id`` is the Telegram numeric ID string — the stable cross-platform
-    identifier used by gws_auth, Honcho, and the session system-prompt injector.
-    All three values are empty strings when the caller is anonymous (no header
-    or unknown email).
+    ``user_id`` is the canonical vault user_id (``record["user_id"]``, e.g.
+    ``pebblyshark69@gmail.com`` for an SSO-only user or ``ndr-7449813913``
+    for NDR) — the stable cross-platform identifier used by gws_auth, Honcho,
+    and the session system-prompt injector.  Records without a top-level
+    ``user_id`` fall back to the first Telegram ID.  ``user_email`` /
+    ``draas_user_id`` are read from the record's ``identities`` aliases (the
+    vault stores them nested, not as top-level fields).  All three values are
+    empty strings when the caller is anonymous (no header or unknown email).
     """
     record = resolve_from_request(request)
     if not record:
         return "", "", ""
-    user_id = telegram_id_from_record(record)
-    user_email = record.get("email", "")
-    draas_user_id = record.get("draas_user_id", "")
+    user_id = str(record.get("user_id", "") or "") or telegram_id_from_record(record)
+    user_email = _first_alias(record, "email")
+    draas_user_id = _first_alias(record, "draas_user_id")
     return user_id, user_email, draas_user_id
