@@ -195,6 +195,34 @@ def gmail_thread_get(creds, thread_id: str) -> dict:
     }
 
 
+def gmail_attachment_get(creds, message_id: str, attachment_id: str) -> dict:
+    """Download one attachment from a message as base64 data.
+
+    The read tools (gmail_get / gmail_thread_get) return only attachment
+    metadata (filename, mimeType, size, attachmentId). This operation fetches
+    the actual bytes via the Gmail attachments endpoint and returns them
+    base64-encoded so the payload stays JSON-serialisable. The caller can
+    decode the base64 (e.g. to a file or Drive upload).
+
+    NOTE: attachmentId alone is ambiguous across messages with identical
+    parts; pass the message_id the attachment was reported under. Gmail
+    attachment size limit for a single attachment is 25 MB.
+    """
+    service = _build("gmail", "v1", creds)
+    resp = service.users().messages().attachments().get(
+        userId="me", messageId=message_id, id=attachment_id
+    ).execute()
+    data = resp.get("data", "") or ""
+    resp.pop("data", None)
+    return {
+        **resp,
+        "message_id": message_id,
+        "attachment_id": attachment_id,
+        "dataBase64": data,
+        "dataBase64Length": len(data),
+    }
+
+
 def gmail_list_labels(creds) -> dict:
     service = _build("gmail", "v1", creds)
     resp = service.users().labels().list(userId="me").execute()
@@ -504,6 +532,10 @@ _OP_FUNCS = {
     }),
     "gmail_thread_get": (gmail_thread_get, {
         "thread_id": {"type": "string", "description": "Gmail thread id (a conversation)"},
+    }),
+    "gmail_attachment_get": (gmail_attachment_get, {
+        "message_id": {"type": "string", "description": "Gmail message id the attachment belongs to"},
+        "attachment_id": {"type": "string", "description": "Attachment id from gmail_get/gmail_thread_get attachment metadata"},
     }),
     "gmail_list_labels": (gmail_list_labels, {}),
     "gmail_labels_modify": (gmail_labels_modify, {
