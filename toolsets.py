@@ -185,6 +185,9 @@ _HERMES_CORE_TOOLS = [
     "noun_learner",
     # Document OCR (Mistral OCR 4) -- gated on MISTRAL_API_KEY via check_fn
     "ocr_mistral",
+    # Certificate renewal (tools/cert_status_tool.py): reads the status
+    # file written by the host self-heal script; can request forced renewal.
+    "cert_status", "cert_renew_request",
 ]
 
 # Webhook events may originate from untrusted third-party content (for example,
