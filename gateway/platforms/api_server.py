@@ -88,6 +88,7 @@ def _hermes_version() -> str:
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8642
 MAX_STORED_RESPONSES = 100
+MAX_STORED_RUNS = 1000  # Durable run-store LRU cap — runs are cheap, keep plenty for polling clients
 MAX_REQUEST_BYTES = 10_000_000  # 10 MB — accommodates long agent conversations with tool calls
 CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS = 30.0
 MAX_NORMALIZED_TEXT_LENGTH = 65_536  # 64 KB cap for normalized content parts
@@ -638,6 +639,222 @@ class ResponseStore:
         return row[0] if row else 0
 
 
+class RunStore:
+    """SQLite-backed durable store for agent run lifecycle + results.
+
+    Unlike the in-memory ``_run_statuses`` dict, rows survive gateway
+    restarts and are keyed by ``run_id`` (and searchable by ``session_id`` /
+    ``client_chat_id``), so a polling client (e.g. an Open WebUI Pipe) can
+    re-fetch a completed response long after the original HTTP connection
+    died.  Written on every state transition (queued/running/completed/
+    failed/interrupted) so the run is never a silent black hole.
+    """
+
+    def __init__(self, max_size: int = MAX_STORED_RUNS, db_path: str = None):
+        self._max_size = max_size
+        if db_path is None:
+            try:
+                from hermes_cli.config import get_hermes_home
+
+                db_path = str(get_hermes_home() / "run_store.db")
+            except Exception:
+                db_path = ":memory:"
+        self._db_path: Optional[str] = db_path if db_path != ":memory:" else None
+        try:
+            self._conn = sqlite3.connect(db_path, check_same_thread=False)
+        except Exception:
+            self._conn = sqlite3.connect(":memory:", check_same_thread=False)
+            self._db_path = None
+        from hermes_state import apply_wal_with_fallback
+
+        apply_wal_with_fallback(self._conn, db_label="run_store.db")
+        self._conn.execute(
+            """CREATE TABLE IF NOT EXISTS runs (
+                run_id TEXT PRIMARY KEY,
+                session_id TEXT,
+                client_chat_id TEXT,
+                client_message_id TEXT,
+                status TEXT NOT NULL,
+                user_message TEXT,
+                final_response TEXT,
+                error TEXT,
+                conversation_history TEXT,
+                model TEXT,
+                usage TEXT,
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL,
+                completed_at REAL
+            )"""
+        )
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_runs_session ON runs (session_id)"
+        )
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_runs_client_chat ON runs (client_chat_id)"
+        )
+        self._conn.commit()
+        self._tighten_file_permissions()
+
+    def _tighten_file_permissions(self) -> None:
+        """Force owner-only permissions on the DB and SQLite sidecars."""
+        if not self._db_path:
+            return
+        for candidate in (
+            Path(self._db_path),
+            Path(f"{self._db_path}-wal"),
+            Path(f"{self._db_path}-shm"),
+        ):
+            try:
+                if candidate.exists():
+                    candidate.chmod(0o600)
+            except OSError:
+                logger.debug(
+                    "Failed to restrict run store permissions for %s",
+                    candidate,
+                    exc_info=True,
+                )
+
+    @staticmethod
+    def _cols() -> List[str]:
+        return [
+            "run_id", "session_id", "client_chat_id", "client_message_id",
+            "status", "user_message", "final_response", "error",
+            "conversation_history", "model", "usage",
+            "created_at", "updated_at", "completed_at",
+        ]
+
+    @staticmethod
+    def _row_to_dict(row) -> Optional[Dict[str, Any]]:
+        if row is None:
+            return None
+        d: Dict[str, Any] = dict(zip(RunStore._cols(), row))
+        for key in ("conversation_history", "usage"):
+            raw = d.get(key)
+            if raw:
+                try:
+                    d[key] = json.loads(raw)
+                except (json.JSONDecodeError, TypeError):
+                    pass
+        return d
+
+    def create(
+        self,
+        run_id: str,
+        *,
+        session_id: str = "",
+        client_chat_id: str = "",
+        client_message_id: str = "",
+        status: str = "queued",
+        user_message: str = "",
+        model: str = "",
+    ) -> None:
+        now = time.time()
+        try:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO runs (run_id, session_id, client_chat_id, "
+                "client_message_id, status, user_message, model, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (run_id, session_id or "", client_chat_id or "",
+                 client_message_id or "", status, user_message or "",
+                 model or "", now, now),
+            )
+            self._conn.commit()
+        except Exception as e:
+            logger.warning("RunStore create failed for %s: %s", run_id, e)
+
+    def update(self, run_id: str, **fields: Any) -> None:
+        """Update allowed columns on a run row; auto-bump updated_at + LRU evict."""
+        allowed = {
+            "session_id", "client_chat_id", "client_message_id", "status",
+            "user_message", "final_response", "error", "conversation_history",
+            "model", "usage", "completed_at",
+        }
+        sets, vals = [], []
+        for k, v in fields.items():
+            if k not in allowed:
+                continue
+            if isinstance(v, (dict, list)):
+                v = json.dumps(v, default=str)
+            sets.append(f"{k} = ?")
+            vals.append(v)
+        if not sets:
+            return
+        sets.append("updated_at = ?")
+        vals.append(time.time())
+        vals.append(run_id)
+        try:
+            self._conn.execute(f"UPDATE runs SET {', '.join(sets)} WHERE run_id = ?", vals)
+            # LRU eviction of oldest-updated rows beyond cap
+            count = self._conn.execute("SELECT COUNT(*) FROM runs").fetchone()[0]
+            if count > self._max_size:
+                evict = [
+                    r[0]
+                    for r in self._conn.execute(
+                        "SELECT run_id FROM runs ORDER BY updated_at ASC LIMIT ?",
+                        (count - self._max_size,),
+                    ).fetchall()
+                ]
+                if evict:
+                    ph = ",".join("?" for _ in evict)
+                    self._conn.execute(f"DELETE FROM runs WHERE run_id IN ({ph})", evict)
+            self._conn.commit()
+        except Exception as e:
+            logger.warning("RunStore update failed for %s: %s", run_id, e)
+
+    def get(self, run_id: str) -> Optional[Dict[str, Any]]:
+        try:
+            row = self._conn.execute(
+                "SELECT * FROM runs WHERE run_id = ?", (run_id,)
+            ).fetchone()
+        except Exception as e:
+            logger.warning("RunStore get failed for %s: %s", run_id, e)
+            return None
+        return self._row_to_dict(row)
+
+    def list(
+        self,
+        *,
+        session_id: str = "",
+        client_chat_id: str = "",
+        statuses: Optional[List[str]] = None,
+        limit: int = 50,
+    ) -> List[Dict[str, Any]]:
+        clauses, vals = [], []
+        if session_id:
+            clauses.append("session_id = ?")
+            vals.append(session_id)
+        if client_chat_id:
+            clauses.append("client_chat_id = ?")
+            vals.append(client_chat_id)
+        if statuses:
+            ph = ",".join("?" for _ in statuses)
+            clauses.append(f"status IN ({ph})")
+            vals.extend(statuses)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        try:
+            rows = self._conn.execute(
+                f"SELECT * FROM runs {where} ORDER BY updated_at DESC LIMIT ?",
+                vals + [int(limit)],
+            ).fetchall()
+        except Exception as e:
+            logger.warning("RunStore list failed: %s", e)
+            return []
+        return [self._row_to_dict(r) for r in rows if r is not None]
+
+    def close(self) -> None:
+        try:
+            self._conn.close()
+        except Exception:
+            pass
+
+    def __len__(self) -> int:
+        try:
+            row = self._conn.execute("SELECT COUNT(*) FROM runs").fetchone()
+            return row[0] if row else 0
+        except Exception:
+            return 0
+
+
 # ---------------------------------------------------------------------------
 # CORS middleware
 # ---------------------------------------------------------------------------
@@ -860,6 +1077,10 @@ class APIServerAdapter(BasePlatformAdapter):
         self._runner: Optional["web.AppRunner"] = None
         self._site: Optional["web.TCPSite"] = None
         self._response_store = ResponseStore()
+        # Durable run lifecycle + results store (SQLite) — survives gateway
+        # restarts so polling clients (Open WebUI Pipe) can retrieve a
+        # completed run long after the original HTTP connection died.
+        self._run_store = RunStore()
         # Active run streams: run_id -> asyncio.Queue of SSE event dicts
         self._run_streams: Dict[str, "asyncio.Queue[Optional[Dict]]"] = {}
         # Creation timestamps for orphaned-run TTL sweep
@@ -3739,7 +3960,12 @@ class APIServerAdapter(BasePlatformAdapter):
     _RUN_STATUS_TTL = 3600  # seconds to retain terminal run status for polling
 
     def _set_run_status(self, run_id: str, status: str, **fields: Any) -> Dict[str, Any]:
-        """Update pollable run status without exposing private agent objects."""
+        """Update pollable run status without exposing private agent objects.
+
+        Also mirrors the transition into the durable ``RunStore`` (SQLite) so
+        the run survives gateway restarts and a polling client can retrieve
+        the completed response after the original connection died.
+        """
         now = time.time()
         current = self._run_statuses.get(run_id, {})
         current.update({
@@ -3751,7 +3977,55 @@ class APIServerAdapter(BasePlatformAdapter):
         current.setdefault("created_at", fields.pop("created_at", now))
         current.update(fields)
         self._run_statuses[run_id] = current
+        self._persist_run_status(run_id, status, current)
         return current
+
+    def _persist_run_status(self, run_id: str, status: str, snapshot: Dict[str, Any]) -> None:
+        """Best-effort durable mirror of a run status snapshot.
+
+        Only fields that map to RunStore columns are written; unknown keys
+        (``object``, ``last_event``, …) are ignored by ``RunStore.update``.
+        A failure here must never affect the live run.
+        """
+        store = getattr(self, "_run_store", None)
+        if store is None:
+            return
+        fields: Dict[str, Any] = {"status": status}
+        if "session_id" in snapshot:
+            fields["session_id"] = snapshot.get("session_id") or ""
+        if "model" in snapshot:
+            fields["model"] = snapshot.get("model") or ""
+        if "output" in snapshot:
+            fields["final_response"] = snapshot.get("output") or ""
+        if "error" in snapshot:
+            fields["error"] = snapshot.get("error") or ""
+        if "usage" in snapshot:
+            fields["usage"] = snapshot.get("usage")
+        if status in {"completed", "failed", "cancelled", "interrupted"}:
+            fields["completed_at"] = snapshot.get("updated_at") or time.time()
+        try:
+            store.update(run_id, **fields)
+        except Exception as e:
+            logger.debug("RunStore status mirror failed for %s: %s", run_id, e)
+
+    def _extract_partial_run_text(self, run_id: str) -> str:
+        """Best-effort partial assistant text for a cancelled/interrupted run.
+
+        Used when a run is torn down (gateway shutdown, /stop) so the durable
+        store still carries whatever the agent had streamed to the user
+        instead of an empty response.
+        """
+        agent = self._active_run_agents.get(run_id)
+        if agent is None:
+            return ""
+        for attr in ("_current_streamed_assistant_text", "_last_content_with_tools"):
+            try:
+                val = getattr(agent, attr, "") or ""
+            except Exception:
+                continue
+            if isinstance(val, str) and val.strip():
+                return val
+        return ""
 
     def _make_run_event_callback(self, run_id: str, loop: "asyncio.AbstractEventLoop"):
         """Return a tool_progress_callback that pushes structured events to the run's SSE queue."""
@@ -3881,12 +4155,32 @@ class APIServerAdapter(BasePlatformAdapter):
         session_id = body.get("session_id") or stored_session_id or run_id
         approval_session_key = gateway_session_key or session_id or run_id
         ephemeral_system_prompt = instructions
+        # Client correlation ids (e.g. Open WebUI chat/message ids) so a
+        # frontend can find + reconcile this run later.  Optional.
+        client_chat_id = str(
+            body.get("client_chat_id") or body.get("openwebui_chat_id") or ""
+        ).strip()
+        client_message_id = str(
+            body.get("client_message_id") or body.get("openwebui_message_id") or ""
+        ).strip()
         loop = asyncio.get_running_loop()
         q: "asyncio.Queue[Optional[Dict]]" = asyncio.Queue()
         created_at = time.time()
         self._run_streams[run_id] = q
         self._run_streams_created[run_id] = created_at
         self._run_approval_sessions[run_id] = approval_session_key
+
+        # Seed the durable row immediately so the run is never a black hole —
+        # even if the gateway dies before the agent produces any output.
+        self._run_store.create(
+            run_id,
+            session_id=session_id,
+            client_chat_id=client_chat_id,
+            client_message_id=client_message_id,
+            status="queued",
+            user_message=user_message if isinstance(user_message, str) else str(user_message),
+            model=body.get("model", self._model_name),
+        )
 
         event_cb = self._make_run_event_callback(run_id, loop)
 
@@ -4024,10 +4318,24 @@ class APIServerAdapter(BasePlatformAdapter):
                         usage=usage,
                         last_event="run.completed",
                     )
+                    # Persist the full turn transcript so a later client can
+                    # continue the conversation from the durable store.
+                    if isinstance(result, dict):
+                        _hist = result.get("messages")
+                        if _hist:
+                            try:
+                                self._run_store.update(run_id, conversation_history=_hist)
+                            except Exception:
+                                pass
             except asyncio.CancelledError:
+                # Capture whatever partial text the agent streamed before the
+                # cancel (gateway shutdown / /stop) so the client never sees a
+                # silent black hole.
+                partial = self._extract_partial_run_text(run_id)
                 self._set_run_status(
                     run_id,
                     "cancelled",
+                    output=partial,
                     last_event="run.cancelled",
                 )
                 try:
@@ -4035,6 +4343,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         "event": "run.cancelled",
                         "run_id": run_id,
                         "timestamp": time.time(),
+                        "output": partial,
                     })
                 except Exception:
                     pass
@@ -4096,7 +4405,12 @@ class APIServerAdapter(BasePlatformAdapter):
         )
 
     async def _handle_get_run(self, request: "web.Request") -> "web.Response":
-        """GET /v1/runs/{run_id} — return pollable run status for external UIs."""
+        """GET /v1/runs/{run_id} — return pollable run status for external UIs.
+
+        Falls back to the durable RunStore when the in-memory status has been
+        swept (e.g. the gateway restarted or the status TTL elapsed), so a
+        polling client can still retrieve a completed/interrupted result.
+        """
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
@@ -4104,11 +4418,85 @@ class APIServerAdapter(BasePlatformAdapter):
         run_id = request.match_info["run_id"]
         status = self._run_statuses.get(run_id)
         if status is None:
+            stored = self._run_store.get(run_id)
+            if stored is not None:
+                status = self._run_row_to_status(stored)
+        if status is None:
             return web.json_response(
                 _openai_error(f"Run not found: {run_id}", code="run_not_found"),
                 status=404,
             )
         return web.json_response(status)
+
+    def _run_row_to_status(self, stored: Dict[str, Any]) -> Dict[str, Any]:
+        """Rebuild a pollable run status object from a durable RunStore row."""
+        status = {
+            "object": "hermes.run",
+            "run_id": stored.get("run_id"),
+            "status": stored.get("status", "unknown"),
+            "created_at": stored.get("created_at"),
+            "updated_at": stored.get("updated_at") or stored.get("completed_at"),
+            "completed_at": stored.get("completed_at"),
+            "session_id": stored.get("session_id") or "",
+            "model": stored.get("model") or self._model_name,
+        }
+        if stored.get("final_response"):
+            status["output"] = stored["final_response"]
+            status["final_response"] = stored["final_response"]
+        if stored.get("error"):
+            status["error"] = stored["error"]
+        if stored.get("usage"):
+            status["usage"] = stored["usage"]
+        if stored.get("conversation_history"):
+            status["conversation_history"] = stored["conversation_history"]
+        if stored.get("client_chat_id"):
+            status["client_chat_id"] = stored["client_chat_id"]
+        if stored.get("client_message_id"):
+            status["client_message_id"] = stored["client_message_id"]
+        return status
+
+    async def _handle_list_runs(self, request: "web.Request") -> "web.Response":
+        """GET /v1/runs — list durable runs, optionally filtered.
+
+        Query params: ``session_id``, ``client_chat_id`` (or ``openwebui_chat_id``),
+        ``status`` (comma-separated), ``limit``.  Lets a frontend reconcile
+        pending/completed runs for a chat after a reconnect.
+        """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        qp = request.rel_url.query
+        session_id = qp.get("session_id", "").strip()
+        client_chat_id = (
+            qp.get("client_chat_id") or qp.get("openwebui_chat_id") or ""
+        ).strip()
+        raw_status = qp.get("status", "").strip()
+        statuses = [s.strip() for s in raw_status.split(",") if s.strip()] or None
+        try:
+            limit = min(int(qp.get("limit", "50")), 200)
+        except (TypeError, ValueError):
+            limit = 50
+
+        rows = self._run_store.list(
+            session_id=session_id,
+            client_chat_id=client_chat_id,
+            statuses=statuses,
+            limit=limit,
+        )
+        # Merge any live in-memory statuses that aren't yet persisted (queued/running).
+        seen = {r.get("run_id") for r in rows}
+        for run_id, status in self._run_statuses.items():
+            if run_id in seen:
+                continue
+            if session_id and status.get("session_id") != session_id:
+                continue
+            if client_chat_id and status.get("client_chat_id") != client_chat_id:
+                continue
+            if statuses and status.get("status") not in statuses:
+                continue
+            rows.append(status)
+        return web.json_response({"object": "list", "data": rows})
 
     async def _handle_run_events(self, request: "web.Request") -> "web.StreamResponse":
         """GET /v1/runs/{run_id}/events — SSE stream of structured agent lifecycle events."""
@@ -4526,6 +4914,14 @@ class APIServerAdapter(BasePlatformAdapter):
                         unregister_gateway_notify(approval_session_key)
                 except Exception:
                     pass
+                run_status = self._run_statuses.get(run_id, {}).get("status")
+                # If the run is still actively running, keep the agent/task
+                # references so /stop keeps working for long-running polled
+                # runs — only release the unconsumed stream queue.
+                if run_status in {"running", "queued"}:
+                    self._run_streams.pop(run_id, None)
+                    self._run_streams_created.pop(run_id, None)
+                    continue
                 self._run_streams.pop(run_id, None)
                 self._run_streams_created.pop(run_id, None)
                 self._active_run_agents.pop(run_id, None)
@@ -4587,6 +4983,7 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_post("/api/jobs/{job_id}/run", self._handle_run_job)
             # Structured event streaming
             self._app.router.add_post("/v1/runs", self._handle_runs)
+            self._app.router.add_get("/v1/runs", self._handle_list_runs)
             self._app.router.add_get("/v1/runs/{run_id}", self._handle_get_run)
             self._app.router.add_get("/v1/runs/{run_id}/events", self._handle_run_events)
             self._app.router.add_post("/v1/runs/{run_id}/approval", self._handle_run_approval)
@@ -4681,6 +5078,13 @@ class APIServerAdapter(BasePlatformAdapter):
             except Exception:
                 logger.debug(
                     "Failed to close response store for %s", self.name, exc_info=True,
+                )
+        if self._run_store is not None:
+            try:
+                self._run_store.close()
+            except Exception:
+                logger.debug(
+                    "Failed to close run store for %s", self.name, exc_info=True,
                 )
         if self._site:
             await self._site.stop()
