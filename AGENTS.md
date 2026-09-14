@@ -46,6 +46,18 @@ From Git Bash: `ssh root@91.99.219.247`. If non-default key, check `~/.ssh/confi
 > hermes-apps, hermes-automation, browser-egress, llm-gateway, hermes-utilities,
 > postgres, redis) + honcho-* via the override. See CLAUDE.md "Services".
 
+> **Open WebUI durable Pipe (2026-09-14):** chat.ahfl.in's Open WebUI uses a
+> custom Function of type `pipe` named **"Hermes Agent (durable)"** (`id:
+> hermes_agent_durable`, stored in `chat-data/webui.db` `function` table). It
+> does NOT use the raw OpenAI connection's SSE — it submits `POST /v1/runs`,
+> polls `GET /v1/runs/{id}` until completed, and streams the finished response.
+> `routers/chats.py` is patched (bind-mounted from
+> `/opt/hermes/patches/open-webui/chats.py`) so `GET /api/v1/chats/{id}` runs
+> `_reconcile_pending_hermes_runs()`: it asks Hermes `GET /v1/runs?client_chat_id=<id>`
+> and fills any empty assistant placeholder messages from completed runs. This
+> is what makes "close the browser mid-run, reopen the chat, answer is there"
+> work fully automatically.
+
 | Service | Image / Build | Host Port | Public URL |
 |---|---|---|---|
 | postgres | `postgres:16-alpine` | internal | — |
@@ -76,6 +88,15 @@ python3 setup_oauth_credentials.py && exec hermes gateway run -v
 **Temporary bind mounts (subagent-polling fix, Jun 2026 — REMOVE once image is rebuilt):**
 - `…/hermes-agent/hermes_state.py` → `/opt/hermes/hermes_state.py` (ro)
 - `…/hermes-agent/gateway/platforms/api_server.py` → `/opt/hermes/gateway/platforms/api_server.py` (ro)
+
+> **Durable run store (2026-09-14):** `gateway/platforms/api_server.py` now backs
+> `/v1/runs` with a SQLite `RunStore` at `HERMES_HOME/run_store.db` (mirrors
+> `ResponseStore`). Every run transition (queued/running/completed/failed/
+> cancelled) is persisted; `GET /v1/runs/{id}` falls back to the store after a
+> restart, `GET /v1/runs` lists runs filtered by `session_id`/`client_chat_id`/
+> `status`. Chat-completions and Responses completions are also mirrored into
+> the store. A client can therefore retrieve a completed run long after the
+> original HTTP connection died (Open WebUI durable Pipe + chat-load reconcile).
 
 **Logging:** `json-file`, 50MB × 5 files, tag=`hermes`
 
