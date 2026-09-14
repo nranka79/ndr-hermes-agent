@@ -2346,6 +2346,19 @@ class APIServerAdapter(BasePlatformAdapter):
         completed = bool(result.get("completed", True))
         err_msg = result.get("error")
 
+        # Durable mirror: any OpenAI-compatible client (not just /v1/runs)
+        # leaves a retrievable record in the RunStore.
+        _persist_status = "completed" if completed and not is_failed else ("failed" if is_failed else "interrupted")
+        self._persist_api_completion(
+            completion_id,
+            session_id=result.get("session_id", session_id),
+            user_message=str(user_message)[:2000] if user_message else "",
+            final_response=final_response,
+            status=_persist_status,
+            error=err_msg or "",
+            usage=usage,
+        )
+
         # Decide finish_reason. OpenAI uses "length" for truncation, "stop"
         # for normal completion, and downstream SDKs accept "error" / custom
         # codes. See issue #22496.
@@ -2519,6 +2532,16 @@ class APIServerAdapter(BasePlatformAdapter):
             try:
                 result, agent_usage = await agent_task
                 usage = agent_usage or usage
+                if result is not None:
+                    self._persist_api_completion(
+                        completion_id,
+                        session_id=(result or {}).get("session_id") or session_id,
+                        user_message="",
+                        final_response=(result or {}).get("final_response") or "",
+                        status="completed" if (result or {}).get("completed", True) else "interrupted",
+                        error=(result or {}).get("error") or "",
+                        usage=usage,
+                    )
                 if hook_ctx is not None:
                     try:
                         _gw = getattr(self, "gateway_runner", None)
@@ -2563,6 +2586,22 @@ class APIServerAdapter(BasePlatformAdapter):
                 except (asyncio.CancelledError, Exception):
                     pass
             logger.info("SSE client disconnected; interrupted agent task %s", completion_id)
+            partial = (result or {}).get("final_response") if "result" in locals() and isinstance(result, dict) else ""
+            if not partial:
+                agent = agent_ref[0] if agent_ref else None
+                if agent is not None:
+                    try:
+                        partial = getattr(agent, "_current_streamed_assistant_text", "") or ""
+                    except Exception:
+                        partial = ""
+            self._persist_api_completion(
+                completion_id,
+                session_id=session_id,
+                user_message="",
+                final_response=partial,
+                status="interrupted",
+                error="SSE client disconnected",
+            )
         except Exception as _exc:
             # Agent crashed mid-stream.  Try to emit an error chunk
             # so the client gets a proper response instead of a
@@ -2709,6 +2748,21 @@ class APIServerAdapter(BasePlatformAdapter):
             })
             if conversation:
                 self._response_store.set_conversation(conversation, response_id)
+            # Mirror into the durable RunStore so GET /v1/runs/{id} and the
+            # Open WebUI reconcile can retrieve the final response even after
+            # the gateway restarts.
+            _status = "completed" if response_env.get("status") == "completed" else (
+                "failed" if response_env.get("status") == "failed" else "interrupted"
+            )
+            self._persist_api_completion(
+                response_id,
+                session_id=session_id,
+                user_message=user_message if isinstance(user_message, str) else "",
+                final_response=response_env.get("final_response") or final_response_text,
+                status=_status,
+                error=str(response_env.get("error") or "")[:500] if response_env.get("error") else "",
+                usage=usage,
+            )
 
         def _persist_incomplete_if_needed() -> None:
             """Persist an ``incomplete`` snapshot if no terminal one was written.
@@ -4026,6 +4080,44 @@ class APIServerAdapter(BasePlatformAdapter):
             if isinstance(val, str) and val.strip():
                 return val
         return ""
+
+    def _persist_api_completion(
+        self,
+        run_id: str,
+        *,
+        session_id: str = "",
+        user_message: str = "",
+        final_response: str = "",
+        status: str = "completed",
+        error: str = "",
+        usage: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Persist a chat-completions / responses result to the durable store.
+
+        Lets any OpenAI-compatible client (not just /v1/runs) leave a
+        retrievable record: the completion id is used as the run_id so a later
+        GET /v1/runs/{id} (or list by session) returns the finished answer.
+        """
+        store = getattr(self, "_run_store", None)
+        if store is None:
+            return
+        fields: Dict[str, Any] = {"status": status}
+        if session_id:
+            fields["session_id"] = session_id
+        if user_message:
+            fields["user_message"] = user_message
+        if final_response:
+            fields["final_response"] = final_response
+        if error:
+            fields["error"] = error
+        if usage:
+            fields["usage"] = usage
+        if status in {"completed", "failed", "cancelled", "interrupted"}:
+            fields["completed_at"] = time.time()
+        try:
+            store.update(run_id, **fields)
+        except Exception as e:
+            logger.debug("RunStore completion persist failed for %s: %s", run_id, e)
 
     def _make_run_event_callback(self, run_id: str, loop: "asyncio.AbstractEventLoop"):
         """Return a tool_progress_callback that pushes structured events to the run's SSE queue."""
