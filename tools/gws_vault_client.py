@@ -324,6 +324,29 @@ def resolve(identity_type: str, identity_value: str) -> Optional[str]:
     return resp.get("user_id")
 
 
+def resolve_any(identity_value: str) -> Optional[str]:
+    """Resolve a raw identifier of UNKNOWN type to a canonical user_id.
+
+    Unlike ``resolve()``, the caller does not need to know/guess whether
+    *identity_value* is a Telegram id, email, slug, draas_user_id, etc. --
+    the vault server tries every identity bucket on every record
+    server-side (``identity_type="any"``, added 2026-09-15). Use this
+    instead of guessing a type when the raw session id's shape is
+    ambiguous (e.g. OpenWebUI/SSO session ids, which may be a canonical
+    slug, a bare email, or something else depending on how the user first
+    authenticated).
+
+    Note: if *identity_value* is ALREADY the canonical user_id itself
+    (not an alias), this returns None -- canonical ids are not indexed as
+    alias values. Try ``get_identity(identity_value, session_uid=identity_value)``
+    first; only fall back to ``resolve_any()`` if that returns None.
+
+    No auth required -- the server only returns a user_id, never a token.
+    Returns ``None`` if no match.
+    """
+    return resolve("any", identity_value)
+
+
 def check_access(identity_type: str, identity_value: str, app: str) -> bool:
     """Authorize a user for an app/channel via the vault. Fail-closed.
 
