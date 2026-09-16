@@ -62,6 +62,35 @@ from gateway.platforms.base import (
 logger = logging.getLogger(__name__)
 
 
+def _session_identity_note(user_id: str) -> str:
+    """One-line identity preamble for the agent system prompt.
+
+    Makes the authenticated session identity explicit so the model cannot
+    infer or invent a different user when a tool fails. Anonymous sessions
+    are told so explicitly. Nothing here is secret -- it is the same id
+    already bound to the run via set_session_vars.
+    """
+    uid = (user_id or "").strip()
+    if uid:
+        return (
+            f"[session identity] Authenticated user_id={uid}. Act only on "
+            "this user's behalf; never claim, assume, or operate as another "
+            "user. If an account/tool call fails, do NOT guess whose identity "
+            "is in play -- report the failure."
+        )
+    return (
+        "[session identity] No authenticated identity for this session "
+        "(anonymous API caller). Do not assume or claim any user identity; "
+        "account/GWS tools will fail closed."
+    )
+
+
+def _with_identity_note(prompt, user_id: str) -> str:
+    """Append the session-identity preamble to an (optional) system prompt."""
+    note = _session_identity_note(user_id)
+    return f"{prompt}\n\n{note}" if prompt else note
+
+
 def _hermes_version() -> str:
     """Return the hermes-agent version string, or "dev" if it can't be resolved.
 
@@ -3957,6 +3986,9 @@ class APIServerAdapter(BasePlatformAdapter):
         callers (e.g. the SSE writer) to call ``agent.interrupt()`` from
         another thread to stop in-progress LLM calls.
         """
+        # Make the authenticated identity explicit to the model so it cannot
+        # infer or invent a different user when a tool fails.
+        ephemeral_system_prompt = _with_identity_note(ephemeral_system_prompt, user_id)
         loop = asyncio.get_running_loop()
 
         def _run():
@@ -4247,6 +4279,13 @@ class APIServerAdapter(BasePlatformAdapter):
         session_id = body.get("session_id") or stored_session_id or run_id
         approval_session_key = gateway_session_key or session_id or run_id
         ephemeral_system_prompt = instructions
+        # Resolve SSO identity injected by the Open WebUI pipe / API client
+        # (X-OpenWebUI-User-Email) and bind it to the run so identity-aware
+        # tools (gws_auth / contact_resolver / noun_resolver) run as the
+        # authenticated user instead of anonymous.
+        from gateway.platforms.identity_resolver import user_identity
+        _run_user_id, _run_user_email, _run_draas_user_id = user_identity(request)
+        ephemeral_system_prompt = _with_identity_note(ephemeral_system_prompt, _run_user_id)
         # Client correlation ids (e.g. Open WebUI chat/message ids) so a
         # frontend can find + reconcile this run later.  Optional.
         client_chat_id = str(
@@ -4307,6 +4346,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     stream_delta_callback=_text_cb,
                     tool_progress_callback=event_cb,
                     gateway_session_key=gateway_session_key,
+                    user_id=_run_user_id or None,
                 )
                 self._active_run_agents[run_id] = agent
 
@@ -4348,6 +4388,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         session_tokens = set_session_vars(
                             platform="api_server",
                             session_key=approval_session_key,
+                            user_id=_run_user_id or "",
                         )
                         register_gateway_notify(approval_session_key, _approval_notify)
                         r = agent.run_conversation(

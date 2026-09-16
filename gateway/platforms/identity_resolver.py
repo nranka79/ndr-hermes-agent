@@ -57,12 +57,20 @@ def resolve_from_request(request) -> Optional[dict]:
     """
     email = request.headers.get(HEADER_USER_EMAIL, "").strip().lower()
     if not email:
+        # No identity header -- anonymous API caller. Worth an INFO line:
+        # an anonymous run cannot resolve any user's tokens, so downstream
+        # tool failures are expected and must never be papered over by
+        # guessing an identity.
+        logger.info(
+            "API server identity: no %s header -- request runs ANONYMOUS",
+            HEADER_USER_EMAIL,
+        )
         return None
     try:
         from tools._user_registry import find_user_by_identity
         _, record = find_user_by_identity("email", email)
         if record:
-            logger.debug(
+            logger.info(
                 "API server identity resolved: email=%s user_id=%s draas_user_id=%s",
                 email, record.get("user_id", ""), _first_alias(record, "draas_user_id"),
             )

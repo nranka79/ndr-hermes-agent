@@ -1346,15 +1346,32 @@ class AIAgent:
         assistant_message,
         messages: Optional[list] = None,
     ) -> bool:
-        """Detect conservative stop->length misreports for Ollama-hosted GLM models."""
+        """Detect conservative stop->length misreports.
+
+        Two distinct shapes are treated as truncated stops:
+
+        1. Ollama-hosted GLM models that misreport a dropped stream as a
+           clean ``stop``.
+        2. Any chat_completions endpoint whose response carries the
+           ``stop`` finish_reason but has NO usage metadata while the turn
+           is mid-tool (prior ``tool`` messages present).  A healthy
+           completion virtually always includes usage; when it is absent it
+           signals the stream was truncated before the tool-call delta
+           arrived (observed with llm-gateway parked on exhausted keys —
+           the model emitted a text preamble like "Let me check the tool's
+           signature" and the intended tool call was cut off).  Routing it
+           through the truncation/continuation path lets the loop retry
+           instead of silently ending the turn with the preamble alone.
+        """
         if finish_reason != "stop" or self.api_mode != "chat_completions":
-            return False
-        if not self._is_ollama_glm_backend():
             return False
         if not any(
             isinstance(msg, dict) and msg.get("role") == "tool"
             for msg in (messages or [])
         ):
+            return False
+        _usage_missing = getattr(assistant_message, "usage", None) is None
+        if not self._is_ollama_glm_backend() and not _usage_missing:
             return False
         if assistant_message is None or getattr(assistant_message, "tool_calls", None):
             return False

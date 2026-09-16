@@ -2318,8 +2318,20 @@ def terminal_tool(
                     try:
                         from gateway.session_context import get_gws_identity_env as _gie_t
                         _session_tid = _gie_t()
-                        if _session_tid:
-                            env.env["HERMES_SESSION_USER_ID"] = _session_tid
+                        # ALWAYS (over)write the identity -- including clearing
+                        # it to "" when this session has none. Terminal
+                        # environments can be SHARED across sessions (the local
+                        # backend collapses to a "default" container id), so a
+                        # value left behind by a concurrent session would otherwise
+                        # leak into this subprocess and make gws_auth operate as
+                        # the wrong user. Fail closed: no identity -> empty var,
+                        # never a stale one.
+                        env.env["HERMES_SESSION_USER_ID"] = _session_tid or ""
+                        logger.info(
+                            "terminal identity inject: task=%s gws_identity=%r",
+                            effective_task_id,
+                            _session_tid,
+                        )
                     except Exception:
                         pass
                     result = env.execute(command, **execute_kwargs)

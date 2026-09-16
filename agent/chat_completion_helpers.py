@@ -2038,6 +2038,48 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 _dropped_tool_names=_dropped_names or None,
             )
 
+        # Stream dropped with NO terminal marker (no finish_reason AND no
+        # usage).  A well-formed completion always carries a terminal chunk
+        # with finish_reason (and usually usage); when BOTH are absent the
+        # upstream died/truncated the stream — e.g. llm-gateway stalls on
+        # 429-parked keys returning a partial preamble with no tool call.
+        # Coercing finish_reason to "stop" below would silently end the
+        # turn with that preamble as a "final answer" (observed:
+        # "Wrapper has a stale import. Let me check the tool's actual
+        # signature..." then dead).  Route through the partial-stream-stub
+        # path so the conversation loop retries with a continuation nudge.
+        _dropped_no_terminal = (
+            finish_reason is None
+            and usage_obj is None
+            and (content_parts or reasoning_parts)
+            and not tool_calls_acc
+        )
+        if _dropped_no_terminal:
+            logger.warning(
+                "Stream ended with no finish_reason and no usage metadata "
+                "(%d content + %d reasoning chars, no tool call) — treating "
+                "as a mid-stream drop, not a clean stop.",
+                len("".join(content_parts)), len("".join(reasoning_parts)),
+            )
+            _drop_msg = SimpleNamespace(
+                role=role,
+                content=full_content,
+                tool_calls=None,
+                reasoning_content="".join(reasoning_parts) or None,
+            )
+            _drop_choice = SimpleNamespace(
+                index=0,
+                message=_drop_msg,
+                finish_reason=FINISH_REASON_LENGTH,
+            )
+            return SimpleNamespace(
+                id=PARTIAL_STREAM_STUB_ID,
+                model=model_name,
+                choices=[_drop_choice],
+                usage=usage_obj,
+                _dropped_tool_names=None,
+            )
+
         effective_finish_reason = finish_reason or "stop"
         if has_truncated_tool_args:
             effective_finish_reason = "length"
