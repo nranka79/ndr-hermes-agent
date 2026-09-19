@@ -281,17 +281,20 @@ def canonical_uid(channel_id) -> str:
         if uid:
             return uid
         # Vault reached fine but has no identity mapping for this raw id.
-        # Falling back to the raw id here is the #1 cause of false
-        # not-authorized reports: if the token was actually stored under a
-        # *different* canonical uid, this lookup will silently miss it and
-        # look identical to "never authorized". Log at WARNING (not debug)
-        # so this is visible in agent.log instead of silently masked.
-        logger.warning(
-            "canonical_uid: vault has no identity mapping for %r -- "
-            "using raw id as fallback key. If the user believes they are "
-            "already authorized, this is almost certainly why the lookup "
-            "is failing -- do NOT tell the user the vault is down.",
-            cid,
+        # Falling back to the raw id is normally BENIGN: when the raw id IS
+        # already the canonical vault id (e.g. ``ndr-7449813913``), the
+        # resolve "miss" is expected and the returned key equals the stored
+        # canonical id, so the token lookup still succeeds. It is only a
+        # real problem when the raw id differs from the stored canonical id
+        # AND the token fetch that follows fails -- and in that case the
+        # fetch itself produces the actionable error, not this message.
+        # Log at INFO so the key in use stays visible in agent.log without
+        # priming small models to believe auth is broken.
+        logger.info(
+            "canonical_uid: no vault alias mapping for %r -- using raw id "
+            "as vault key as-is (benign when %r is already the canonical "
+            "id; only suspect if the subsequent token fetch fails).",
+            cid, cid,
         )
     except Exception:
         logger.warning(
