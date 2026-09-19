@@ -146,8 +146,8 @@ Rerun the structure dump and spot-check that:
     producing HTTP 403 `The caller does not have permission` on
     `documents().get()`. That 403 is a session-identity problem, NOT a
     missing-auth problem — do not send an OAuth URL. The
-    `canonical_uid: vault has no identity mapping ... using raw id as fallback key`
-    warning is benign; proceed.
+    `canonical_uid: no vault alias mapping ... using raw id as vault key as-is`
+    note is benign; proceed.
 - **Deletions in one batch: highest index first** — for `deleteContentRange`
   lists, sort ranges descending by startIndex so earlier deletions don't shift
   later anchors. Verify each range's boundary text before applying.

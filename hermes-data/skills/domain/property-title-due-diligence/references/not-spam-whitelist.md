@@ -60,8 +60,8 @@ changes (remove `SPAM`, add `INBOX`) for matching messages.
   Empty To on a rule = apply to anyone.
 
 ## Pitfalls
-- **`canonical_uid: vault has no identity mapping for 'ndr-[REDACTED-TID]' -- using raw id as fallback key`**
-  on stderr is a BENIGN warning — the vault falls back to the raw id and reads succeed.
+- **`canonical_uid: no vault alias mapping for 'ndr-[REDACTED-TID]' -- using raw id as vault key as-is`**
+  on stderr is a BENIGN note — the vault falls back to the raw id and reads succeed.
   Do NOT report it as an error or tell the user the vault is down.
 - Never delete spam; only modify labels for matches.
 - **0 matches is a legitimate outcome** — report it plainly with the inspected

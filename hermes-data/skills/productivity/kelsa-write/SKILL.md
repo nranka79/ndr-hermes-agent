@@ -33,7 +33,7 @@ from gateway.session_context import get_gws_identity_env
 # token, find the vault user that holds one (admin scan: gws_vault_client
 # .list_identities() + list_services) and export HERMES_SESSION_USER_ID=<telegram_id>
 # before running. See identity pitfall below.
-- **canonical_uid warning is benign:** When running the terminal fallback with `HERMES_SESSION_USER_ID=ndr-7449813913`, `get_valid_access_token()` prints `canonical_uid: vault has no identity mapping for 'ndr-7449813913' -- using raw id as fallback key`. This is harmless — the token is fetched correctly despite the warning. Do NOT interpret it as a broken token or missing credential. The `canonical_uid` function simply lacks a slug mapping for that raw telegram_id but falls back to the raw id, which works fine for vault lookup.
+- **canonical_uid note is benign:** When running the terminal fallback with `HERMES_SESSION_USER_ID=ndr-7449813913`, `get_valid_access_token()` prints `canonical_uid: no vault alias mapping for 'ndr-7449813913' -- using raw id as vault key as-is`. This is harmless — the token is fetched correctly despite the note. Do NOT interpret it as a broken token or missing credential. The `canonical_uid` function simply lacks a slug mapping for that raw telegram_id but falls back to the raw id, which works fine for vault lookup.
 token = get_valid_access_token()
 
 async def my_operation():

@@ -17,8 +17,8 @@ google-gmail → nishantranka@gmail.com).
   `cd /opt/hermes && python3 script.py`.
 - Service names come from `tools.gws_auth.EMAIL_TO_SERVICE`; iterate
   `.values()` (deduped) to search all accounts. Never hardcode/guess.
-- `canonical_uid: vault has no identity mapping for '<id>' -- using raw id as
-  fallback key` warnings in stderr are BENIGN in cron runs — tokens still load,
+- `canonical_uid: no vault alias mapping for '<id>' -- using raw id as
+  vault key as-is` notes in stderr are BENIGN in cron runs — tokens still load,
   API calls work. Not an auth failure; don't tell the user the vault is down.
 
 ## Gmail API quirks

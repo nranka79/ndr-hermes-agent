@@ -46,8 +46,8 @@ Diagnosis + fix:
    copy from `ps aux` output of unrelated long-running processes).
 2. Re-run the command with the correct value:
    `HERMES_SESSION_USER_ID=<current-session-id> GWS_VAULT_SOCKET=/run/gws-vault/vault.sock`
-3. A `canonical_uid: vault has no identity mapping for '...' -- using raw id as
-   fallback key` warning on stderr is benign (raw-id fallback works); it is NOT
+3. A `canonical_uid: no vault alias mapping for '...' -- using raw id as
+   vault key as-is` note on stderr is benign (raw-id fallback works); it is NOT
    the cause of a 403.
 
 Also note: `gws_resolve_account` returning "Vault socket unreachable" for the

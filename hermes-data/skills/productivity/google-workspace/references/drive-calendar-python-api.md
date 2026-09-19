@@ -313,7 +313,7 @@ print(f"Matched: {matched}/{len(tgt_rows)-1}  Unmatched: {unmatched}")
   Google API calls (`/opt/hermes/.venv/bin/python`).
 - `has_token` requires TWO args: `has_token(telegram_id, service_name)`.
   Calling with one arg (`has_token(service_name)`) fails with
-  "no identity mapping" — this is NOT the vault being down.
+  "no vault alias mapping" — this is NOT the vault being down.
 - When the user sends an image inline (not as a file/document), the vision
   system reads it but the bytes never hit the filesystem. To get a Drive link
   for such an image, ask the user to share via Google Drive link or re-send

@@ -35,7 +35,7 @@ Consequences observed 2026-08-09:
 
 ## Benign warning
 
-`canonical_uid: vault has no identity mapping for 'ndr-[REDACTED-TID]' -- using raw id as fallback key`
+`canonical_uid: no vault alias mapping for 'ndr-[REDACTED-TID]' -- using raw id as vault key as-is`
 - Non-fatal. The vault falls back to the raw id and auth works (token lives under the raw id key). Do NOT treat as "vault is down" and do NOT re-authorize. Only alarming if the token lookup subsequently fails.
 
 ## Identity guard exit — session env resolves to psingh, NOT ndr (2026-08-13)

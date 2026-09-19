@@ -160,9 +160,9 @@ services = list_services('ndr-[REDACTED-TID]')
 print(services)  # e.g. ['vocab'] — only non-Google services
 ```
 
-The vault may also print a warning like:
+The vault may also print a note like:
 ```
-canonical_uid: vault has no identity mapping for 'ndr-[REDACTED-TID]' -- using raw id as fallback key.
+canonical_uid: no vault alias mapping for 'ndr-[REDACTED-TID]' -- using raw id as vault key as-is.
 ```
 
 This means the vault's identity store doesn't have the mapping yet — it falls back to the raw uid. This is harmless for self-read ops but confirms the user hasn't completed any Google OAuth flow yet.

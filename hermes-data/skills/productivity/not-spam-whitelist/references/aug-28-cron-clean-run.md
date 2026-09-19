@@ -16,7 +16,7 @@
 **Script:** Ad-hoc multi-account sweep via `build_service("gmail", "v1", service_name=...)` for each of 3 services (`google-draas`, `google-gmail`, `google-ahfl`).
 **Identity:** `HERMES_SESSION_USER_ID=ndr-7449813913`
 **Sheet read:** 35 whitelist rules (including Aug 20–25 additions: @axis.bank.in, @canarabank.com, devanshgoel112233@gmail.com, v.swaminathank@gmail.com)
-**Vault fallback warning:** `canonical_uid: vault has no identity mapping` — benign, raw id fallback works
+**Vault fallback note:** `canonical_uid: no vault alias mapping` — benign, raw id fallback works
 
 ## Sender check
 

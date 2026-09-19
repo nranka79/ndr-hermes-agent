@@ -156,7 +156,7 @@ When the user is on low-dose metformin with HbA1c 5.6-5.7% and fasting insulin n
 ## Pitfalls
 
 - **Confirm the user's actual accounts**: Use `gws_resolve_account` to find which Google account holds their medical files. Nishant uses ndr@draas.com for medical records.
-- **Rename the vault identity warning**: `gws_skill_bridge` will emit a cosmetic `canonical_uid: vault has no identity mapping` warning — it does NOT block downloads.
+- **Rename the vault identity note**: `gws_skill_bridge` will emit a cosmetic `canonical_uid: no vault alias mapping` note — it does NOT block downloads.
 - **Subagent cannot read PDF content directly**: Subagents have limited access to gws_skill_bridge. Use them to FIND files (search + listing), then download and extract in the parent session.
 - **Non-fasting vs fasting values**: Note which lab values were non-fasting (lipid panels differ). Flag this in the response.
 - **Supplements interact with medications**: Always cross-check — e.g. berberine potentiates metformin (may need dose adjustment), NAC may interact with nitrates.

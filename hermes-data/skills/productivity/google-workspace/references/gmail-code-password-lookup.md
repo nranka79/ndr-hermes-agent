@@ -52,8 +52,8 @@ failed; the email's *subject* and *code digits* found it.
   from env. In cron/forwarded sessions it may be another user (e.g. ndr)
   while the requester is Bharat/sales1.blr. Override:
   `HERMES_SESSION_USER_ID=sales1_blr python3 ...` (slug form; raw
-  `sales1.blr-[REDACTED-TID]` works as fallback but logs a "no identity mapping"
-  warning). ALWAYS verify with `users().getProfile()` → prints the mailbox
+  `sales1.blr-[REDACTED-TID]` works as fallback but logs a "no vault alias
+  mapping" note). ALWAYS verify with `users().getProfile()` → prints the mailbox
   email — never trust the override silently.
 - Check token presence first: `vault.has_token('<user_id>', 'google-draas',
   session_uid='<user_id>')` before building services.

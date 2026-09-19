@@ -36,8 +36,8 @@ confirm meaning, rename, and file in the same folder as the recent filing.
   exist. Available in shell env: GOOGLE_AI_STUDIO_API_KEY, APIFY_API_KEY,
   OPENCODE_API_KEY, ASSEMBLYAI_API_KEY. No OPENROUTER key — don't promise
   OpenRouter routes without checking `env | cut -d= -f1`.
-- Vault warning `canonical_uid: ... no identity mapping ... using raw id as
-  fallback key` is benign noise — API works fine after it.
+- Vault note `canonical_uid: ... no vault alias mapping ... using raw id as
+  vault key as-is` is benign noise — API works fine after it.
 - Stale sibling folders exist post-reorg (`Gunjur Farm Dodballapur legal docs`,
   `Copy Gunjur-Doddaballapur`, both `parents=None`) — ignore unless asked.
 

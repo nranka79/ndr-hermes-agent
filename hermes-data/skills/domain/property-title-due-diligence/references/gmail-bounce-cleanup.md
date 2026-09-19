@@ -18,8 +18,8 @@ cd /opt/data && HERMES_SESSION_USER_ID=<uid> GWS_VAULT_SOCKET=/run/gws-vault/vau
   /opt/hermes/.venv/bin/python3 scripts/trash_bounce_dsns.py
 ```
 
-Identity warning seen on run: `canonical_uid: vault has no identity mapping for
-'ndr-[REDACTED-TID]' -- using raw id as fallback key` — harmless; tokens still resolve.
+Identity note seen on run: `canonical_uid: no vault alias mapping for
+'ndr-[REDACTED-TID]' -- using raw id as vault key as-is` — harmless; tokens still resolve.
 
 ## Account sweep (as of 2026-08)
 

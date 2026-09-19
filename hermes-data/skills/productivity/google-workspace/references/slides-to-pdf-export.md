@@ -44,7 +44,7 @@ When the user asks for a PDF of a deck built in an EARLIER session:
    session 404s together** (v3/v4/Pattandur/Ranka all missing). That
    collective 404 = account mismatch, NOT a missing file.
 4. `HERMES_SESSION_USER_ID` override (slug, slug-id, raw id) did NOT change
-   the authenticated account here — the vault logged "no identity mapping
+   the authenticated account here — the vault logged "no vault alias mapping
    for 'psingh-[REDACTED-TID]'" and still returned sales1.blr's token. Do not
    burn time on it when a whole session's files are invisible.
 
