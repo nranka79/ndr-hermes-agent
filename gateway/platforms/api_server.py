@@ -2326,6 +2326,33 @@ class APIServerAdapter(BasePlatformAdapter):
             # agent_task.done(), which can race with queue timeout checks.
             agent_task.add_done_callback(lambda _fut: _stream_q.put(None))
 
+            # Durable seed (#3).  Create the RunStore row BEFORE streaming so
+            # an interrupted or detached turn is retrievable via
+            # GET /v1/runs?client_chat_id=...  Until now only POST /v1/runs
+            # ever called store.create(), so _persist_api_completion()'s
+            # UPDATE was a silent no-op for every chat-completions turn and
+            # nothing streamed through Open WebUI was reconcilable.
+            #
+            # Open WebUI forwards these when ENABLE_FORWARD_USER_INFO_HEADERS
+            # is on (see routers/openai.py + utils/tools.py).
+            _client_chat_id = (request.headers.get("X-OpenWebUI-Chat-Id") or "").strip()
+            _client_message_id = (request.headers.get("X-OpenWebUI-Message-Id") or "").strip()
+            try:
+                _seed_msg = user_message if isinstance(user_message, str) else str(user_message)
+                self._run_store.create(
+                    completion_id,
+                    session_id=session_id or "",
+                    client_chat_id=_client_chat_id,
+                    client_message_id=_client_message_id,
+                    status="running",
+                    user_message=_seed_msg[:2000],
+                    model=model_name,
+                )
+            except Exception as _seed_exc:
+                logger.debug(
+                    "RunStore seed failed for %s: %s", completion_id, _seed_exc
+                )
+
             return await self._write_sse_chat_completion(
                 request, completion_id, model_name, created, _stream_q,
                 agent_task, agent_ref, session_id=session_id,
@@ -2607,9 +2634,23 @@ class APIServerAdapter(BasePlatformAdapter):
             await response.write(f"data: {json.dumps(finish_chunk)}\n\n".encode())
             await response.write(b"data: [DONE]\n\n")
         except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, OSError):
-            # Client disconnected mid-stream.  Interrupt the agent so it
-            # stops making LLM API calls at the next loop iteration, then
-            # cancel the asyncio task wrapper.
+            # Client disconnected mid-stream.  By default this is NOT fatal:
+            # detach and let the turn finish into the durable RunStore so the
+            # answer survives a new message / refresh / closed tab.
+            if not SSE_DISCONNECT_CANCELS:
+                self._detach_streaming_agent(
+                    completion_id,
+                    agent_task,
+                    agent_ref=agent_ref,
+                    session_id=session_id,
+                    label="SSE client disconnected",
+                )
+                logger.info(
+                    "SSE client disconnected; detached agent task %s "
+                    "(run continues server-side)", completion_id,
+                )
+                return response
+
             agent = agent_ref[0] if agent_ref else None
             if agent is not None:
                 try:
@@ -3211,8 +3252,23 @@ class APIServerAdapter(BasePlatformAdapter):
 
         except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, OSError):
             _persist_incomplete_if_needed()
-            # Client disconnected — interrupt the agent so it stops
-            # making upstream LLM calls, then cancel the task.
+            # Client disconnected.  Same policy as chat-completions: detach by
+            # default so the run finishes into the durable store instead of
+            # being thrown away mid-flight.
+            if not SSE_DISCONNECT_CANCELS:
+                self._detach_streaming_agent(
+                    response_id,
+                    agent_task,
+                    agent_ref=agent_ref,
+                    session_id=session_id,
+                    label="SSE client disconnected",
+                )
+                logger.info(
+                    "SSE client disconnected; detached agent task %s "
+                    "(run continues server-side)", response_id,
+                )
+                return response
+
             agent = agent_ref[0] if agent_ref else None
             if agent is not None:
                 try:
@@ -4120,6 +4176,82 @@ class APIServerAdapter(BasePlatformAdapter):
             if isinstance(val, str) and val.strip():
                 return val
         return ""
+
+    def _detach_streaming_agent(
+        self,
+        run_id: str,
+        agent_task,
+        agent_ref=None,
+        session_id: str = "",
+        label: str = "SSE client disconnected",
+    ) -> None:
+        """Let a streaming turn finish server-side after the client vanished.
+
+        A disconnect is NOT a cancellation.  Open WebUI drops the EventSource
+        whenever the user sends another message, refreshes, or closes the tab.
+        The old behaviour (agent.interrupt() plus agent_task.cancel()) threw
+        away every tool call made so far, so the user saw a half-written answer
+        with no error and the work had to be redone from scratch.
+
+        Instead we detach: the agent keeps running and a background waiter
+        writes the finished answer into the durable RunStore, where Open WebUI's
+        _reconcile_pending_hermes_runs() can drop it into the empty assistant
+        placeholder the next time the chat is opened.
+        """
+        def _streamed_text() -> str:
+            agent = agent_ref[0] if agent_ref else None
+            if agent is None:
+                return ""
+            for attr in ("_current_streamed_assistant_text", "_last_content_with_tools"):
+                try:
+                    val = getattr(agent, attr, "") or ""
+                except Exception:
+                    continue
+                if isinstance(val, str) and val.strip():
+                    return val
+            return ""
+
+        try:
+            self._set_run_status(run_id, "running", last_event="client.detached")
+        except Exception:
+            pass
+
+        async def _finish():
+            final_text = ""
+            status = "interrupted"
+            usage = None
+            try:
+                result, agent_usage = await agent_task
+                usage = agent_usage or None
+                final_text = (result or {}).get("final_response") or ""
+                status = "completed" if (result or {}).get("completed", True) else "interrupted"
+            except asyncio.CancelledError:
+                status = "cancelled"
+            except Exception as exc:
+                status = "failed"
+                logger.warning("[api_server] detached run %s failed: %s", run_id, exc)
+            if not final_text:
+                final_text = _streamed_text()
+            try:
+                self._persist_api_completion(
+                    run_id,
+                    session_id=session_id or "",
+                    final_response=final_text,
+                    status=status,
+                    usage=usage,
+                )
+            except Exception:
+                pass
+            logger.info(
+                "[api_server] detached run %s finished server-side "
+                "(status=%s, %d chars) after %s",
+                run_id, status, len(final_text or ""), label,
+            )
+
+        try:
+            asyncio.ensure_future(_finish())
+        except Exception as exc:
+            logger.warning("[api_server] could not detach run %s: %s", run_id, exc)
 
     def _persist_api_completion(
         self,
