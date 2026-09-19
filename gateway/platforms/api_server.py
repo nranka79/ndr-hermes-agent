@@ -120,6 +120,14 @@ MAX_STORED_RESPONSES = 100
 MAX_STORED_RUNS = 1000  # Durable run-store LRU cap — runs are cheap, keep plenty for polling clients
 MAX_REQUEST_BYTES = 10_000_000  # 10 MB — accommodates long agent conversations with tool calls
 CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS = 30.0
+
+# A dropped SSE connection is not a cancellation.  Open WebUI tears down the
+# EventSource whenever the user sends another message, refreshes or closes the
+# tab; killing the agent there discards every tool call made so far and the
+# user is left with a half-written answer and no way to recover it.  Default
+# is therefore to DETACH and let the turn finish into the durable RunStore.
+# Set HERMES_SSE_DISCONNECT_CANCELS=1 to restore the old kill-on-disconnect.
+SSE_DISCONNECT_CANCELS = os.getenv("HERMES_SSE_DISCONNECT_CANCELS", "").strip().lower() in ("1", "true", "yes")
 MAX_NORMALIZED_TEXT_LENGTH = 65_536  # 64 KB cap for normalized content parts
 MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array
 
@@ -4224,8 +4232,29 @@ class APIServerAdapter(BasePlatformAdapter):
         if not raw_input:
             return web.json_response(_openai_error("Missing 'input' field"), status=400)
 
-        user_message = raw_input if isinstance(raw_input, str) else (raw_input[-1].get("content", "") if isinstance(raw_input, list) else "")
-        if not user_message:
+        # input may be a plain string, a bare OpenAI content-part array
+        # ([{"type": "text"...}, {"type": "image_url"...}]) or an array of
+        # message objects ([{"role", "content"}, ...]).
+        if isinstance(raw_input, str):
+            raw_user_content = raw_input
+        elif isinstance(raw_input, list) and raw_input:
+            last = raw_input[-1]
+            if isinstance(last, dict) and "role" in last:
+                raw_user_content = last.get("content", "")
+            else:
+                raw_user_content = raw_input
+        else:
+            raw_user_content = ""
+
+        # Normalize exactly like /v1/chat/completions and /v1/responses so
+        # image parts and Open WebUI <attached_files> ids survive the durable
+        # run path.  This previously coerced content with str(), silently
+        # dropping every image and file attachment sent by the durable pipe.
+        try:
+            user_message = _normalize_multimodal_content(raw_user_content)
+        except ValueError as exc:
+            return _multimodal_validation_error(exc, param="input")
+        if not _content_has_visible_payload(user_message):
             return web.json_response(_openai_error("No user message found in input"), status=400)
 
         instructions = body.get("instructions")
@@ -4233,7 +4262,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
         # Accept explicit conversation_history from the request body.
         # Precedence: explicit conversation_history > previous_response_id.
-        conversation_history: List[Dict[str, str]] = []
+        conversation_history: List[Dict[str, Any]] = []
         raw_history = body.get("conversation_history")
         if raw_history:
             if not isinstance(raw_history, list):
@@ -4247,7 +4276,11 @@ class APIServerAdapter(BasePlatformAdapter):
                         _openai_error(f"conversation_history[{i}] must have 'role' and 'content' fields"),
                         status=400,
                     )
-                conversation_history.append({"role": str(entry["role"]), "content": str(entry["content"])})
+                try:
+                    entry_content = _normalize_multimodal_content(entry["content"])
+                except ValueError as exc:
+                    return _multimodal_validation_error(exc, param=f"conversation_history[{i}].content")
+                conversation_history.append({"role": str(entry["role"]), "content": entry_content})
             if previous_response_id:
                 logger.debug("Both conversation_history and previous_response_id provided; using conversation_history")
 
