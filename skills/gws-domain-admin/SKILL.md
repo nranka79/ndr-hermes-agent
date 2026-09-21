@@ -10,6 +10,9 @@ metadata:
 
 # GWS Domain Admin (domain-wide delegation)
 
+> **GATE (NDR, 2026-09-21): use this skill ONLY when the user has explicitly asked, in this conversation, to read or act on ANOTHER @draas.com person's account by name.** For the user's own account — including NDR's own `ndr@draas.com` — use the own-token `gws_*` tools / `build_service(service_name=...)`, never DWD. DWD is never a fallback for an own-account token or scope error, and never a shortcut to a shared file. Do not import `tools.gws_dwd_tools` from scripts; call the native `gws_dwd_*` tools.
+
+
 Act on ANY Google Workspace account in the DWD-allowed domain (`@draas.com`)
 as the domain admin via the system service-account key — including accounts
 that have NO vault identity (e.g. ex-employees like piyush@draas.com /
