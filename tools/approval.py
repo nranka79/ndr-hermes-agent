@@ -1589,6 +1589,15 @@ def check_execute_code_guard(code: str, env_type: str) -> dict:
         "approval is one-shot for this run."
     )
 
+    # Unconditional DWD/service-account code guard (NDR rule, 2026-09-21):
+    # applies before the container skip and before yolo, like the hardline
+    # floor. See tools/gws_dwd_guard.py.
+    from tools.gws_dwd_guard import scan_text as _dwd_scan_text, block_result as _dwd_block_result
+    _dwd_hit, _dwd_desc = _dwd_scan_text(code)
+    if _dwd_hit:
+        logger.warning("DWD guard block (execute_code): %s", _dwd_desc)
+        return _dwd_block_result(_dwd_desc)
+
     # Isolated backends already sandbox the child — matches the container skip
     # in check_all_command_guards / check_dangerous_command.
     if env_type in {"docker", "singularity", "modal", "daytona", "vercel_sandbox"}:

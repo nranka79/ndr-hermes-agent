@@ -255,6 +255,12 @@ def _reset_cached_sudo_passwords() -> None:
 from tools.approval import (
     check_all_command_guards as _check_all_guards_impl,
 )
+# Unconditional DWD/service-account code guard (NDR rule, 2026-09-21). Runs
+# BEFORE force=True / yolo — see tools/gws_dwd_guard.py.
+from tools.gws_dwd_guard import (
+    scan_command as _dwd_scan_command,
+    block_result as _dwd_block_result,
+)
 
 
 def _check_all_guards(command: str, env_type: str) -> dict:
@@ -2017,6 +2023,21 @@ def terminal_tool(
         # Pre-exec security checks (tirith + dangerous command detection)
         # Skip check if force=True (user has confirmed they want to run it)
         approval_note = None
+        # DWD guard: unconditional, not skippable by force=True (the guard is
+        # about credential misuse, not host safety, so it applies to every
+        # backend including containers).
+        _dwd_hit, _dwd_desc = _dwd_scan_command(
+            command, cwd=workdir or getattr(env, "cwd", None))
+        if _dwd_hit:
+            _dwd_block = _dwd_block_result(_dwd_desc)
+            logger.warning("DWD guard block: %s (command: %s)",
+                           _dwd_desc, _safe_command_preview(command))
+            return json.dumps({
+                "output": "",
+                "exit_code": -1,
+                "error": _dwd_block["message"],
+                "status": "blocked"
+            }, ensure_ascii=False)
         if not force:
             approval = _check_all_guards(command, env_type)
             if not approval["approved"]:

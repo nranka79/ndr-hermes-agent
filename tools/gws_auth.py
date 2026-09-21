@@ -419,6 +419,34 @@ def load_credentials(service_name: str = _DEFAULT_SERVICE) -> Credentials:
     return _load_credentials_direct(service_name)
 
 
+def _effective_service_name(uid: str, service_name: str) -> str:
+    """Map the legacy default key ``"google"`` to the user's configured account.
+
+    2026-09-21 fix: ad-hoc scripts that call ``build_service(api, ver)`` with
+    no ``service_name`` used to look up the literal ``google`` key, which no
+    current user has, and fail with ``No google token for user <uid>`` --
+    which sessions then misread as an auth or DWD problem. If the legacy key
+    has no token, fall back to the identity's ``gws_service`` (the same
+    default the native ``gws_*`` tools use). An explicit ``service_name`` is
+    always honoured as-is.
+    """
+    if service_name != _DEFAULT_SERVICE or not uid:
+        return service_name
+    from tools import gws_vault_client as vault
+    try:
+        if vault.has_token(uid, _DEFAULT_SERVICE, session_uid=uid):
+            return service_name
+        identity = vault.get_identity(uid, session_uid=uid) or {}
+        configured = str(identity.get("gws_service") or "").strip()
+        if configured:
+            logger.info("gws_auth: no %r token for %s; using configured gws_service=%s",
+                        _DEFAULT_SERVICE, uid, configured)
+            return configured
+    except Exception as exc:  # noqa: BLE001 -- best effort, keep legacy behaviour
+        logger.debug("gws_auth: default-service resolution skipped: %s", exc)
+    return service_name
+
+
 def _load_credentials_direct(service_name: str = _DEFAULT_SERVICE) -> Credentials:
     """Load stored OAuth credentials directly from the gws-vault daemon.
 
@@ -448,6 +476,7 @@ def _load_credentials_direct(service_name: str = _DEFAULT_SERVICE) -> Credential
     from tools import gws_vault_client as vault
     tid = _current_telegram_id()
     uid = canonical_uid(tid)
+    service_name = _effective_service_name(uid, service_name)
     token_json = vault.get_token(uid, service_name, session_uid=uid)
     creds = Credentials.from_authorized_user_info(json.loads(token_json))
     if creds.expired and creds.refresh_token:
