@@ -999,12 +999,62 @@ def clear_task_env_overrides(task_id: str):
     _task_env_overrides.pop(task_id, None)
 
 
+# Cache of raw session identity -> canonical vault uid.  ``canonical_uid``
+# talks to gws-vault over a unix socket and the environment scope is resolved
+# on every terminal / file / code call, so memoize it per process.
+_identity_scope_cache: Dict[str, str] = {}
+_identity_scope_lock = threading.Lock()
+
+
+def _env_identity_scope() -> str:
+    """Return a stable per-person key used to isolate terminal environments.
+
+    A terminal environment is shared mutable state: one shell snapshot, one
+    tracked cwd, one set of installed packages.  Sharing it between *different
+    people* is a cross-user leak -- before 2026-09-23 the snapshot also carried
+    ``HERMES_SESSION_USER_ID``, so whoever created the environment lent their
+    Google identity to every later command run in it.
+
+    Scoping the container key by the session's canonical vault uid keeps the
+    sharing we actually want -- successive turns of one person, their
+    ``delegate_task`` children, their cron jobs -- while giving each distinct
+    person their own shell.  Sessions with no resolvable identity get
+    ``"anon"``, a bucket that is never shared with an identified user.
+    """
+    try:
+        from gateway.session_context import get_gws_identity_env
+        raw = (get_gws_identity_env() or "").strip()
+    except Exception:
+        raw = ""
+    if not raw:
+        return "anon"
+    with _identity_scope_lock:
+        cached = _identity_scope_cache.get(raw)
+    if cached:
+        return cached
+    uid = raw
+    try:
+        from tools.gws_auth import canonical_uid
+        uid = (canonical_uid(raw) or raw).strip() or raw
+    except Exception:
+        # Vault unreachable -- fall back to the raw channel id.  Worst case one
+        # person gets a shell per channel id; never a shell shared with someone
+        # else, which is the property that matters here.
+        logger.debug("env identity scope: canonical_uid failed for %r", raw, exc_info=True)
+    scope = re.sub(r"[^A-Za-z0-9_.-]", "_", uid)[:64] or "anon"
+    with _identity_scope_lock:
+        _identity_scope_cache[raw] = scope
+    return scope
+
+
 def _resolve_container_task_id(task_id: Optional[str]) -> str:
     """
     Map a tool-call ``task_id`` to the container/sandbox key used by
     ``_active_environments``.
 
-    The top-level agent passes ``task_id=None`` and lands on ``"default"``.
+    The top-level agent passes ``task_id=None`` and lands on
+    ``"default:<identity>"`` -- one shared environment per person, see
+    :func:`_env_identity_scope`.
     ``delegate_task`` children pass their own subagent ID so that
     file-state tracking, the active-subagents registry, and TUI events stay
     distinct per child -- but we deliberately collapse that ID back to
@@ -1031,7 +1081,7 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
         overrides = _task_env_overrides[task_id]
         if set(overrides.keys()) & _ISOLATION_KEYS:
             return task_id
-    return "default"
+    return f"default:{_env_identity_scope()}"
 
 
 # Configuration from environment variables
@@ -1871,7 +1921,10 @@ def terminal_tool(
         # resolving as before.
         overrides = (
             (_task_env_overrides.get(task_id) if task_id else None)
-            or _task_env_overrides.get(effective_task_id, {})
+            or _task_env_overrides.get(effective_task_id)
+            # ``effective_task_id`` is identity-scoped ("default:<id>"),
+            # so keep honouring anything registered under bare "default".
+            or _task_env_overrides.get("default", {})
         )
         
         # Select image based on env type, with per-task override support

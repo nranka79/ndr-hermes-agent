@@ -640,7 +640,12 @@ def _get_or_create_env(task_id: str):
 
         config = _get_env_config()
         env_type = config["env_type"]
-        overrides = _task_env_overrides.get(effective_task_id, {})
+        overrides = (
+            _task_env_overrides.get(effective_task_id)
+            # effective_task_id is identity-scoped ("default:<id>"); keep
+            # honouring anything registered under the bare "default" key.
+            or _task_env_overrides.get("default", {})
+        )
 
         if env_type == "docker":
             image = overrides.get("docker_image") or config["docker_image"]
@@ -1282,8 +1287,12 @@ def execute_code(
         try:
             from gateway.session_context import get_gws_identity_env as _gie
             _session_tid = _gie()
-            if _session_tid:
-                child_env["HERMES_SESSION_USER_ID"] = _session_tid
+            # ALWAYS (over)write, including clearing to "" when this
+            # session has no identity: child_env is derived from the
+            # parent process env, which can carry a value left by another
+            # session.  Fail closed rather than inherit a stale identity
+            # (mirrors the terminal identity inject in terminal_tool.py).
+            child_env["HERMES_SESSION_USER_ID"] = _session_tid or ""
         except Exception:
             pass
 

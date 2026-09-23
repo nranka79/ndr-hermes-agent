@@ -281,6 +281,59 @@ def _cwd_marker(session_id: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Session-identity env vars (never persisted into the shell snapshot)
+# ---------------------------------------------------------------------------
+
+# ``gateway.session_context`` bridges the per-session identity/routing vars
+# (``HERMES_SESSION_*``) and the cron owner/delivery vars (``HERMES_CRON_*``)
+# into every subprocess environment.  They must NEVER be captured into the
+# shell snapshot.  The snapshot is re-sourced by whichever session runs the
+# next command in this environment, so a persisted value silently overrides
+# the identity the caller passed in via ``Popen(env=...)`` -- and the command
+# then authenticates to gws-vault as the wrong person.
+#
+# That is the 2026-09-23 cross-user token leak: a Telegram turn created the
+# shared "default" environment, baking ``HERMES_SESSION_USER_ID=8502281203``
+# into the snapshot, and every later command -- from any user, including the
+# owner's own web sessions -- ran as that user until the process restarted.
+_IDENTITY_ENV_PREFIXES = ("HERMES_SESSION_", "HERMES_CRON_")
+
+# Matches an ``export -p`` line for an identity var (``declare -x NAME="v"``).
+_IDENTITY_EXPORT_RE = "^declare -x (" + "|".join(_IDENTITY_ENV_PREFIXES) + ")"
+
+# Matches a bare exported variable name, for filtering ``compgen -e`` output.
+_IDENTITY_NAME_RE = "^(" + "|".join(_IDENTITY_ENV_PREFIXES) + ")"
+
+
+def _snapshot_dump_cmd(quoted_snap: str) -> str:
+    """Shell command that writes the env snapshot, minus the identity vars."""
+    return (
+        f"export -p | grep -vE '{_IDENTITY_EXPORT_RE}' "
+        f"> {quoted_snap} 2>/dev/null || true"
+    )
+
+
+def _snapshot_source_cmds(quoted_snap: str) -> list:
+    """Shell commands that source the snapshot without losing our identity.
+
+    Belt and braces for :func:`_snapshot_dump_cmd`: a snapshot left by an
+    older build, or by a concurrent process that predates this fix, can still
+    contain identity vars, and sourcing it would override what
+    ``Popen(env=...)`` just handed us.  So stash the identity we were given,
+    source the snapshot, drop any identity var it defined, then restore ours.
+    A session with no identity restores nothing and stays empty -- fail
+    closed, never inherit.
+    """
+    return [
+        f'__hermes_identity="$(export -p | grep -E \'{_IDENTITY_EXPORT_RE}\' || true)"',
+        f"source {quoted_snap} >/dev/null 2>&1 || true",
+        f"unset $(compgen -e | grep -E '{_IDENTITY_NAME_RE}' || true) 2>/dev/null || true",
+        'eval "$__hermes_identity" 2>/dev/null || true',
+        "unset __hermes_identity",
+    ]
+
+
+# ---------------------------------------------------------------------------
 # BaseEnvironment
 # ---------------------------------------------------------------------------
 
@@ -370,7 +423,7 @@ class BaseEnvironment(ABC):
         _quoted_snap = shlex.quote(self._snapshot_path)
         _quoted_cwd_file = shlex.quote(self._cwd_file)
         bootstrap = (
-            f"export -p > {_quoted_snap}\n"
+            f"{_snapshot_dump_cmd(_quoted_snap)}\n"
             f"declare -f | grep -vE '^_[^_]' >> {_quoted_snap}\n"
             f"alias -p >> {_quoted_snap}\n"
             f"echo 'shopt -s expand_aliases' >> {_quoted_snap}\n"
@@ -435,9 +488,7 @@ class BaseEnvironment(ABC):
         # vars into every tool response (issue #15459).  Linux bash is
         # silent here, but the redirect is harmless.
         if self._snapshot_ready:
-            parts.append(
-                f"source {_quoted_snap} >/dev/null 2>&1 || true"
-            )
+            parts.extend(_snapshot_source_cmds(_quoted_snap))
 
         # Preserve bare ``~`` expansion, but rewrite ``~/...`` through
         # ``$HOME`` so suffixes with spaces remain a single shell word.
@@ -449,9 +500,10 @@ class BaseEnvironment(ABC):
         parts.append(f"eval '{escaped}'")
         parts.append("__hermes_ec=$?")
 
-        # Re-dump env vars to snapshot (last-writer-wins for concurrent calls)
+        # Re-dump env vars to snapshot (last-writer-wins for concurrent calls).
+        # Session-identity vars are filtered out -- see _snapshot_dump_cmd.
         if self._snapshot_ready:
-            parts.append(f"export -p > {_quoted_snap} 2>/dev/null || true")
+            parts.append(_snapshot_dump_cmd(_quoted_snap))
 
         # Write CWD to file (local reads this) and stdout marker (remote parses this)
         parts.append(f"pwd -P > {_quoted_cwd_file} 2>/dev/null || true")
