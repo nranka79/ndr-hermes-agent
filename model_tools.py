@@ -363,6 +363,37 @@ def get_tool_definitions(
     return result
 
 
+_toolset_drift_logged = False
+
+
+def _log_toolset_drift_once() -> None:
+    """Log toolset drift once per process, at WARNING.
+
+    Drift = a tool registered under a configurable toolset but missing from
+    the platform composite in ``toolsets._HERMES_CORE_TOOLS``. It no longer
+    disables the toolset (see ``tools_config._composite_covers_toolset``), but
+    it still means the static list has fallen behind the registry, so it
+    should be visible in agent.log rather than discovered in a transcript.
+    """
+    global _toolset_drift_logged
+    if _toolset_drift_logged:
+        return
+    _toolset_drift_logged = True
+    try:
+        from hermes_cli.tools_config import audit_toolset_coverage
+        report = audit_toolset_coverage()
+        if report:
+            logger.warning(
+                "Toolset drift detected (registered but not in "
+                "toolsets._HERMES_CORE_TOOLS): %s",
+                "; ".join(
+                    f"{k}: {', '.join(v)}" for k, v in sorted(report.items())
+                ),
+            )
+    except Exception as exc:  # pragma: no cover -- never break tool loading
+        logger.debug("Toolset drift audit skipped: %s", exc)
+
+
 def _compute_tool_definitions(
     enabled_toolsets: Optional[List[str]] = None,
     disabled_toolsets: Optional[List[str]] = None,
@@ -370,6 +401,8 @@ def _compute_tool_definitions(
     skip_tool_search_assembly: bool = False,
 ) -> List[Dict[str, Any]]:
     """Uncached implementation of :func:`get_tool_definitions`."""
+    _log_toolset_drift_once()
+
     # Determine which tool names the caller wants
     tools_to_include: set = set()
 

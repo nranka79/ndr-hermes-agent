@@ -1287,6 +1287,101 @@ def _parse_enabled_flag(value, default: bool = True) -> bool:
     return default
 
 
+# Toolset-drift warnings are emitted once per (toolset, platform) per process;
+# _get_platform_tools runs on every session build and would otherwise repeat
+# the same line thousands of times a day in agent.log.
+_drift_warned: Set[tuple] = set()
+
+
+def _composite_covers_toolset(
+    ts_key: str,
+    composite_tools: Set[str],
+    platform: str = "",
+) -> bool:
+    """Return True when a platform composite implies configurable key *ts_key*.
+
+    The decision runs against the toolset's STATIC definition, never the live
+    registry view. ``resolve_toolset()`` grows whenever a module registers a
+    new tool under an existing toolset name -- every new ``gws_*`` operation,
+    every plugin -- while the composites it is compared against are
+    hand-maintained lists in ``toolsets``. A strict ``issubset()`` over the
+    resolved view therefore turns one unlisted tool into the silent, total
+    loss of that toolset.
+
+    That is not hypothetical. On 2026-09-13 ``gws_gmail_attachment_get`` was
+    auto-registered into ``oauth`` without being added to
+    ``toolsets._HERMES_CORE_TOOLS``; ``messaging`` includes ``oauth``, so the
+    subset test failed and every gateway session (Telegram, OpenWebUI, cron)
+    lost ``whatsapp_link``, ``send_message``, ``send_oauth_url`` and all
+    ``gws_*``/``kelsa_*`` tools for ten days. ``apify_run_actor`` did the same
+    to ``web``, taking ``web_extract`` with it.
+
+    Tools present in the registry but missing from the composite no longer
+    veto the toolset -- they are logged as drift and the toolset stays on.
+    Registry-only toolsets (plugins, MCP servers) have no static definition,
+    so for those the resolved view is all there is and is used as-is.
+    """
+    from toolsets import resolve_toolset, static_toolset_tools
+
+    resolved = set(resolve_toolset(ts_key))
+    basis = static_toolset_tools(ts_key) or resolved
+    if not basis:
+        return False
+
+    uncovered_basis = basis - composite_tools
+    if uncovered_basis:
+        # The toolset's own declared tools are not in the composite: this
+        # platform genuinely does not carry it. Normal for e.g. `spotify`.
+        logger.debug(
+            "Toolset %r not implied by the %r composite (missing: %s)",
+            ts_key, platform or "?", ", ".join(sorted(uncovered_basis)),
+        )
+        return False
+
+    drift = resolved - composite_tools
+    if drift and (ts_key, platform) not in _drift_warned:
+        _drift_warned.add((ts_key, platform))
+        logger.warning(
+            "Toolset drift: %r exposes %d tool(s) absent from the %r composite "
+            "(%s). Keeping %r enabled -- add the name(s) to "
+            "toolsets._HERMES_CORE_TOOLS to silence this.",
+            ts_key, len(drift), platform or "?", ", ".join(sorted(drift)), ts_key,
+        )
+    return True
+
+
+def audit_toolset_coverage(platform: str = "telegram") -> Dict[str, List[str]]:
+    """Report configurable toolsets that have drifted from the platform composite.
+
+    Returns ``{toolset_key: [tool names registered under it but missing from
+    the platform's composite tool list]}``. An empty dict means no drift.
+
+    This is the check that would have caught the 2026-09-13 incident at
+    deploy time instead of ten days later in a chat transcript. It is called
+    once per process from ``model_tools._compute_tool_definitions`` (logged at
+    WARNING) and asserted in ``tests/test_toolset_drift.py``.
+    """
+    from toolsets import resolve_toolset
+
+    plat_info = PLATFORMS.get(platform)
+    composite_name = (
+        plat_info["default_toolset"] if plat_info else f"hermes-{platform}"
+    )
+    composite = set(resolve_toolset(composite_name))
+
+    report: Dict[str, List[str]] = {}
+    for ts_key, _, _ in CONFIGURABLE_TOOLSETS:
+        if not _toolset_allowed_for_platform(ts_key, platform):
+            continue
+        resolved = set(resolve_toolset(ts_key))
+        if not resolved or not resolved & composite:
+            continue  # toolset this platform does not carry at all
+        missing = sorted(resolved - composite)
+        if missing:
+            report[ts_key] = missing
+    return report
+
+
 def _get_platform_tools(
     config: dict,
     platform: str,
@@ -1294,7 +1389,7 @@ def _get_platform_tools(
     include_default_mcp_servers: bool = True,
 ) -> Set[str]:
     """Resolve which individual toolset names are enabled for a platform."""
-    from toolsets import resolve_toolset, TOOLSETS
+    from toolsets import resolve_toolset, static_toolset_tools, TOOLSETS
 
     platform_toolsets = config.get("platform_toolsets") or {}
     toolset_names = platform_toolsets.get(platform)
@@ -1348,8 +1443,7 @@ def _get_platform_tools(
             for ts_key, _, _ in CONFIGURABLE_TOOLSETS:
                 if not _toolset_allowed_for_platform(ts_key, platform):
                     continue
-                ts_tools = set(resolve_toolset(ts_key))
-                if ts_tools and ts_tools.issubset(composite_tools):
+                if _composite_covers_toolset(ts_key, composite_tools, platform):
                     expanded.add(ts_key)
 
             default_off = set(_DEFAULT_OFF_TOOLSETS)
@@ -1371,8 +1465,7 @@ def _get_platform_tools(
         for ts_key, _, _ in CONFIGURABLE_TOOLSETS:
             if not _toolset_allowed_for_platform(ts_key, platform):
                 continue
-            ts_tools = set(resolve_toolset(ts_key))
-            if ts_tools and ts_tools.issubset(all_tool_names):
+            if _composite_covers_toolset(ts_key, all_tool_names, platform):
                 enabled_toolsets.add(ts_key)
 
         # Auto-enable ``x_search`` when xAI credentials are configured.
@@ -1440,7 +1533,14 @@ def _get_platform_tools(
         if ts_def.get("includes"):
             continue
         ts_tools = set(resolve_toolset(ts_key))
-        if not ts_tools or not ts_tools.issubset(platform_tool_universe):
+        # Compare the STATIC declaration against the composite, not the
+        # registry-resolved view -- the resolved view grows with every
+        # auto-registered tool while the composite is hand-maintained, so a
+        # strict subset test here silently un-recovers whole toolsets. This
+        # is what made `gws-dwd` unreachable once gws_dwd_gmail_attachment_get
+        # was registered. See _composite_covers_toolset() for the long form.
+        ts_basis = static_toolset_tools(ts_key) or ts_tools
+        if not ts_basis or not ts_basis.issubset(platform_tool_universe):
             continue
         if has_explicit_config and ts_tools.issubset(configurable_tool_universe):
             continue

@@ -44,6 +44,10 @@ _GWS_OPS = [
     "gws_gmail_draft_delete",
     "gws_gmail_trash",
     "gws_gmail_untrash",
+    # Auto-registered by tools/gws_ops_tools.py from the OPERATIONS table in
+    # tools/gws_ops.py. Added there 2026-09-13 but not here, which silently
+    # disabled the whole `messaging` toolset -- see static_toolset_tools().
+    "gws_gmail_attachment_get",
     "gws_drive_list",
     "gws_drive_get",
     "gws_drive_create_folder",
@@ -70,6 +74,9 @@ _GWS_DWD_OPS = [
     "gws_dwd_gmail_draft_delete",
     "gws_dwd_gmail_trash",
     "gws_dwd_gmail_untrash",
+    # Auto-registered from the same OPERATIONS table as its OAuth twin; see
+    # the note on "gws_gmail_attachment_get" above.
+    "gws_dwd_gmail_attachment_get",
     "gws_dwd_drive_list",
     "gws_dwd_drive_get",
     "gws_dwd_drive_create_folder",
@@ -97,7 +104,7 @@ _RPC_ONLY_TOOLS = frozenset({
 # Edit this once to update all platforms simultaneously.
 _HERMES_CORE_TOOLS = [
     # Web
-    "web_search", "web_extract",
+    "web_search", "web_extract", "apify_run_actor",
     # Terminal + process management
     "terminal", "process",
     # File manipulation
@@ -204,10 +211,12 @@ _HERMES_WEBHOOK_SAFE_TOOLS = [
 # surfaces (they render multi-choice prompts / cross-channel send buttons).
 _HERMES_INTERACTIVE_UI_TOOLS = {"clarify", "send_message"}
 
-# Shared core bundle for non-interactive surfaces (API server / editor ACP).
-# Same tools as every other platform composite minus the interactive-UI
-# tools — so OpenWebUI/ACP expose the exact same GWS, OAuth, contacts,
-# WhatsApp, Kelsa, etc. tools that CLI/Telegram/Slack resolve.
+# Shared core bundle for the editor (ACP) surface: every other platform
+# composite minus the interactive-UI tools.
+#
+# NOTE: the API server (OpenWebUI) used to share this bundle. It no longer
+# does — it carries the full _HERMES_CORE_TOOLS, identical to Telegram. See
+# the "hermes-api-server" entry below.
 _HERMES_CORE_TOOLS_NONINTERACTIVE = [
     t for t in _HERMES_CORE_TOOLS if t not in _HERMES_INTERACTIVE_UI_TOOLS
 ]
@@ -533,8 +542,8 @@ TOOLSETS = {
     },
 
     "hermes-api-server": {
-        "description": "OpenAI-compatible API server — full agent tools accessible via HTTP (no interactive UI tools like clarify or send_message)",
-        "tools": _HERMES_CORE_TOOLS_NONINTERACTIVE,
+        "description": "OpenAI-compatible API server (OpenWebUI / chat.ahfl.in) — exactly the same toolset as Telegram, including clarify and send_message",
+        "tools": _HERMES_CORE_TOOLS,
         "includes": []
     },
     
@@ -743,6 +752,45 @@ def get_toolset(name: str) -> Optional[Dict[str, Any]]:
         "tools": registry.get_tool_names_for_toolset(registry_toolset),
         "includes": [],
     }
+
+
+def static_toolset_tools(name: str, visited: Optional[Set[str]] = None) -> Set[str]:
+    """Resolve *name* using ONLY the static ``TOOLSETS`` definitions.
+
+    ``resolve_toolset()`` merges in whatever the live tool registry has filed
+    under the same toolset name, so its result grows every time a module
+    registers a new operation or a plugin files itself under an existing
+    toolset. That makes it the wrong basis for "does this composite intend
+    this toolset?" questions, because the composites it gets compared against
+    (``_HERMES_CORE_TOOLS`` and friends) are hand-maintained lists.
+
+    Concretely: on 2026-09-13 ``gws_gmail_attachment_get`` was auto-registered
+    into ``oauth`` without being added to ``_HERMES_CORE_TOOLS``. ``messaging``
+    includes ``oauth``, so the strict subset test in
+    ``hermes_cli.tools_config._get_platform_tools`` stopped believing the
+    platform composite implied ``messaging`` -- and every gateway session lost
+    ``whatsapp_link``, ``send_message``, ``send_oauth_url`` and every
+    ``gws_*``/``kelsa_*`` tool. One unlisted name, 32 tools gone, for ten days.
+    ``apify_run_actor`` did the same thing to ``web`` (taking ``web_extract``).
+
+    Returns an empty set for registry-only toolsets (plugins, MCP servers) --
+    they have no static definition to reason about, so callers fall back to
+    the resolved view for those.
+    """
+    if visited is None:
+        visited = set()
+    if name in visited:
+        return set()
+    visited.add(name)
+
+    toolset = TOOLSETS.get(name)
+    if not toolset:
+        return set()
+
+    tools = set(toolset.get("tools", []))
+    for included_name in toolset.get("includes", []):
+        tools |= static_toolset_tools(included_name, visited)
+    return tools
 
 
 def resolve_toolset(name: str, visited: Set[str] = None) -> List[str]:
