@@ -99,3 +99,68 @@ for i in ['ndr@draas.com','psingh@draas.com','[REDACTED-TID]','[REDACTED-TID]']:
 
 `execute_code` sandbox has NO GWS_VAULT_SOCKET — vault probes must run via
 terminal with the socket env, not in the sandbox.
+
+---
+
+## 2026-09-15/16 — Open WebUI "Ranka Oasis Structuring" false "Prakash identity" (resolved)
+
+**Symptom the user saw:** agent output in an Open WebUI chat said *"Session
+identity has changed — this session is now under Prakash Singh's token"* /
+*"Google Contacts for NDR's account is blocked from this session (it's under
+Prakash's identity)"*, while contact lookups returned empty.
+
+**What actually happened (evidence):**
+- The session's real `HERMES_SESSION_USER_ID` was `ndr-7449813913` — proven by
+  the tool error text (`User 'ndr-7449813913' has no gws_service configured`).
+  The identity resolver never returned psingh: 3+ days of
+  `API server identity resolved:` lines are all `ndr@draas.com → ndr-7449813913`
+  (plus one `pebblyshark69@gmail.com`).
+- The "Prakash" line was **agent hallucination**. The trigger was a
+  `google-draas` People API scan returning `total contacts: 0` (NDR's work
+  account People list is genuinely empty — his 4,248 contacts live in the
+  "NDR DRAAS Google contacts" sheet / personal account). The agent invented
+  "must be Prakash's token then".
+
+**Root causes fixed (all deployed 2026-09-16):**
+1. `tools/_user_registry.get_user_config()` hardcoded the `identities.telegram`
+   bucket → OpenWebUI/SSO canonical ids (`ndr-7449813913`) returned `{}` →
+   "no gws_service configured" → empty contacts. Fixed by 2-step lookup
+   (canonical id first, then vault `resolve_any`) — commit `275983dec`.
+2. The durable Pipe `hermes_agent_durable` built its `/v1/runs` call with only
+   `Authorization` — it never forwarded `X-OpenWebUI-User-Email`, so pipe runs
+   were anonymous. Now forwards the SSO email from `__user__`/`body["user"]`
+   (`patches/open-webui/hermes_agent_durable_pipe.py`, v0.2.0).
+3. The Pipe also used the **LLM-gateway** key (`lgw-…`, from
+   `OPENAI_API_KEY="%(ENV_LLM_GATEWAY_API_KEY)s"`) against the Hermes API and
+   always got **401**. Fixed by setting the pipe valves
+   `hermes_base_url=http://hermes:8642/v1` + `hermes_api_key=<API_SERVER_KEY>`.
+4. `api_server._handle_runs` (the `/v1/runs` handler) never called
+   `user_identity(request)` and passed no `user_id` to `_create_agent` /
+   `set_session_vars` → durable runs were anonymous even with the header. Now
+   resolves identity and binds it.
+5. **Cross-session leak (the real danger):** `tools/terminal_tool.py` only
+   wrote `env.env["HERMES_SESSION_USER_ID"]` when the current identity was
+   truthy. Terminal environments are **shared** (local backend collapses
+   `task` to `default`), so a value left by a concurrent session (e.g. Bharat
+   `8717455402`) leaked into an NDR run — reproduced live:
+   `printenv HERMES_SESSION_USER_ID` → `8717455402` for an `ndr@draas.com`
+   request. Fixed by ALWAYS (over)writing, clearing to `""` when the session
+   has no identity (fail-closed). Also added an INFO
+   `terminal identity inject:` line for auditing.
+6. `gateway/platforms/identity_resolver.py`: resolution now logs at **INFO**
+   (was DEBUG, invisible in prod), and the anonymous/no-header case logs
+   explicitly.
+7. Added a `[session identity]` preamble to the API-server system prompt
+   (`api_server._with_identity_note`) so the model is told who it is and
+   **cannot invent an identity when a tool fails**.
+
+**Residual risk:** the shared terminal env (`task=default`) is still mutated
+in place; two *concurrent* sessions issuing terminal commands could still race
+on `env.env`. Proper fix = per-session terminal env keying or a per-call env
+override in `BaseEnvironment.execute()`. Track separately.
+
+**Audit rule:** on any "wrong identity" report, run
+`docker logs hermes-hermes-1 | grep -aE "API server identity (resolved|:)"`
+and `docker logs hermes-hermes-1 | grep -a "terminal identity inject"` — those
+two lines now show, per request, exactly which identity was resolved and which
+was injected into each terminal subprocess.
