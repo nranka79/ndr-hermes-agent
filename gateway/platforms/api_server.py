@@ -503,6 +503,26 @@ def _session_chat_user_message(body: Dict[str, Any], *, param: str = "message") 
         return None, _multimodal_validation_error(exc, param=param)
 
 
+def _steerable_text(content: Any) -> str:
+    """Flatten normalized run input/history content to plain text for steer().
+
+    agent.steer(text) only accepts a string -- it appends to the last tool
+    result's content, which is always text.  Image/file parts on a steering
+    follow-up are dropped rather than silently stringified into noise; a
+    genuinely new attachment should start its own turn, not steer one already
+    in flight.
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for p in content:
+            if isinstance(p, dict) and str(p.get("type") or "") == "text":
+                parts.append(str(p.get("text") or ""))
+        return "\n".join(parts)
+    return str(content or "")
+
+
 def check_api_server_requirements() -> bool:
     """Check if API server dependencies are available."""
     return AIOHTTP_AVAILABLE
@@ -1125,6 +1145,13 @@ class APIServerAdapter(BasePlatformAdapter):
         # Active run agent/task references for stop support
         self._active_run_agents: Dict[str, Any] = {}
         self._active_run_tasks: Dict[str, "asyncio.Task"] = {}
+        # client_chat_id -> run_id for the currently in-flight run on that
+        # chat, if any.  Lets a follow-up message arriving while a run is
+        # still active steer the existing agent (agent.steer(), tool-boundary
+        # injection) instead of spinning up a second, parallel run against
+        # the same Gmail/Drive/Kelsa state.  See #5 in the 2026-09-19
+        # Ranka Amber incident writeup.
+        self._active_chat_runs: Dict[str, str] = {}
         # Pollable run status for dashboards and external control-plane UIs.
         self._run_statuses: Dict[str, Dict[str, Any]] = {}
         # Active approval session key for each run_id.  The approval core
@@ -4440,6 +4467,51 @@ class APIServerAdapter(BasePlatformAdapter):
                         )
                     conversation_history.append({"role": msg["role"], "content": str(content)})
 
+        # Client correlation ids (e.g. Open WebUI chat/message ids) so a
+        # frontend can find + reconcile this run later.  Optional.
+        client_chat_id = str(
+            body.get("client_chat_id") or body.get("openwebui_chat_id") or ""
+        ).strip()
+        client_message_id = str(
+            body.get("client_message_id") or body.get("openwebui_message_id") or ""
+        ).strip()
+
+        # #5 -- steer instead of duplicate.  If a run is already in flight
+        # for this chat, fold this message into it at the next tool boundary
+        # (agent.steer()) rather than starting a second independent agent
+        # that redoes the same Gmail/Drive/Kelsa lookups from scratch.
+        if client_chat_id:
+            _existing_run_id = self._active_chat_runs.get(client_chat_id)
+            _existing_agent = (
+                self._active_run_agents.get(_existing_run_id)
+                if _existing_run_id else None
+            )
+            if _existing_agent is not None:
+                _steer_ok = False
+                try:
+                    _steer_ok = bool(_existing_agent.steer(_steerable_text(user_message)))
+                except Exception as _steer_exc:
+                    logger.warning(
+                        "[api_server] steer failed for chat %s -> run %s: %s",
+                        client_chat_id, _existing_run_id, _steer_exc,
+                    )
+                if _steer_ok:
+                    logger.info(
+                        "[api_server] steered chat %s into in-flight run %s "
+                        "instead of starting a new run",
+                        client_chat_id, _existing_run_id,
+                    )
+                    return web.json_response(
+                        {
+                            "run_id": _existing_run_id,
+                            "status": "steered",
+                            "note": "Folded into the run already in progress for this chat.",
+                        },
+                        status=200,
+                    )
+                # Empty/whitespace text or steer() raised -- fall through and
+                # start a normal new run rather than silently dropping input.
+
         run_id = f"run_{uuid.uuid4().hex}"
         session_id = body.get("session_id") or stored_session_id or run_id
         approval_session_key = gateway_session_key or session_id or run_id
@@ -4451,14 +4523,6 @@ class APIServerAdapter(BasePlatformAdapter):
         from gateway.platforms.identity_resolver import user_identity
         _run_user_id, _run_user_email, _run_draas_user_id = user_identity(request)
         ephemeral_system_prompt = _with_identity_note(ephemeral_system_prompt, _run_user_id)
-        # Client correlation ids (e.g. Open WebUI chat/message ids) so a
-        # frontend can find + reconcile this run later.  Optional.
-        client_chat_id = str(
-            body.get("client_chat_id") or body.get("openwebui_chat_id") or ""
-        ).strip()
-        client_message_id = str(
-            body.get("client_message_id") or body.get("openwebui_message_id") or ""
-        ).strip()
         loop = asyncio.get_running_loop()
         q: "asyncio.Queue[Optional[Dict]]" = asyncio.Queue()
         created_at = time.time()
@@ -4514,6 +4578,8 @@ class APIServerAdapter(BasePlatformAdapter):
                     user_id=_run_user_id or None,
                 )
                 self._active_run_agents[run_id] = agent
+                if client_chat_id:
+                    self._active_chat_runs[client_chat_id] = run_id
 
                 def _approval_notify(approval_data: Dict[str, Any]) -> None:
                     event = dict(approval_data or {})
@@ -4602,6 +4668,27 @@ class APIServerAdapter(BasePlatformAdapter):
                     )
                 else:
                     final_response = result.get("final_response", "") if isinstance(result, dict) else ""
+                    # Race window: a steer() (see #5 above) can land after the
+                    # model's last tool-calling turn, i.e. after the final
+                    # tool boundary the agent will ever drain into for this
+                    # run. turn_finalizer.py still captures it rather than
+                    # dropping it (result["pending_steer"]), but nothing on
+                    # this path reads that field the way gateway/run.py does
+                    # for Telegram. Surface it plainly instead of losing it.
+                    _leftover_steer = (
+                        result.get("pending_steer") if isinstance(result, dict) else None
+                    )
+                    if _leftover_steer:
+                        final_response = (final_response or "") + (
+                            "\n\n---\n_A message you sent arrived just as this "
+                            "reply was finishing and could not be folded in "
+                            "\u2014 please resend:_ \u201c" + _leftover_steer.strip() + "\u201d"
+                        )
+                        logger.info(
+                            "[api_server] run %s: leftover steer text (%d chars) "
+                            "surfaced to user instead of being dropped",
+                            run_id, len(_leftover_steer),
+                        )
                     q.put_nowait({
                         "event": "run.completed",
                         "run_id": run_id,
@@ -4683,6 +4770,12 @@ class APIServerAdapter(BasePlatformAdapter):
                 self._active_run_agents.pop(run_id, None)
                 self._active_run_tasks.pop(run_id, None)
                 self._run_approval_sessions.pop(run_id, None)
+                # Only clear the chat_id index if it still points at THIS
+                # run -- a steer() may have kept this run alive well past
+                # another run's start, or a brand-new run for the same chat
+                # could already have replaced the mapping.
+                if client_chat_id and self._active_chat_runs.get(client_chat_id) == run_id:
+                    self._active_chat_runs.pop(client_chat_id, None)
 
         task = asyncio.create_task(_run_and_close())
         self._active_run_tasks[run_id] = task
@@ -5225,6 +5318,12 @@ class APIServerAdapter(BasePlatformAdapter):
                 self._active_run_agents.pop(run_id, None)
                 self._active_run_tasks.pop(run_id, None)
                 self._run_approval_sessions.pop(run_id, None)
+                # Reverse lookup: client_chat_id isn't in scope in this sweep
+                # loop (only run_id is), so drop any chat_id entry that still
+                # points at the run we just swept.
+                for _chat_id, _mapped_run_id in list(self._active_chat_runs.items()):
+                    if _mapped_run_id == run_id:
+                        self._active_chat_runs.pop(_chat_id, None)
 
             stale_statuses = [
                 run_id
