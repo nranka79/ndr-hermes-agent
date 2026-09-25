@@ -465,6 +465,23 @@ TOOLSETS = {
         "includes": [],
     },
 
+    "dra_content": {
+        "description": (
+            "DRA Content artifact publishing -- create, update, search, "
+            "share and export browser-renderable documents and "
+            "presentations through the DRA Content platform "
+            "(content.ahfl.in). Not enabled for any profile as of Stage 10; "
+            "see hermes-data/skills/productivity/dra-content/SKILL.md."
+        ),
+        "tools": [
+            "content_publish", "content_update", "content_find", "content_get",
+            "content_list_versions", "content_share", "content_revoke",
+            "content_access_list", "content_user_access", "content_archive",
+            "content_export",
+        ],
+        "includes": [],
+    },
+
     "discord": {
         "description": "Discord read and participate tools (fetch messages, search members, create threads)",
         "tools": ["discord"],
