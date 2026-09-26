@@ -1,9 +1,11 @@
 """DRA Content — Hermes' publishing surface for browser-renderable artifacts.
 
-Toolset: ``dra_content``. Registered but NOT added to any profile's
-toolsets list anywhere in this codebase -- a normal ``hermes chat`` session
-sees zero dra_content tools in its schema until that is done deliberately
-(DRA Content Stage 14), exactly like the kanban toolset's own gating.
+Toolset: ``dra_content``. Enabled as of Stage 14 for the ``telegram`` and
+``api_server`` platforms via ``platform_toolsets`` in config.yaml. Note
+that a toolset name must appear in BOTH ``toolsets.py``'s TOOLSETS catalog
+and ``hermes_cli/tools_config.py``'s CONFIGURABLE_TOOLSETS -- platform
+resolution silently drops any name missing from the latter, with no error
+anywhere, which cost a full debugging cycle in Stage 11.
 
 Every handler is a thin translation layer over the DRA Content API: build a
 JSON body, call dra_content_client, translate the response into a small
@@ -20,6 +22,7 @@ repetitive-task rule; the other nine follow its exact shape.
 from __future__ import annotations
 
 import base64
+import json
 import logging
 
 from tools import dra_content_client as client
@@ -64,12 +67,62 @@ FILES_SCHEMA = {
 }
 
 
-def _encode_files(files: list) -> list:
+def _coerce_files(files):
+    """Normalise whatever the model actually sent into a list of dicts.
+
+    Models do not reliably emit a native JSON array for an array-typed
+    parameter. Some emit the whole array as a JSON-encoded *string*; when
+    that happens Hermes' own coerce_tool_args cannot parse it either and
+    falls back to wrapping the bare string in a single-element list. The
+    first production call of this tool hit exactly that, and the old code
+    -- which assumed every element was a dict -- died with
+    "'str' object has no attribute 'get'", an internal error the model
+    could do nothing useful with.
+
+    So: accept a JSON string at either level, and if it still is not
+    usable, fail with a message that tells the model the exact shape to
+    send rather than leaking an AttributeError.
+    """
+    shape_hint = (
+        'files must be an array of objects, each {"path": "index.html", '
+        '"content": "<html>..."} -- not a JSON-encoded string'
+    )
+
+    if isinstance(files, str):
+        try:
+            files = json.loads(files)
+        except (ValueError, TypeError):
+            raise ValueError(shape_hint)
+
+    if isinstance(files, dict):
+        files = [files]
+
+    if not isinstance(files, list) or not files:
+        raise ValueError(shape_hint)
+
+    out = []
+    for item in files:
+        if isinstance(item, str):
+            try:
+                item = json.loads(item)
+            except (ValueError, TypeError):
+                raise ValueError(shape_hint)
+        if not isinstance(item, dict):
+            raise ValueError(shape_hint)
+        out.append(item)
+
+    # A JSON-encoded array nested one level down: [[{...}, {...}]]
+    if len(out) == 1 and isinstance(out[0], list):
+        out = out[0]
+    return out
+
+
+def _encode_files(files) -> list:
     """Text -> base64, validated against the extension allowlist client-side
     so a bad request fails with a clear message here rather than a generic
     422 from content-api."""
     out = []
-    for f in files:
+    for f in _coerce_files(files):
         path = str(f.get("path", "")).strip()
         content = f.get("content")
         if not path:
@@ -137,7 +190,7 @@ async def _handle_publish(args, **kw):
     files = args.get("files")
     if not title:
         return tool_error("title is required")
-    if not files or not isinstance(files, list):
+    if not files:
         return tool_error("files is required and must be a non-empty list")
 
     try:
@@ -217,7 +270,7 @@ async def _handle_update(args, **kw):
     change_summary = str(args.get("change_summary", "")).strip()
     if not artifact_id:
         return tool_error("artifact_id is required")
-    if not files or not isinstance(files, list):
+    if not files:
         return tool_error("files is required and must be a non-empty list")
     if not change_summary:
         return tool_error("change_summary is required -- say what changed in this version")
