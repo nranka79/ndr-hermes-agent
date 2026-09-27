@@ -1,0 +1,26 @@
+/* Presentation-specific overrides. Base look comes from the theme
+   stylesheet selected in index.html; keep customisation here small. */
+
+.reveal .slides section table {
+  font-size: 0.75em;
+}
+
+.reveal .slides section canvas {
+  display: block;
+  margin: 0 auto;
+}
+
+.reveal .slides section .mermaid {
+  display: flex;
+  justify-content: center;
+}
+
+/* Print / PDF export via the browser's own print dialog (Ctrl/Cmd+P).
+   Reveal.js switches to its print stylesheet automatically; this just
+   keeps our chart/diagram containers sane on paper. */
+@media print {
+  .reveal .slides section canvas,
+  .reveal .slides section .mermaid svg {
+    max-width: 100%;
+  }
+}

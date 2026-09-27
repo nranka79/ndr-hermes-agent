@@ -124,10 +124,13 @@ the beacon needs:
 <script src="/lib/dra-content.js"></script>
 ```
 
-For presentations, copy the three files at
-`/srv/dra-content/skill-templates/presentation/` (`index.html`, `app.js`,
-`styles.css`) as your starting point rather than writing a deck from
-scratch — see `references/presentations.md` for what's available (Reveal.js
+For presentations, copy the three files in this skill's own
+`templates/presentation/` directory (`index.html`, `app.js`, `styles.css`)
+as your starting point rather than writing a deck from scratch. They are
+beside this file, so read them with your normal file tools. (They used to
+be quoted as `/srv/dra-content/skill-templates/`, which is not mounted
+into the agent container and could never be read -- which is part of why
+decks were being hand-rolled.) — see `references/presentations.md` for what's available (Reveal.js
 navigation, Chart.js, Mermaid diagrams, speaker notes) and the six approved
 themes. Do not hand-roll a slide framework; do not reference a Reveal.js
 theme or plugin not listed there — anything else 404s, by design (see

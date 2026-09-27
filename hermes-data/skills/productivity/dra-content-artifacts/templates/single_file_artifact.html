@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<!--
+  Known-good SINGLE-FILE artifact skeleton for the DRA Content render origin.
+
+  Copy and extend. Rules this template exists to enforce:
+    * ONE file. No external CSS, no external JS, no self-hosted images.
+      The render origin sandboxes into an opaque origin + sends
+      Cross-Origin-Resource-Policy: same-site, so ALL subresources are blocked.
+    * NO JavaScript is possible (script-src 'self' with no 'unsafe-inline').
+      All interaction below is pure CSS: hidden radios + :checked siblings.
+    * All images are inline data: URIs (img-src allows data:).
+
+  Interaction model, by necessity: click a thumbnail (a <label for=...>) to
+  switch the displayed panel. THERE ARE NO prev/next BUTTONS -- do not promise
+  them in the copy.
+
+  To build for real:
+    * Replace each PLACEHOLDER_* data URI. Full-size images ~880px WebP q74,
+      thumbnails ~190px WebP q58 generated SEPARATELY (never reuse the big URI).
+    * Generate the :checked rules programmatically, one triple per item:
+        #grp-X:checked ~ .split .slides .s-X   { display:block }
+        #grp-X:checked ~ .split .metas .m-X    { display:block }
+        #grp-X:checked ~ .thumbs label[for='grp-X'] { border-color:var(--accent) }
+    * CRITICAL ORDERING: every group's radios must be the FIRST children of the
+      container, and everything the ~ rules target must come AFTER them as a
+      sibling. Sibling combinators cannot look backwards.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Single-file artifact skeleton</title>
+<style>
+/* ---- all CSS must be inline. no external stylesheet will load. ---- */
+:root{--ink:#12141a;--panel:#1b1e26;--panel2:#232733;--line:#333a49;--text:#e9e5dd;
+      --muted:#99a0b0;--lime:#d8ccb6;--accent:#c8a86b}
+*{box-sizing:border-box}
+body{margin:0;background:var(--ink);color:var(--text);
+  font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,Helvetica,Arial,sans-serif}
+h1,h2,h3,h4{line-height:1.2;margin:0 0 .5rem;font-weight:600}
+h1{font-size:clamp(2rem,4vw,3rem);letter-spacing:-.02em}
+h2{font-size:1.6rem}h3{font-size:1.05rem}
+h4{font-size:.78rem;text-transform:uppercase;letter-spacing:.09em;color:var(--accent)}
+p{margin:0 0 .85rem}
+.wrap{max-width:1500px;margin:0 auto;padding:2.5rem clamp(1rem,3vw,2.5rem)}
+.hero{border-bottom:1px solid var(--line)}
+.eyebrow{text-transform:uppercase;letter-spacing:.22em;font-size:.72rem;color:var(--accent);
+  font-weight:700;margin-bottom:1rem}
+.lede{color:#c9cdd6;max-width:62ch}
+
+/* hidden radios: off-screen, NOT display:none (keep them reachable) */
+.vh{position:absolute;width:1px;height:1px;margin:-1px;opacity:0;overflow:hidden;pointer-events:none}
+
+/* ---- pure-CSS tabs ---- */
+section.panel{display:none}
+#setA:checked~.tabs label[for=setA],
+#setB:checked~.tabs label[for=setB]{background:var(--panel2);border-color:var(--accent);color:var(--lime)}
+#setA:checked~#panelA,#setB:checked~#panelB{display:block}
+.tabs{display:flex;gap:.6rem;flex-wrap:wrap;margin-bottom:1.4rem}
+.tab{display:inline-block;background:var(--panel);color:var(--muted);border:1px solid var(--line);
+  border-radius:10px;padding:.6rem 1.05rem;font-size:.87rem;font-weight:600;cursor:pointer}
+.tab span{display:block;font-size:.72rem;font-weight:400;color:#7f8798}
+
+/* ---- split: fixed reference pane + switching pane ---- */
+.split{display:grid;grid-template-columns:minmax(0,.85fr) minmax(0,1.15fr);gap:1.4rem;align-items:start}
+@media(max-width:1080px){.split{grid-template-columns:1fr}}
+.pane{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:1.15rem}
+.pane-head{display:flex;flex-wrap:wrap;align-items:baseline;gap:.7rem;margin-bottom:.9rem}
+.pane-head h3{margin:0;color:var(--lime)}
+.tag{display:inline-block;padding:.18rem .55rem;border-radius:4px;font-size:.74rem;font-weight:700;
+  letter-spacing:.07em;background:var(--panel2);border:1px solid var(--line);color:var(--muted);
+  font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.shot{margin:0;border-radius:8px;overflow:hidden;background:#0d0f13;border:1px solid var(--line);line-height:0}
+.shot img{width:100%;height:auto;display:block}
+.muted{color:var(--muted);font-size:.86rem}
+.quiet{color:#6f7686;font-size:.8rem;border-top:1px dashed var(--line);padding-top:.7rem}
+
+/* only the checked slide / meta is visible */
+.slides>figure,.metas>div{display:none}
+
+/* ---- pure-CSS thumbnail carousel ---- */
+.thumbs{display:grid;grid-template-columns:repeat(auto-fill,minmax(76px,1fr));gap:.45rem;margin-top:1.1rem}
+label.th{cursor:pointer;border:2px solid transparent;border-radius:6px;overflow:hidden;
+  background:#0d0f13;line-height:0;position:relative;display:block}
+label.th img{width:100%;height:auto;display:block}
+label.th i{position:absolute;bottom:0;left:0;right:0;background:rgba(10,11,15,.82);color:#cfd3dc;
+  font-size:.62rem;font-family:ui-monospace,monospace;text-align:center;font-style:normal;line-height:1.6}
+label.th:hover{border-color:#4a5364}
+
+/* ---- generated :checked rules (ONE TRIPLE PER ITEM) ---- */
+#grp-X1:checked~.split .slides .s-X1{display:block}
+#grp-X1:checked~.split .metas .m-X1{display:block}
+#grp-X1:checked~.thumbs label.th[for='grp-X1']{border-color:var(--accent)}
+#grp-X1:checked~.thumbs label.th[for='grp-X1'] i{background:var(--accent);color:#1a1509;font-weight:700}
+</style>
+</head>
+<body>
+
+<header class="hero"><div class="wrap">
+  <p class="eyebrow">Project &times; Inspiration</p>
+  <h1>Artifact title</h1>
+  <p class="lede">One sentence on what this is and what the reader should do with it.</p>
+</div></header>
+
+<div class="wrap">
+<section class="panel" id="panelA">
+  <!-- radios FIRST: everything the ~ rules target must be a sibling after these -->
+  <input type="radio" name="grp" id="grp-X1" class="vh" checked>
+  <input type="radio" name="grp" id="grp-X2" class="vh">
+
+  <div class="split">
+    <div class="pane">
+      <div class="pane-head"><span class="tag">Reference &middot; held constant</span>
+        <h3>Base image</h3></div>
+      <figure class="shot">
+        <img src="PLACEHOLDER_BASE_DATA_URI" alt="Base reference">
+      </figure>
+      <p class="muted">Description of the base.</p>
+      <p class="quiet">This image does not change as you move through the variations.</p>
+    </div>
+
+    <div class="pane">
+      <div class="slides">
+        <figure class="s-X1"><img src="PLACEHOLDER_ITEM1_DATA_URI" alt="Item X1"></figure>
+        <figure class="s-X2"><img src="PLACEHOLDER_ITEM2_DATA_URI" alt="Item X2"></figure>
+      </div>
+      <div class="metas">
+        <div class="m-X1">
+          <div class="pane-head"><span class="tag">X1</span><h3>Element name</h3></div>
+          <p class="muted">What changed, and what it is good for.</p>
+        </div>
+        <div class="m-X2">
+          <div class="pane-head"><span class="tag">X2</span><h3>Element name</h3></div>
+          <p class="muted">What changed, and what it is good for.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="thumbs">
+    <label class="th" for="grp-X1" title="X1 Element name">
+      <img src="PLACEHOLDER_THUMB1_DATA_URI" alt=""><i>X1</i></label>
+    <label class="th" for="grp-X2" title="X2 Element name">
+      <img src="PLACEHOLDER_THUMB2_DATA_URI" alt=""><i>X2</i></label>
+  </div>
+</section>
+</div>
+
+<div class="wrap">
+  <h2>Method &amp; caveats</h2>
+  <p class="muted">State the limits honestly (sample size, what was not verified,
+  what the artifacts are and are not good for).</p>
+</div>
+
+</body>
+</html>
