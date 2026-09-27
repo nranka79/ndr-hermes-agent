@@ -1,0 +1,5 @@
+name: pollinations
+version: 1.0.0
+description: "pollinations.ai image generation backend (free anonymous tier: sana; keyed tier: flux, kontext, gemini image models, flux.2-max)."
+author: Hermes
+kind: backend
