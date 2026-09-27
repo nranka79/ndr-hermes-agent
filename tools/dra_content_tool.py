@@ -22,6 +22,7 @@ repetitive-task rule; the other nine follow its exact shape.
 from __future__ import annotations
 
 import base64
+import os
 import json
 import logging
 
@@ -34,12 +35,24 @@ logger = logging.getLogger(__name__)
 TOOLSET = "dra_content"
 EMOJI = "\U0001F4C4"
 
-# Files a model can plausibly generate as UTF-8 text in a tool call. Binary
-# assets (images) are not supported by these tools yet -- content-api's own
-# extension allowlist is wider, but there is no useful way for a model to
-# pass PNG bytes as a JSON string argument, so that path is deferred rather
-# than half-built.
+# Files a model can plausibly generate as UTF-8 text in a tool call.
 TEXT_EXTENSIONS = (".html", ".htm", ".css", ".js", ".mjs", ".json", ".csv", ".txt", ".md", ".svg")
+
+# Binary assets arrive by reference, never through the model's context: the
+# model names a file already on disk (a generated render, a downloaded chart)
+# and this tool reads and encodes the bytes itself. A model cannot paste a
+# megabyte of base64 into a tool call, which is why the text-only path could
+# never carry an image -- and why images were being parked in Drive and
+# inlined as data: URIs instead, storing every asset twice and producing
+# multi-megabyte pages that cannot be cached per image.
+BINARY_EXTENSIONS = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif", ".ico",
+                     ".woff", ".woff2", ".ttf", ".otf",
+                     ".pdf", ".xlsx", ".docx", ".pptx", ".zip")
+
+# content-api allows 25 MiB per version, but the request is JSON and base64
+# inflates by 4/3, and nginx caps the body at 30 MB. 20 MiB of real bytes is
+# the largest that reliably fits: 20 * 4/3 = 26.7 MB of base64.
+MAX_SOURCE_BYTES = 20 * 1024 * 1024
 
 ARTIFACT_TYPES = ["document", "report", "presentation", "dashboard", "analysis",
                   "proposal", "comparison", "brief", "memo", "specification",
@@ -53,15 +66,26 @@ FILES_SCHEMA = {
         "rel=stylesheet>; JS in a separate file (e.g. app.js) referenced "
         "with <script src=...>. Inline <script> tags will NOT execute -- "
         "the rendering origin's Content-Security-Policy is script-src "
-        "'self', external files only."
+        "'self', external files only. Images and other binary assets are "
+        "uploaded by naming their path on disk in 'source_path' -- never "
+        "as a data: URI and never via Drive."
     ),
     "items": {
         "type": "object",
         "properties": {
-            "path": {"type": "string", "description": "e.g. index.html, styles.css, app.js"},
-            "content": {"type": "string", "description": "The file's full text content"},
+            "path": {"type": "string", "description": "e.g. index.html, styles.css, img/hero.webp"},
+            "content": {"type": "string", "description": "The file's full text content. Use this for text files."},
+            "source_path": {
+                "type": "string",
+                "description": (
+                    "Absolute path to an existing file on disk to upload as-is, "
+                    "instead of 'content'. Use this for images and any other "
+                    "binary asset -- e.g. a generated render. Do not base64 it "
+                    "yourself and do not inline it as a data: URI."
+                ),
+            },
         },
-        "required": ["path", "content"],
+        "required": ["path"],
     },
     "minItems": 1,
 }
@@ -117,29 +141,84 @@ def _coerce_files(files):
     return out
 
 
+def _read_source(path_on_disk: str, artifact_path: str) -> bytes:
+    """Read a binary asset the model named, with the checks that matter.
+
+    The model already has file tools, so this adds no ability to reach a file
+    it could not otherwise read. What it does add is a route from a file to a
+    URL other people can open, so the extension allowlist is the control that
+    matters: it is what stops a credential file or a database dump being
+    published as an artifact asset.
+    """
+    resolved = os.path.realpath(os.path.expanduser(path_on_disk))
+    if not os.path.isfile(resolved):
+        raise ValueError(
+            "file %r: source_path %r does not exist or is not a regular file"
+            % (artifact_path, path_on_disk)
+        )
+    size = os.path.getsize(resolved)
+    if size == 0:
+        raise ValueError("file %r: source_path %r is empty" % (artifact_path, path_on_disk))
+    if size > MAX_SOURCE_BYTES:
+        raise ValueError(
+            "file %r is %.1f MB; the limit is %d MB per file"
+            % (artifact_path, size / 1048576.0, MAX_SOURCE_BYTES // 1048576)
+        )
+    with open(resolved, "rb") as handle:
+        return handle.read()
+
+
 def _encode_files(files) -> list:
-    """Text -> base64, validated against the extension allowlist client-side
-    so a bad request fails with a clear message here rather than a generic
-    422 from content-api."""
+    """Normalise each file to {path, content_b64}.
+
+    Text arrives as 'content' -- what the model typed. Binary arrives as
+    'source_path' -- a file on disk this function reads itself, so the bytes
+    never pass through the model's context. Extensions are validated here,
+    against the same allowlist content-api enforces, so a bad request fails
+    with a clear message rather than a generic 422.
+    """
     out = []
+    total = 0
     for f in _coerce_files(files):
         path = str(f.get("path", "")).strip()
-        content = f.get("content")
         if not path:
             raise ValueError("every file needs a non-empty path")
-        if content is None:
-            raise ValueError("file %r has no content" % path)
+        content = f.get("content")
+        source_path = f.get("source_path")
         ext = "." + path.rsplit(".", 1)[-1].lower() if "." in path else ""
-        if ext not in TEXT_EXTENSIONS:
+
+        if source_path:
+            if ext not in BINARY_EXTENSIONS and ext not in TEXT_EXTENSIONS:
+                raise ValueError(
+                    "file %r: extension %s is not allowed (%s)"
+                    % (path, ext or "(none)", ", ".join(BINARY_EXTENSIONS + TEXT_EXTENSIONS))
+                )
+            blob = _read_source(str(source_path), path)
+        else:
+            if content is None:
+                raise ValueError(
+                    "file %r needs either 'content' (text) or 'source_path' "
+                    "(a file on disk, for images and other binary assets)" % path
+                )
+            if ext in BINARY_EXTENSIONS:
+                raise ValueError(
+                    "file %r is a binary type (%s); pass it as 'source_path' "
+                    "naming the file on disk, not as inline 'content'" % (path, ext)
+                )
+            if ext not in TEXT_EXTENSIONS:
+                raise ValueError(
+                    "file %r: extension %s is not a supported text type (%s)"
+                    % (path, ext or "(none)", ", ".join(TEXT_EXTENSIONS))
+                )
+            blob = str(content).encode("utf-8")
+
+        total += len(blob)
+        if total > MAX_SOURCE_BYTES:
             raise ValueError(
-                "file %r: extension %s is not a supported text type (%s). "
-                "Binary assets are not yet supported."
-                % (path, ext or "(none)", ", ".join(TEXT_EXTENSIONS))
+                "the version totals more than %d MB; publish fewer or smaller assets"
+                % (MAX_SOURCE_BYTES // 1048576)
             )
-        out.append({
-            "path": path,
-            "content_b64": base64.b64encode(str(content).encode("utf-8")).decode("ascii"),
-        })
+        out.append({"path": path, "content_b64": base64.b64encode(blob).decode("ascii")})
     return out
 
 

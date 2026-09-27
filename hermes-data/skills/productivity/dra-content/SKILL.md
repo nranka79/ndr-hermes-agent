@@ -93,6 +93,25 @@ Multi-file artifacts are the normal, supported shape. There is no need to
 inline everything into one file — an earlier renderer bug made that
 necessary, and it is fixed.
 
+### Images and other binary assets
+
+Give the file's path on disk as `source_path` instead of `content`. The
+tool reads and encodes the bytes itself:
+
+```json
+{"path": "img/villa-v01.webp", "source_path": "/data/hermes/tmp/render01.webp"}
+```
+
+**Do not** inline images as `data:` URIs, and **do not** park them in Drive
+and link out. Both were workarounds for the tool being text-only; it no
+longer is. Inlining produced multi-megabyte pages that no browser can cache
+per image and stored every asset twice.
+
+Allowed: `.png .jpg .jpeg .gif .webp .avif .ico .woff .woff2 .ttf .otf
+.pdf .xlsx .docx .pptx .zip`. Limit 20 MB per file and 20 MB per version —
+the request is JSON and base64 inflates by a third, and nginx caps the body
+at 30 MB.
+
 ### Shared libraries, no need to re-implement
 
 `/lib/dra-content.js` gives you analytics (opens, scroll depth, clicks,
