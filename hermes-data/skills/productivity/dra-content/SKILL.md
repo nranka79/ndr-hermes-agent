@@ -79,12 +79,33 @@ Security Policy:
   `@import url(https://...)` in CSS. Everything must be a file you upload
   or something already served from `/lib/` (see below).
 - Inline `<style>` and `style=""` attributes work fine.
+- **Never nest an HTML comment.** HTML comments do not nest: the first
+  `-->` ends the comment and everything after it becomes live markup. A
+  stray `<script>` created that way swallows every tag up to the next
+  `</script>`, which is usually a real library include. This silently broke
+  every presentation ever produced, while every file still returned 200.
+- **Never set `<meta name="referrer">`.** The renderer requires a
+  same-artifact `Referer` to stop one artifact reading another, and fails
+  closed. Suppressing the referrer costs the artifact its own stylesheet
+  and scripts.
+
+Multi-file artifacts are the normal, supported shape. There is no need to
+inline everything into one file — an earlier renderer bug made that
+necessary, and it is fixed.
 
 ### Shared libraries, no need to re-implement
 
-`/lib/dra-content.js` is loaded automatically by the renderer shell for
-analytics (opens, scroll depth, clicks, downloads) — you don't need to
-reference it yourself. For presentations, copy the three files at
+`/lib/dra-content.js` gives you analytics (opens, scroll depth, clicks,
+downloads). Load it yourself, and load `_token.js` immediately before it —
+that file is generated per artifact by the renderer and carries the token
+the beacon needs:
+
+```html
+<script src="_token.js"></script>
+<script src="/lib/dra-content.js"></script>
+```
+
+For presentations, copy the three files at
 `/srv/dra-content/skill-templates/presentation/` (`index.html`, `app.js`,
 `styles.css`) as your starting point rather than writing a deck from
 scratch — see `references/presentations.md` for what's available (Reveal.js
