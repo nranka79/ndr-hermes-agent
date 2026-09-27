@@ -1,0 +1,5 @@
+name: polly
+version: 1.0.0
+description: "Amazon Polly text-to-speech (5M chars/month free for 12 months on a new AWS account). Uses boto3 + AWS credential chain, not a bearer API key."
+author: Hermes
+kind: backend

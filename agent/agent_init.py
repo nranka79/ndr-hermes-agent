@@ -887,6 +887,23 @@ def init_agent(
                     headers["x-anthropic-beta"] = _FINE_GRAINED
                 client_kwargs["default_headers"] = headers
 
+        # Route latency-sensitive interactive platforms (Telegram) around the
+        # llm-gateway free-tier pool. The gateway tries free -> subscription
+        # -> api -> emergency in order and only advances past a slow *success*
+        # if it errors -- a free-tier key that is merely slow (observed:
+        # nvidia at 68-298s/call vs 1-4s on the subscription pool) still wins
+        # and is never skipped. Telegram sessions set this header so the
+        # gateway skips the free-tier pass entirely (subscription/api still
+        # apply normally, and the emergency tier remains available as a last
+        # resort). OpenWebUI / CLI sessions are unaffected -- they still get
+        # free-tier's cost savings. Added 2026-09-27 (see gateway diagnosis).
+        # Scoped to llm-gateway specifically so the header is never sent to
+        # unrelated third-party providers.
+        if platform == "telegram" and "llm-gateway" in _effective_base:
+            _headers = client_kwargs.get("default_headers") or {}
+            _headers["X-Hermes-Route-Tier"] = "no-free"
+            client_kwargs["default_headers"] = _headers
+
         # User-configured request headers (model.default_headers in
         # config.yaml) override provider/SDK defaults. Lets custom
         # OpenAI-compatible endpoints behind a gateway/WAF that rejects the

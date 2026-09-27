@@ -1,0 +1,5 @@
+name: deepgram
+version: 1.0.0
+description: "Deepgram speech-to-text (Nova-3, $200 free credit on signup)."
+author: Hermes
+kind: backend

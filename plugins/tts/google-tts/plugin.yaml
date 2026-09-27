@@ -1,0 +1,5 @@
+name: google-tts
+version: 1.0.0
+description: "Google Cloud Text-to-Speech (4M chars/month free — biggest free TTS quota available). Requires a GCP API key, not an AI Studio key."
+author: Hermes
+kind: backend

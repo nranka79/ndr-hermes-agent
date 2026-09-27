@@ -1,0 +1,5 @@
+name: together
+version: 1.0.0
+description: "Together AI image generation (FLUX.1-schnell-Free — free tier). Saves generated images to $HERMES_HOME/cache/images/."
+author: Hermes
+kind: backend

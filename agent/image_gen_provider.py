@@ -204,6 +204,31 @@ _URL_IMAGE_CONTENT_TYPES = {
 }
 
 
+def save_raw_image_bytes(
+    data: bytes,
+    *,
+    prefix: str = "image",
+    extension: str = "png",
+) -> Path:
+    """Write raw image bytes (already in hand — no download) to
+    $HERMES_HOME/cache/images/.
+
+    For providers whose synchronous HTTP response body *is* the image
+    (Hugging Face Inference API, Stability v2beta with Accept: image/*) —
+    as opposed to a JSON envelope containing a URL or base64 field.
+    Mirrors :func:`save_b64_image`/:func:`save_url_image`'s shape.
+
+    Returns the absolute :class:`Path` to the saved file.
+    """
+    if not data:
+        raise ValueError("Refusing to cache 0 bytes of image data")
+    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    short = uuid.uuid4().hex[:8]
+    path = _images_cache_dir() / f"{prefix}_{ts}_{short}.{extension}"
+    path.write_bytes(data)
+    return path
+
+
 def save_url_image(
     url: str,
     *,

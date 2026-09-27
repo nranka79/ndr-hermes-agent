@@ -1,0 +1,5 @@
+name: stability
+version: 1.0.0
+description: "Stability AI image generation (Stable Image Core, v2beta). Saves generated images to $HERMES_HOME/cache/images/."
+author: Hermes
+kind: backend

@@ -1,0 +1,5 @@
+name: assemblyai
+version: 1.0.0
+description: "AssemblyAI speech-to-text (~330 hours free)."
+author: Hermes
+kind: backend

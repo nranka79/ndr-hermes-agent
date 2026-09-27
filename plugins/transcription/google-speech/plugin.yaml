@@ -1,0 +1,5 @@
+name: google-speech
+version: 1.0.0
+description: "Google Cloud Speech-to-Text (60 min/month free). Requires a GCP API key with the Speech-to-Text API enabled — NOT the same as an AI Studio / Gemini key."
+author: Hermes
+kind: backend
