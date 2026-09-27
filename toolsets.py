@@ -468,10 +468,11 @@ TOOLSETS = {
     "dra_content": {
         "description": (
             "DRA Content artifact publishing -- create, update, search, "
-            "share and export browser-renderable documents and "
-            "presentations through the DRA Content platform "
-            "(content.ahfl.in). Not enabled for any profile as of Stage 10; "
-            "see hermes-data/skills/productivity/dra-content/SKILL.md."
+            "share and export websites (HTML plus its CSS, JavaScript, "
+            "images and data files) through the DRA Content platform "
+            "(content.ahfl.in). Standalone documents -- PDF, Word, Excel, "
+            "PowerPoint -- go to Google Drive instead and are rejected here. "
+            "See hermes-data/skills/productivity/dra-content-artifacts/SKILL.md."
         ),
         "tools": [
             "content_publish", "content_update", "content_find", "content_get",

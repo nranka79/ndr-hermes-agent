@@ -46,8 +46,21 @@ TEXT_EXTENSIONS = (".html", ".htm", ".css", ".js", ".mjs", ".json", ".csv", ".tx
 # inlined as data: URIs instead, storing every asset twice and producing
 # multi-megabyte pages that cannot be cached per image.
 BINARY_EXTENSIONS = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif", ".ico",
-                     ".woff", ".woff2", ".ttf", ".otf",
-                     ".pdf", ".xlsx", ".docx", ".pptx", ".zip")
+                     ".woff", ".woff2", ".ttf", ".otf")
+
+# Standalone documents go to Google Drive, never here. An artifact is a
+# website -- a page and the assets it renders. A PDF, Word file, spreadsheet
+# or slide deck is a document in its own right: Drive already files it,
+# permissions it and can edit it, and publishing a second copy here would put
+# one file under two permission systems with this one unable to see the
+# other's. Rejected by name rather than by omission so the error can say where
+# the file actually belongs.
+DRIVE_ONLY_EXTENSIONS = {
+    ".pdf": "PDF", ".doc": "Word document", ".docx": "Word document",
+    ".xls": "spreadsheet", ".xlsx": "spreadsheet",
+    ".ppt": "slide deck", ".pptx": "slide deck",
+    ".zip": "ZIP archive",
+}
 
 # content-api allows 25 MiB per version, but the request is JSON and base64
 # inflates by 4/3, and nginx caps the body at 30 MB. 20 MiB of real bytes is
@@ -186,6 +199,16 @@ def _encode_files(files) -> list:
         content = f.get("content")
         source_path = f.get("source_path")
         ext = "." + path.rsplit(".", 1)[-1].lower() if "." in path else ""
+
+        if ext in DRIVE_ONLY_EXTENSIONS:
+            raise ValueError(
+                "file %r is a %s. Standalone documents are not published as "
+                "artifacts -- upload it to Google Drive instead (see the "
+                "draas-drive-organization skill) and hand over the Drive link. "
+                "DRA Content holds websites: HTML plus the CSS, JavaScript, "
+                "images, fonts and data files that page renders."
+                % (path, DRIVE_ONLY_EXTENSIONS[ext])
+            )
 
         if source_path:
             if ext not in BINARY_EXTENSIONS and ext not in TEXT_EXTENSIONS:

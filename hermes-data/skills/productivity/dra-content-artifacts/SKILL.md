@@ -1,6 +1,6 @@
 ---
 name: dra-content-artifacts
-description: 'Publish, update and verify artifacts in the DRA Content system (content.ahfl.in) — interactive HTML comparators, visual studies, reports, dashboards. Carries the render-origin constraints, the publishing routes, and the verification recipe. Multi-file artifacts with external CSS, external JavaScript and real image files are SUPPORTED - the opaque-origin/CORP restriction that once forced single self-contained files was a platform bug, fixed on 2026-09-27. TRIGGERS — "publish this to our content publishing system", "put this on content.ahfl.in", "create an artifact", "make this an interactive HTML and publish it", "update artifact DRA-ART-...", "share the artifact with X", "the artifact looks broken / unstyled / images are missing", "the published page is blank".'
+description: 'Publish, update and verify artifacts in the DRA Content system (content.ahfl.in) — interactive HTML comparators, visual studies, reports, dashboards. DRA Content holds WEBSITES - HTML plus the CSS, JavaScript, images, fonts and data files that page renders. Standalone documents (PDF, Word, Excel, PowerPoint) go to Google Drive instead, never here. Carries that routing rule, the render-origin constraints, the publishing routes, classification and sharing discipline, and the verification recipe. Multi-file artifacts with external CSS, external JavaScript and real image files are SUPPORTED - the opaque-origin/CORP restriction that once forced single self-contained files was a platform bug, fixed on 2026-09-27. TRIGGERS — "publish this to our content publishing system", "put this on content.ahfl.in", "create an artifact", "make this an interactive HTML and publish it", "update artifact DRA-ART-...", "share the artifact with X", "the artifact looks broken / unstyled / images are missing", "the published page is blank".'
 ---
 
 # DRA Content Artifacts (publish / update / verify)
@@ -13,6 +13,41 @@ if you do not know it up front.
 Sits downstream of whatever produced the content — e.g.
 `reference-driven-image-variation` (N variation renders), `html-presentations`,
 `business-dossier`, `private-investment-due-diligence`.
+
+## WHAT GOES WHERE (decide this first)
+
+**DRA Content holds websites.** An artifact is a page and everything that page
+renders: `index.html` plus its CSS, JavaScript, images, SVG, fonts, and JSON or
+CSV data files. If the deliverable is something a browser renders as a page,
+it belongs here.
+
+**Google Drive holds documents.** A PDF, Word file, spreadsheet or slide deck is
+a document in its own right. Drive already files it, permissions it, and can
+edit it. File it there per `draas-drive-organization` and hand over the Drive
+link. **Do not also publish it here** - that would put one file under two
+independent permission systems, and this one cannot see or enforce Drive's.
+
+| Deliverable | Destination |
+|---|---|
+| Interactive HTML, comparator, dashboard, visual study | **DRA Content** |
+| Reveal.js slide deck (it is an HTML page) | **DRA Content** |
+| Report or brief the user wants as a web page | **DRA Content** |
+| Google Doc, Google Sheet, Google Slides | **Drive only** |
+| `.pdf`, `.docx`, `.xlsx`, `.pptx` | **Drive only** |
+| A `.zip` of anything | **Drive only** |
+
+The word "presentation" splits across that line: a **Reveal.js deck is HTML and
+belongs here**; a **Google Slides or `.pptx` deck belongs in Drive**. Decide by
+format, not by the word the user used.
+
+This is enforced, not merely advised. `content_publish` / `content_update`
+reject document extensions with a message naming Drive, and content-api's own
+path validation rejects them too - so the direct-API route below cannot be used
+to get around it either. If you find yourself wanting an exception, the answer
+is a Drive link in the artifact, not the document inside the artifact.
+
+Do not publish a plain conversational answer as an artifact. A one-line answer
+to a question is not a deliverable.
 
 ## THE ONE RULE THAT DECIDES EVERYTHING
 
@@ -96,12 +131,27 @@ Consequences to design around, replacing the old ones:
 `content_publish` works for normal text artifacts. It takes file contents as
 JSON string arguments.
 
-### Large or image-bearing artifacts → drive content-api directly
+### Image-bearing artifacts → the tool handles these too, now
 
-The tool cannot carry a multi-MB base64 payload (you would have to emit megabytes
-of base64 inside a tool call — not feasible). The tool itself also refuses binary
-extensions outright (`Binary assets are not yet supported`). Use
-`scripts/publish_artifact.py`, which POSTs to the same endpoint the tool uses:
+**Use `content_publish` / `content_update` with `source_path`.** As of
+2026-09-27 the tool uploads binary by reference: you name a file already on
+disk and the tool reads and base64-encodes the bytes itself, so nothing large
+passes through your context.
+
+```json
+{"path": "img/v01.webp", "source_path": "/data/hermes/tmp/renders/v01.webp"}
+```
+
+Limits: 20 MB per file and 20 MB per version (the request is JSON, base64
+inflates by a third, and nginx caps the body at 30 MB).
+
+The older advice here was to bypass the tool because it refused binary and
+could not carry a multi-MB payload. Both are fixed. Prefer the tool.
+
+### Direct content-api route — only when the tool genuinely cannot
+
+`scripts/publish_artifact.py` POSTs to the same endpoint the tool uses. Reach
+for it only for something the tool cannot express, not as the default:
 
 ```
 POST {DRA_CONTENT_API_URL}/api/artifacts
@@ -116,9 +166,9 @@ Content-Type: application/json
 ```
 
 Notes that save time:
-- `content_b64` is **base64 of UTF-8 text**, not binary. Your inline data URIs
-  are text and therefore encode fine — this is what makes single-file artifacts
-  publishable at all.
+- `content_b64` is base64 of the file's bytes. Text or binary both work here;
+  the same path validation and extension allowlist apply as through the tool,
+  so document extensions are rejected on this route as well.
 - `X-DRA-On-Behalf-Of` must be the requesting human (`ndr@draas.com`), not the
   service identity, or the ACL will not grant the right person access.
 - The creation response returns `human_id` (e.g. `DRA-ART-2026-000024`),
@@ -389,6 +439,87 @@ Design rules learned the hard way:
 - **Push a fix as a new VERSION, not a new artifact.** If you published something
   that renders badly, the user already has the URL; a second artifact splits the
   history and confuses the share.
+
+## Classification: never invent a project or entity name
+
+Resolve `project` and `entity` with the `entity_resolver` tool against the
+existing registry before publishing. If nothing resolves with confidence, omit
+the field rather than guessing - an artifact with `project: null` can be
+reclassified later without moving a single file, because classification is
+metadata and storage never depends on it. Inventing a project name that does
+not match the registry fragments search and breaks the Drive folder lookup.
+
+## New artifact vs. update: search first
+
+Before publishing, consider whether this is really a **revision** of something
+that already exists. Call `content_find` with a natural description ("the Amber
+contractor comparison", not an exact title).
+
+- `confident: true` and the single result is clearly the document meant ->
+  `content_update`, not `content_publish`. The artifact ID and canonical URL
+  never change; a new version is created and every old one stays retrievable.
+- `confident: false`, or several plausible results -> present the candidates and
+  ask. Never guess and silently update the wrong document.
+- Nothing plausible -> `content_publish` a new artifact.
+
+Every `content_update` needs a specific `change_summary` ("Added ABC's revised
+quote"), never "Updated document".
+
+**The user's version number is not the system's.** "Make it a V2" usually means
+"push the next version". Do not argue and do not silently adopt their count:
+push it, then state the real number once, plainly, naming what each earlier
+version was, so the history stays legible.
+
+## After publishing or updating: response format
+
+Return the essentials, not filesystem paths or internal metadata:
+
+```
+Published: <title>
+Artifact: <artifact_id>
+Version: <version>
+Access: Administrators only (default)
+URL: <canonical url>
+```
+
+For an update, the same shape with `Updated:`, `Artifact: <id> (unchanged)` and
+the same canonical URL.
+
+## Export to Drive
+
+`content_export(artifact_id, format)` - `"docx"`, `"pdf"` or `"gdoc"`. This is
+how an artifact becomes a document: publish the website here, then export a
+flattened copy to Drive if the user asks for one. Only call it when they
+explicitly asked for one of those formats or to save to Drive.
+
+Interactive elements - scripts, live charts, diagrams - **do not survive** the
+conversion. Only text, headings, tables and images do. If the artifact is
+meaningfully interactive, say so before exporting rather than letting the user
+discover a flattened copy.
+
+Two failure modes are expected, not bugs:
+
+- **"no Drive folder is mapped"** - the artifact's project/category has no
+  registry entry. Tell the user an administrator must add one at
+  `/admin/drive-folders`. Do not ask for a raw folder ID and do not invent one.
+- **"no Google account is connected for this session"** - the user has not
+  authorized Drive access; direct them to connect it.
+
+The export uses the requesting user's **own** Drive via their per-user OAuth
+connection, not a service account. Someone with a nearly-full Drive will see
+Drive's own quota error surfaced here. That is a real constraint, not something
+to retry around.
+
+## Not yet wired
+
+- **Group sharing** ("the Amber team", "everyone in DRA"). Treat "share with the
+  X team" as a request to ask which specific people. There is no public or
+  anonymous access level in this system and no argument that creates one; if a
+  named group cannot be resolved, ask rather than invent a link.
+- **Reading an artifact's files back.** `content_get` returns metadata only, and
+  the artifact tree is not mounted into this container, so you cannot read what
+  a previous version contained. If you need the old content in order to revise
+  it, ask for it to be staged somewhere readable.
 
 ## Support files
 
