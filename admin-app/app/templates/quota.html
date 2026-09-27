@@ -1,0 +1,301 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Quota — Hermes Admin</title>
+<style>
+  :root { --bg:#0f1116; --card:#171a21; --line:#232833; --text:#e6ebf0; --muted:#8b95a7;
+          --blue:#1a73e8; --green:#78c878; --amber:#f9ab00; --red:#d93025; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font-family:system-ui,-apple-system,"Segoe UI",sans-serif; padding:24px; }
+  header { display:flex; align-items:baseline; gap:12px; margin-bottom:20px; flex-wrap:wrap; }
+  h1 { font-size:20px; margin:0; }
+  .sub { color:var(--muted); font-size:13px; }
+  #status { margin-left:auto; font-size:12px; color:var(--muted); }
+  #status.err { color:var(--red); }
+
+  /* Hero: whichever window (5h/weekly/monthly, any key) is closest to
+     running out — same concept as the Android widget, for consistency. */
+  .hero { background:var(--card); border:1px solid var(--line); border-radius:16px; padding:20px 24px; margin-bottom:20px; }
+  .hero-top { display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:16px; }
+  .hero-eyebrow { font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.08em; font-weight:600; }
+  .hero-pct { font-size:44px; font-weight:700; line-height:1.1; margin-top:4px; }
+  .hero-sub { color:var(--muted); font-size:13px; margin-top:4px; }
+  .modes { display:flex; gap:6px; flex-wrap:wrap; }
+  .mode-btn { background:var(--bg); border:1px solid var(--line); color:var(--muted); font-size:12px; padding:7px 14px;
+              border-radius:10px; cursor:pointer; font-family:inherit; }
+  .mode-btn.active { background:var(--blue); border-color:var(--blue); color:#fff; }
+  .mode-btn:hover:not(.active) { border-color:#3a4152; }
+
+  /* Bucket (LLM / Multimodal) -> tier (free / subscription / api) -> cards */
+  .bucket { margin-top:28px; }
+  .bucket > h2 { font-size:15px; margin:0 0 4px; display:flex; align-items:baseline; gap:10px; }
+  .bucket > h2 .count { font-size:11px; color:var(--muted); font-weight:400; }
+  .bucket > .rule { height:1px; background:var(--line); margin-bottom:14px; }
+  .tier { margin-bottom:18px; }
+  .tier > h3 { font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.08em;
+               margin:0 0 8px; font-weight:600; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(300px,1fr)); gap:16px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:16px; }
+  .card h4 { margin:0 0 4px; font-size:14px; display:flex; justify-content:space-between; align-items:baseline; gap:8px; }
+  .provider-pill { font-size:10px; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; white-space:nowrap; }
+  .keyline { font-size:11px; color:var(--muted); margin-bottom:10px; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
+  .row { display:flex; justify-content:space-between; font-size:13px; margin-bottom:4px; gap:12px; }
+  .row .label { color:var(--muted); }
+  .row .val { font-weight:600; text-align:right; }
+  .bar { height:8px; background:#232833; border-radius:4px; overflow:hidden; margin:2px 0 10px; }
+  .bar > div { height:100%; border-radius:4px; }
+  .reset { font-size:11px; color:var(--muted); margin-bottom:12px; }
+  .err { color:var(--red); font-size:13px; }
+  .note { color:var(--muted); font-size:12px; font-style:italic; }
+  .muted { color:var(--muted); }
+  .big { font-size:22px; font-weight:700; }
+  .empty { color:var(--muted); font-size:12px; padding:10px 0; }
+  footer { margin-top:28px; color:var(--muted); font-size:11px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>account-quota</h1>
+  <span class="sub">every key in the rotation buckets, grouped the way keys-admin holds them</span>
+  <span id="status">loading…</span>
+</header>
+
+<div class="hero">
+  <div class="hero-top">
+    <div>
+      <div class="hero-eyebrow" id="heroEyebrow">Tightest right now</div>
+      <div class="hero-pct" id="heroPct">—</div>
+      <div class="hero-sub" id="heroSub">Loading…</div>
+    </div>
+    <div class="modes" id="modes">
+      <button class="mode-btn active" data-mode="auto">Auto</button>
+      <button class="mode-btn" data-mode="rolling">5h</button>
+      <button class="mode-btn" data-mode="weekly">Weekly</button>
+      <button class="mode-btn" data-mode="monthly">Monthly</button>
+    </div>
+  </div>
+</div>
+
+<div id="buckets"></div>
+<footer>Auto-refreshes every 30s. Accounts are discovered from the LLM_*_POOL rotation buckets
+written by <a href="/keys-admin" style="color:var(--blue)">keys-admin</a>, so a key added there shows up here automatically.</footer>
+
+<script>
+const REFRESH_MS = 30000;
+const $buckets = document.getElementById("buckets");
+const $status = document.getElementById("status");
+const $heroPct = document.getElementById("heroPct");
+const $heroSub = document.getElementById("heroSub");
+const $modes = document.getElementById("modes");
+
+let mode = "auto"; // auto | rolling | weekly | monthly
+let lastSnap = null;
+const WINDOW_LABELS = { rolling: "5h", weekly: "Weekly", monthly: "Monthly" };
+const MODALITY_ORDER = ["llm", "multimodal"];
+const TIER_ORDER = ["free", "subscription", "api"];
+
+function pctColor(p){ if(p==null)return"#444"; if(p>=90)return"var(--red)"; if(p>=70)return"var(--amber)"; return"var(--blue)"; }
+function pct(p){ return p==null?"—":Math.round(p)+"%"; }
+function usd(v){ return v==null?"—":"$"+Number(v).toFixed(2); }
+function fmtTime(iso){ if(!iso)return"—"; const d=new Date(iso); if(isNaN(d))return iso; return d.toLocaleString(); }
+function el(tag,cls,html){ const e=document.createElement(tag); if(cls)e.className=cls; if(html!=null)e.innerHTML=html; return e; }
+function txt(tag,cls,text){ const e=document.createElement(tag); if(cls)e.className=cls; if(text!=null)e.textContent=text; return e; }
+
+function timeUntil(iso){
+  if(!iso) return null;
+  const d = new Date(iso);
+  if (isNaN(d)) return null;
+  const diffMs = d.getTime() - Date.now();
+  if (diffMs <= 0) return "resets soon";
+  const mins = Math.floor(diffMs/60000), h = Math.floor(mins/60), m = mins%60, days = Math.floor(h/24);
+  if (days > 0) return `resets in ${days}d ${h%24}h`;
+  if (h > 0) return `resets in ${h}h ${m}m`;
+  return `resets in ${m}m`;
+}
+
+/** Same concept as QuotaRanking.kt in the Android app: pull every
+ *  comparable window (5h/weekly/monthly) out of every account, so the
+ *  hero can rank across all keys uniformly. Balance-only providers
+ *  (OpenRouter, Token Harbor) have no window and are excluded. */
+function collectWindows(snap){
+  const out = [];
+  for (const acc of Object.values(snap.accounts||{})) {
+    if (acc.error || !acc.configured) continue;
+    if (acc.windows) {
+      for (const [key, w] of Object.entries(acc.windows)) {
+        out.push({ label: acc.label, windowKey: key, windowLabel: WINDOW_LABELS[key]||key, percent: w.percent, resetsAt: w.resets_at });
+      }
+    } else if (acc.weekly_percent != null) {
+      out.push({ label: acc.label, windowKey: "weekly", windowLabel: "Weekly", percent: acc.weekly_percent, resetsAt: acc.resets_at });
+    }
+  }
+  return out;
+}
+
+function tightest(windows, m){
+  const pool = m === "auto" ? windows : windows.filter(w => w.windowKey === m);
+  return pool.reduce((best, w) => (w.percent!=null && (best==null || w.percent > best.percent)) ? w : best, null);
+}
+
+function renderHero(){
+  if (!lastSnap) return;
+  const pick = tightest(collectWindows(lastSnap), mode);
+  if (!pick) {
+    $heroPct.textContent = "—";
+    $heroPct.style.color = "var(--text)";
+    $heroSub.textContent = "No windowed quota in this view";
+    return;
+  }
+  $heroPct.textContent = pct(pick.percent);
+  $heroPct.style.color = pctColor(pick.percent);
+  $heroSub.textContent = [`${pick.label} · ${pick.windowLabel}`, timeUntil(pick.resetsAt)].filter(Boolean).join(" · ");
+}
+
+$modes.addEventListener("click", (e) => {
+  const btn = e.target.closest(".mode-btn");
+  if (!btn) return;
+  mode = btn.dataset.mode;
+  for (const b of $modes.querySelectorAll(".mode-btn")) b.classList.toggle("active", b === btn);
+  renderHero();
+});
+
+function card(acc, body){
+  const c = el("div","card");
+  const h = el("h4");
+  h.appendChild(txt("span",null,acc.label));
+  h.appendChild(txt("span","provider-pill",acc.provider));
+  c.appendChild(h);
+  const bits = [acc.masked, acc.model].filter(Boolean).join(" · ");
+  if (bits) c.appendChild(txt("div","keyline",bits));
+  c.appendChild(body);
+  return c;
+}
+
+function row(label,val){ const r=el("div","row"); r.appendChild(txt("span","label",label)); r.appendChild(el("span","val",val)); return r; }
+
+function windowRow(label,w){
+  const r=el("div","row"); r.appendChild(txt("span","label",label));
+  r.appendChild(el("span","val",pct(w.percent)+' <span class="muted">'+usd(w.remaining_usd)+" left</span>"));
+  const bar=el("div","bar"); const fill=el("div"); fill.style.width=Math.min(w.percent??0,100)+"%"; fill.style.background=pctColor(w.percent); bar.appendChild(fill);
+  const reset=txt("div","reset","status: "+(w.status||"unknown")+" · resets "+fmtTime(w.resets_at));
+  return [r,bar,reset];
+}
+
+function renderOpenCodeGo(acc){
+  const body=el("div");
+  const labels={rolling:"5-hour",weekly:"Weekly",monthly:"Monthly"};
+  for(const key of ["rolling","weekly","monthly"]){ const w=(acc.windows||{})[key]; if(!w)continue; for(const n of windowRow(labels[key],w)) body.appendChild(n); }
+  return body;
+}
+
+function creditsBlock(c){
+  const body=el("div");
+  const bal=el("div","row"); bal.appendChild(txt("span","label","Credit balance"));
+  const v=txt("span","val",usd(c.balance)); v.style.color=(c.balance!=null&&c.balance<0)?"var(--red)":"var(--green)"; v.style.fontSize="18px";
+  bal.appendChild(v); body.appendChild(bal);
+  body.appendChild(txt("div","reset","purchased "+usd(c.total_purchased)+" · used "+usd(c.total_used)+(c.balance!=null&&c.balance<0?" — top up":"")));
+  return body;
+}
+
+function renderOpenRouter(acc){
+  const body=el("div");
+  if(acc.credits) body.appendChild(creditsBlock(acc.credits));
+  const u=acc.usage||{};
+  body.appendChild(row("Per-key limit", acc.limit?usd(acc.limit):"none"));
+  for(const [l,v] of [["Monthly usage",usd(u.monthly)],["Weekly usage",usd(u.weekly)],["Daily usage",usd(u.daily)],["All-time usage",usd(u.all_time)]]) body.appendChild(row(l,v));
+  if(acc.key_label)body.appendChild(txt("div","reset","key "+acc.key_label));
+  return body;
+}
+
+function renderTokenHarbor(acc){
+  const body=el("div");
+  if(acc.credits) body.appendChild(creditsBlock(acc.credits));
+  if(acc.source_endpoint) body.appendChild(txt("div","reset","via "+acc.source_endpoint));
+  return body;
+}
+
+function renderAnthropic(acc){
+  const body=el("div");
+  const r=el("div","row"); r.appendChild(txt("span","label","Month to date"));
+  r.appendChild(txt("span","big",usd(acc.month_to_date_usd))); body.appendChild(r);
+  body.appendChild(row("Today", usd(acc.today_usd)));
+  body.appendChild(txt("div","reset","spend since "+fmtTime(acc.period_start)+" — Anthropic publishes no balance endpoint"));
+  for(const m of (acc.top_models||[])) body.appendChild(row(m.model, usd(m.usd)));
+  return body;
+}
+
+function renderSuperGrok(acc){
+  const body=el("div"); const r=el("div","row"); r.appendChild(txt("span","label","Weekly pool used")); r.appendChild(txt("span","big",pct(acc.weekly_percent))); body.appendChild(r);
+  const bar=el("div","bar"); const fill=el("div"); fill.style.width=Math.min(acc.weekly_percent??0,100)+"%"; fill.style.background=pctColor(acc.weekly_percent); bar.appendChild(fill); body.appendChild(bar);
+  body.appendChild(txt("div","reset","resets "+fmtTime(acc.resets_at)));
+  if(acc.extra_credits!=null)body.appendChild(row("Extra credits",usd(acc.extra_credits)));
+  return body;
+}
+
+function renderAccount(acc){
+  if(acc.error){ const b=el("div"); b.appendChild(txt("div","err","⚠ "+acc.error)); return card(acc,b); }
+  if(acc.unsupported){ const b=el("div"); b.appendChild(txt("div","note","No quota API — "+acc.unsupported)); return card(acc,b); }
+  let body;
+  switch(acc.provider){
+    case "opencode": case "opencode-go": body=renderOpenCodeGo(acc); break;
+    case "openrouter": body=renderOpenRouter(acc); break;
+    case "tokenharbor": body=renderTokenHarbor(acc); break;
+    case "anthropic": body=renderAnthropic(acc); break;
+    case "supergrok": body=renderSuperGrok(acc); break;
+    default: body=txt("pre","muted",JSON.stringify(acc,null,2)); break;
+  }
+  return card(acc,body);
+}
+
+function render(snap){
+  const modalityLabels = (snap.groups||{}).modalities || {llm:"LLM", multimodal:"Multimodal"};
+  const tierLabels = (snap.groups||{}).tiers || {free:"Free", subscription:"Subscription", api:"API / pay-per-call"};
+  const accounts = Object.values(snap.accounts||{});
+  $buckets.innerHTML = "";
+
+  for (const modality of MODALITY_ORDER) {
+    const inModality = accounts.filter(a => (a.modality||"llm") === modality);
+    const section = el("div","bucket");
+    const h2 = el("h2");
+    h2.appendChild(txt("span",null,(modalityLabels[modality]||modality)+" bucket"));
+    h2.appendChild(txt("span","count",inModality.length+" key"+(inModality.length===1?"":"s")));
+    section.appendChild(h2);
+    section.appendChild(el("div","rule"));
+
+    for (const tier of TIER_ORDER) {
+      const rows = inModality.filter(a => (a.tier||"api") === tier);
+      const tierEl = el("div","tier");
+      tierEl.appendChild(txt("h3",null,tierLabels[tier]||tier));
+      if (!rows.length) {
+        tierEl.appendChild(txt("div","empty","No keys in this tier."));
+      } else {
+        const grid = el("div","grid");
+        for (const acc of rows) grid.appendChild(renderAccount(acc));
+        tierEl.appendChild(grid);
+      }
+      section.appendChild(tierEl);
+    }
+    $buckets.appendChild(section);
+  }
+}
+
+async function load(){
+  try{
+    const resp=await fetch("/quota/data",{cache:"no-store"});
+    if(!resp.ok) throw new Error("HTTP "+resp.status);
+    const snap=await resp.json();
+    if(snap.error) throw new Error(snap.error);
+    lastSnap = snap;
+    $status.textContent="updated "+fmtTime(snap.generated_at); $status.className="";
+    renderHero();
+    render(snap);
+  }catch(err){ $status.textContent="error: "+err.message; $status.className="err"; }
+}
+
+load();
+setInterval(load,REFRESH_MS);
+</script>
+</body>
+</html>

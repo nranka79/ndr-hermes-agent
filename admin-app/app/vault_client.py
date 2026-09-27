@@ -9,7 +9,13 @@ logger = logging.getLogger("admin-app.vault")
 # App-access permission keys managed by the admin panel. Extend this list to
 # add a new gated app (e.g. a future "monitor" dashboard) — the toggle UI and
 # the enforcement side (gateway/identity_resolver) both key off these names.
-MANAGED_APPS = ["telegram", "voice", "chat"]
+MANAGED_APPS = ["telegram", "voice", "chat", "apps"]
+
+# llm_gateway is deliberately NOT in MANAGED_APPS: that list's UI/creation
+# defaulting semantics are "on for everyone" (see create_user / view_user),
+# which is wrong for this flag. llm_gateway follows the vault daemon's own
+# check_access default instead: admins get it automatically, everyone else
+# needs the explicit per-user toggle. See users.py llm_gateway_state().
 
 
 class VaultError(RuntimeError):
@@ -217,3 +223,92 @@ class VaultClient:
             return {"status": "ok"}
         except Exception as e:
             return {"status": "error", "message": str(e)}
+
+    def check_access(self, identity_type: str, identity_value: str, app: str) -> bool:
+        """Ask the vault whether a user may use ``app``. Fail-closed."""
+        resp = self._call({
+            "op": "check_access",
+            "identity_type": identity_type,
+            "identity_value": identity_value,
+            "app": app,
+            "vault_secret": self.secret,
+        })
+        return bool(resp.get("allowed"))
+
+    def search_identities(self, query: str, identity_type: str = None) -> List[Dict]:
+        """Search identity records by name (or a specific identity_type)."""
+        payload = {"op": "search_identities", "query": query}
+        if identity_type:
+            payload["identity_type"] = identity_type
+        resp = self._call(payload)
+        if resp.get("ok"):
+            return resp.get("results", [])
+        raise VaultError(resp.get("error", "search_identities failed"))
+
+    def get_gws_credentials(self, session_uid: str, target: str) -> Dict:
+        """Admin-only read of Google credentials to act as *target*.
+
+        Returns the vault's raw response: mode in {"user","dwd"}, plus
+        user_id/email and either token_json or needs_auth. The token_json
+        (a user refresh-token payload or the DWD service-account key) must
+        never be echoed back to a browser by callers.
+        """
+        resp = self._call({
+            "op": "get_gws_credentials",
+            "session_uid": session_uid,
+            "target": target,
+        })
+        if not resp.get("ok"):
+            raise VaultError(resp.get("error", "get_gws_credentials failed"))
+        return resp
+
+
+def app_allowed_users(app: str, vault: Optional[VaultClient] = None) -> List[dict]:
+    """Return the vault users granted ``app``, as ``{email, emails, name}`` dicts.
+
+    ``email`` is the user's primary address (the one an account should be
+    provisioned under); ``emails`` is every address that identifies them.
+    Raises on any vault error so callers can fail closed.
+    """
+    client = vault or VaultClient()
+    allowed = []
+    for user in client.list_users():
+        emails = [e.lower() for e in (user.get("emails") or [])]
+        if not emails:
+            continue
+        if client.check_access("email", emails[0], app):
+            allowed.append({"email": emails[0], "emails": emails, "name": user.get("name") or emails[0]})
+    return allowed
+
+
+def write_app_emails_file(app: str, out_path: str, vault: Optional[VaultClient] = None) -> int:
+    """Derive ``<app>``'s email allowlist from the vault and write it to ``out_path``.
+
+    The vault is the single source of truth. Every email belonging to a user
+    who is granted ``app`` (via the vault's own ``check_access``) is written,
+    one per line. Fail-closed: any vault error produces an EMPTY file (deny
+    everyone) rather than a stale allowlist.
+
+    Mirrors ``scripts/vault-app-emails.py`` on the host so the admin panel can
+    trigger an immediate regeneration right after a user/permission change
+    (e.g. revoking chat access).
+    """
+    client = vault or VaultClient()
+    allowed = set()
+    try:
+        for user in app_allowed_users(app, client):
+            allowed.update(user["emails"])
+    except Exception as exc:  # noqa: BLE001
+        logger.error("write_app_emails_file(%s) failed: %s — writing EMPTY allowlist", app, exc)
+        try:
+            open(out_path, "w", encoding="utf-8").close()
+        except OSError:
+            pass
+        return 0
+    tmp = f"{out_path}.tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        for email in sorted(allowed):
+            fh.write(email + "\n")
+    os.replace(tmp, out_path)
+    logger.info("write_app_emails_file(%s) -> %s: %d emails", app, out_path, len(allowed))
+    return len(allowed)

@@ -1,0 +1,106 @@
+{% extends "base.html" %}
+{% block title %}AppStore management — Hermes Admin{% endblock %}
+{% block content %}
+<div class="p-6 max-w-4xl">
+  <h1 class="text-xl font-bold mb-1">AppStore management</h1>
+  <p class="text-sm text-gray-500 mb-4">Who may sign in at apps.ahfl.in, and the apps shown there. A user is allowed if
+    their email matches or their domain is listed.</p>
+
+  {% if saved %}<div class="mb-4 p-3 rounded bg-green-50 text-green-800 text-sm">{{ saved }}</div>{% endif %}
+  {% if error %}<div class="mb-4 p-3 rounded bg-red-50 text-red-800 text-sm">{{ error }}</div>{% endif %}
+  {% if not appstore_configured %}<div class="mb-4 p-3 rounded bg-amber-50 text-amber-800 text-sm">
+    APPSTORE_ADMIN_TOKEN not configured — reads/writes disabled.</div>{% endif %}
+
+  <!-- Allowlist -->
+  <form method="post" class="space-y-4 mb-8">
+    <input type="hidden" name="action" value="allowlist" />
+    <h2 class="text-lg font-semibold">Access allowlist</h2>
+    <div>
+      <label class="block text-sm font-medium mb-1">Allowed domains (comma-separated)</label>
+      <textarea name="domains" rows="2" class="w-full border rounded p-2 text-sm">{{ allowlist.domains | join(", ") }}</textarea>
+    </div>
+    <div>
+      <label class="block text-sm font-medium mb-1">Allowed emails (comma-separated)</label>
+      <textarea name="emails" rows="3" class="w-full border rounded p-2 text-sm">{{ allowlist.emails | join(", ") }}</textarea>
+    </div>
+    <button type="submit" class="px-4 py-2 bg-blue-600 text-white rounded text-sm">Save allowlist</button>
+  </form>
+
+  <hr class="my-6" />
+
+  <!-- App catalog -->
+  <form method="post" class="space-y-4" id="catalogForm">
+    <input type="hidden" name="action" value="catalog" />
+    <h2 class="text-lg font-semibold">App catalog</h2>
+    <div id="appCards">
+      {% for app in apps %}
+      <fieldset class="border rounded p-3 mb-4 app-card">
+        <legend class="text-sm font-medium px-1">App {{ loop.index0 }}</legend>
+        <input type="hidden" name="app_id_{{ loop.index0 }}" value="{{ app.id or '' }}" />
+        <div class="grid grid-cols-2 gap-2 mb-2">
+          <input name="app_name_{{ loop.index0 }}" value="{{ app.name or '' }}" placeholder="Name" class="border rounded p-2 text-sm" />
+          <input name="app_type_{{ loop.index0 }}" value="{{ app.type or '' }}" placeholder="type: chrome-extension | android-apk" class="border rounded p-2 text-sm" />
+          <input name="app_version_{{ loop.index0 }}" value="{{ app.version or '' }}" placeholder="version" class="border rounded p-2 text-sm" />
+          <input name="app_url_{{ loop.index0 }}" value="{{ app.download_url or '' }}" placeholder="Download URL (external, optional)" class="border rounded p-2 text-sm" />
+          <input name="app_file_{{ loop.index0 }}" value="{{ app.file or '' }}" placeholder="Hosted file (served at /files/…, optional)" class="border rounded p-2 text-sm" />
+        </div>
+        <textarea name="app_desc_{{ loop.index0 }}" placeholder="Short description" rows="2" class="w-full border rounded p-2 text-sm mb-2">{{ app.description or '' }}</textarea>
+        <textarea name="app_long_{{ loop.index0 }}" placeholder="Long description" rows="3" class="w-full border rounded p-2 text-sm mb-2">{{ app.long_description or '' }}</textarea>
+        <textarea name="app_steps_{{ loop.index0 }}" placeholder="Install steps (one per line)" rows="3" class="w-full border rounded p-2 text-sm mb-2">{{ (app.install_steps or []) | join("\n") }}</textarea>
+        <div class="links-editor mb-2" data-prefix="{{ loop.index0 }}">
+          <div class="text-sm font-medium mb-1">Instruction / training links (YouTube or any URL)</div>
+          {% for link in app.links or [] %}
+          <div class="link-row flex gap-2 mb-1">
+            <input name="app_links_label_{{ loop.index0 }}_{{ loop.index0 }}" value="{{ link.label or '' }}" placeholder="Label (e.g. Installation video)" class="border rounded p-2 text-sm w-2/5" />
+            <input name="app_links_url_{{ loop.index0 }}_{{ loop.index0 }}" value="{{ link.url or '' }}" placeholder="https://…" class="border rounded p-2 text-sm flex-1" />
+          </div>
+          {% endfor %}
+        </div>
+        <button type="button" onclick="addLink(this)" class="px-3 py-1 bg-gray-200 text-gray-800 rounded text-xs mb-2">＋ Add link</button>
+      </fieldset>
+      {% endfor %}
+    </div>
+    <button type="button" onclick="addAppCard()" class="px-4 py-2 bg-gray-200 text-gray-800 rounded text-sm">＋ Add app</button>
+    <button type="submit" class="px-4 py-2 bg-blue-600 text-white rounded text-sm">Save catalog</button>
+  </form>
+</div>
+
+<script>
+function addLink(btn) {
+  const editor = btn.closest('.links-editor');
+  const prefix = editor.dataset.prefix;
+  const next = editor.querySelectorAll('.link-row').length;
+  const row = document.createElement('div');
+  row.className = 'link-row flex gap-2 mb-1';
+  row.innerHTML = `
+    <input name="app_links_label_${prefix}_${next}" placeholder="Label (e.g. Installation video)" class="border rounded p-2 text-sm w-2/5" />
+    <input name="app_links_url_${prefix}_${next}" placeholder="https://…" class="border rounded p-2 text-sm flex-1" />`;
+  btn.parentNode.insertBefore(row, btn);
+}
+
+function addAppCard() {
+  const cards = document.querySelectorAll('.app-card');
+  const next = cards.length;
+  const card = document.createElement('fieldset');
+  card.className = 'border rounded p-3 mb-4 app-card';
+  card.innerHTML = `
+    <legend class="text-sm font-medium px-1">App ${next}</legend>
+    <input type="hidden" name="app_id_${next}" value="" />
+    <div class="grid grid-cols-2 gap-2 mb-2">
+      <input name="app_name_${next}" placeholder="Name" class="border rounded p-2 text-sm" />
+      <input name="app_type_${next}" placeholder="type: chrome-extension | android-apk" class="border rounded p-2 text-sm" />
+      <input name="app_version_${next}" placeholder="version" class="border rounded p-2 text-sm" />
+      <input name="app_url_${next}" placeholder="Download URL (external, optional)" class="border rounded p-2 text-sm" />
+      <input name="app_file_${next}" placeholder="Hosted file (served at /files/…, optional)" class="border rounded p-2 text-sm" />
+    </div>
+    <textarea name="app_desc_${next}" placeholder="Short description" rows="2" class="w-full border rounded p-2 text-sm mb-2"></textarea>
+    <textarea name="app_long_${next}" placeholder="Long description" rows="3" class="w-full border rounded p-2 text-sm mb-2"></textarea>
+    <textarea name="app_steps_${next}" placeholder="Install steps (one per line)" rows="3" class="w-full border rounded p-2 text-sm mb-2"></textarea>
+    <div class="links-editor mb-2" data-prefix="${next}">
+      <div class="text-sm font-medium mb-1">Instruction / training links (YouTube or any URL)</div>
+    </div>
+    <button type="button" onclick="addLink(this)" class="px-3 py-1 bg-gray-200 text-gray-800 rounded text-xs mb-2">＋ Add link</button>`;
+  document.getElementById('appCards').appendChild(card);
+}
+</script>
+{% endblock %}

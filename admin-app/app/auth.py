@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import time
+import urllib.parse
 from typing import Optional
 
 import httpx
@@ -29,23 +30,42 @@ JWKS_CACHE_TTL_SECONDS = 3600
 _jwks_cache: dict = {"keys": None, "fetched_at": 0.0}
 
 
+def _safe_next(next_):
+    """Only ever redirect to an internal path after login -- never an open redirect."""
+    if next_ and next_.startswith("/") and not next_.startswith("//"):
+        return next_
+    return "/"
+
+
 @router.get("/login")
-async def login(request: Request):
+async def login(request: Request, next: Optional[str] = None):
     if not GOOGLE_CLIENT_ID:
         return _simple_login_page(request)
+    safe_next = _safe_next(next)
+    # The "device:" prefix tells /callback below to use the lightweight
+    # identity-only check (any known vault identity) instead of the
+    # admin-only _is_authorized gate used for the rest of this panel.
+    # It is set here, server-side, ONLY when the caller is headed to
+    # /device -- callback() never trusts a client-supplied flag for this,
+    # only this exact state value it round-tripped through Google itself.
+    # This is what lets a non-admin employee who has been granted
+    # llm_gateway access actually complete that one specific flow, without
+    # granting them any access to the rest of the admin dashboard.
+    state = f"device:{safe_next}" if safe_next.startswith("/device") else safe_next
     auth_params = (
         f"?client_id={GOOGLE_CLIENT_ID}"
         f"&redirect_uri={REDIRECT_URI}"
         "&response_type=code"
         "&scope=openid%20email%20profile"
         "&access_type=offline"
+        f"&state={urllib.parse.quote(state, safe='')}"
     )
     auth_url = GOOGLE_AUTH_URL + auth_params
     return RedirectResponse(url=auth_url)
 
 
 @router.get("/callback")
-async def callback(request: Request, code: Optional[str] = None, error: Optional[str] = None):
+async def callback(request: Request, code: Optional[str] = None, error: Optional[str] = None, state: Optional[str] = None):
     if error:
         return _error_page(request, f"Google rejected login: {error}")
     if not code:
@@ -84,6 +104,36 @@ async def callback(request: Request, code: Optional[str] = None, error: Optional
     if not email:
         return _error_page(request, "No email in Google profile")
 
+    if state and state.startswith("device:"):
+        # Device-code (LLM gateway) login: deliberately NOT gated by
+        # _is_authorized (admin-only) -- any identity the vault knows
+        # about may reach the /device approval page. The approval page
+        # itself (device_auth.py) still requires the llm_gateway
+        # permission before it actually approves anything; this branch
+        # only decides who gets to SEE that page. It can only ever
+        # redirect to /device*, because /login above is the only place
+        # that ever sets the "device:" prefix, and it only does so when
+        # the destination already starts with /device.
+        dest = _safe_next(state[len("device:"):])
+        if not dest.startswith("/device"):
+            dest = "/device"
+        from .vault_client import VaultClient
+        vault = VaultClient()
+        try:
+            user_id = vault.resolve("email", email)
+        except Exception as e:
+            logger.warning(f"Vault resolve failed for {email}: {e}")
+            user_id = None
+        if not user_id:
+            return _error_page(request, f"{email} is not a provisioned Hermes identity. Contact an admin.")
+        request.session["device_user"] = {
+            "email": email,
+            "name": name,
+            "picture": picture,
+            "login_at": time.time(),
+        }
+        return RedirectResponse(url=dest)
+
     if not _is_authorized(email):
         return _error_page(request, f"Access denied: {email} is not an authorized admin")
 
@@ -93,7 +143,7 @@ async def callback(request: Request, code: Optional[str] = None, error: Optional
         "picture": picture,
         "login_at": time.time(),
     }
-    return RedirectResponse(url="/")
+    return RedirectResponse(url=_safe_next(state))
 
 
 @router.get("/logout")
@@ -155,15 +205,20 @@ async def _verify_google_id_token(id_token: str, access_token: Optional[str] = N
 
 
 def _is_authorized(email: str) -> bool:
+    # ADMIN_EMAILS stays only as an emergency bootstrap; the vault is the
+    # source of truth for admin access (role == "admin" or vault_admin).
     if email in ADMIN_EMAILS:
         return True
     from .vault_client import VaultClient
     vault = VaultClient()
     try:
         user_id = vault.resolve("email", email)
-        if user_id:
-            identity = vault.get_identity(user_id)
-            if identity and identity.get("permissions", {}).get("vault_admin"):
+        if not user_id:
+            return False
+        identity = vault.get_identity(user_id)
+        if identity:
+            perms = identity.get("permissions", {}) or {}
+            if identity.get("role") == "admin" or perms.get("vault_admin") is True:
                 return True
     except Exception as e:
         logger.warning(f"Vault auth check failed for {email}: {e}")

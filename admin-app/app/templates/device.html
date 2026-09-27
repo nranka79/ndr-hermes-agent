@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}Device Login{% endblock %}
+{% block heading %}Approve LLM Gateway Device{% endblock %}
+{% block content %}
+<div class="max-w-md mx-auto">
+  <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
+    {% if approved %}
+      <div class="text-center">
+        <span class="text-4xl">&#9989;</span>
+        <h2 class="text-lg font-semibold text-gray-900 mt-3">Device approved</h2>
+        <p class="text-sm text-gray-500 mt-1">You can close this window and return to your terminal / editor.</p>
+      </div>
+    {% else %}
+      <h2 class="text-lg font-semibold text-gray-900 mb-1">Approve LLM Gateway access</h2>
+      <p class="text-sm text-gray-500 mb-4">
+        Signed in as <strong>{{ user.email }}</strong>. Confirm the code shown on your
+        device matches the one below, then approve.
+      </p>
+      {% if error %}
+      <div class="bg-red-50 border border-red-200 rounded-xl px-4 py-3 mb-4">
+        <p class="text-red-600 text-sm">{{ error }}</p>
+      </div>
+      {% endif %}
+      <form method="post" action="/device/approve" class="space-y-4">
+        <div>
+          <label class="block text-xs font-medium text-gray-500 mb-1">Device code</label>
+          <input type="text" name="user_code" value="{{ user_code }}" maxlength="9"
+                 class="w-full text-center tracking-widest text-lg font-mono uppercase border border-gray-300 rounded-lg px-3 py-2 focus:ring-indigo-500 focus:border-indigo-500"
+                 placeholder="XXXX-XXXX" required>
+        </div>
+        <div class="flex gap-3">
+          <button type="submit" name="action" value="approve"
+                  class="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium px-4 py-2.5 rounded-lg transition shadow-sm">
+            Approve
+          </button>
+          <button type="submit" name="action" value="deny"
+                  class="flex-1 bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 text-sm font-medium px-4 py-2.5 rounded-lg transition">
+            Deny
+          </button>
+        </div>
+      </form>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

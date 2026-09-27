@@ -1,0 +1,409 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Keys — Hermes Admin</title>
+<style>
+  :root { --bg:#0f1116; --card:#171a21; --line:#232833; --text:#e6ebf0; --muted:#8b95a7;
+          --blue:#1a73e8; --green:#78c878; --amber:#f9ab00; --red:#d93025;
+          /* modality-section accents -- LLM / multimodal / image generation */
+          --acc-llm:#5b8def; --acc-multimodal:#22c3a6; --acc-image:#c07bf0; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font-family:system-ui,-apple-system,"Segoe UI",sans-serif; padding:24px; }
+  header { display:flex; align-items:baseline; gap:12px; margin-bottom:6px; flex-wrap:wrap; }
+  h1 { font-size:20px; margin:0; }
+  h2.section { font-size:15px; margin:26px 0 14px; color:var(--muted); text-transform:uppercase; letter-spacing:.05em; }
+  .sub { color:var(--muted); font-size:13px; }
+  .banner { border-radius:10px; padding:10px 14px; font-size:13px; margin:14px 0 18px; }
+  .banner.ok { background:rgba(120,200,120,.12); color:var(--green); border:1px solid rgba(120,200,120,.3); }
+  .banner.err { background:rgba(217,48,37,.12); color:var(--red); border:1px solid rgba(217,48,37,.3); }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(340px,1fr)); gap:16px; }
+
+  /* -- modality sections (LLM / multimodal / image generation) ------------ */
+  .modality { margin-bottom:28px; }
+  .modality:last-child { margin-bottom:0; }
+  .modality-head { display:flex; align-items:flex-start; gap:12px; padding:2px 0 14px;
+                   border-bottom:1px solid var(--line); margin-bottom:16px; }
+  .modality-head .modality-icon { font-size:22px; line-height:1; filter:saturate(1.15); }
+  .modality-heading { flex:1; min-width:0; }
+  .modality-title { margin:0; font-size:16px; font-weight:650; letter-spacing:.01em; }
+  .modality-sub { margin:3px 0 0; color:var(--muted); font-size:12px; line-height:1.4; }
+  .modality-count { flex:0 0 auto; font-size:11px; color:var(--muted); background:var(--bg);
+                    border:1px solid var(--line); border-radius:999px; padding:3px 10px;
+                    white-space:nowrap; align-self:center; }
+  .modality--llm .modality-head { border-bottom-color:color-mix(in srgb, var(--acc-llm) 45%, var(--line)); }
+  .modality--multimodal .modality-head { border-bottom-color:color-mix(in srgb, var(--acc-multimodal) 45%, var(--line)); }
+  .modality--image .modality-head { border-bottom-color:color-mix(in srgb, var(--acc-image) 45%, var(--line)); }
+  .modality--llm .modality-icon { color:var(--acc-llm); }
+  .modality--multimodal .modality-icon { color:var(--acc-multimodal); }
+  .modality--image .modality-icon { color:var(--acc-image); }
+
+  /* -- bucket cards, tier-colored so free/subscription/api read the same way
+        in every modality section -------------------------------------- */
+  .card { background:var(--card); border:1px solid var(--line); border-top:3px solid var(--line);
+          border-radius:10px 10px 12px 12px; padding:16px; }
+  .card.tier-free { border-top-color:var(--green); }
+  .card.tier-subscription { border-top-color:var(--amber); }
+  .card.tier-api { border-top-color:var(--blue); }
+  .card h2 { margin:0 0 4px; font-size:14px; display:flex; justify-content:space-between; align-items:baseline; gap:8px; }
+  .tier-tag { font-size:9px; font-weight:700; text-transform:uppercase; letter-spacing:.06em;
+              padding:2px 7px; border-radius:999px; white-space:nowrap; }
+  .tier-tag.tier-free { color:var(--green); background:rgba(120,200,120,.12); border:1px solid rgba(120,200,120,.35); }
+  .tier-tag.tier-subscription { color:var(--amber); background:rgba(249,171,0,.12); border:1px solid rgba(249,171,0,.35); }
+  .tier-tag.tier-api { color:var(--blue); background:rgba(26,115,232,.12); border:1px solid rgba(26,115,232,.35); }
+  .badge { font-size:10px; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; border:1px solid var(--line); border-radius:999px; padding:2px 8px; }
+  .help { color:var(--muted); font-size:12px; line-height:1.45; margin:6px 0 10px; }
+  .entry { display:flex; flex-wrap:wrap; align-items:center; gap:8px; padding:9px 0; border-top:1px solid var(--line); font-size:13px; margin-top:6px; }
+  .entry:first-of-type { border-top:none; }
+  .entry .prov { font-weight:600; }
+  .entry .mod { color:var(--muted); font-family:monospace; font-size:11px; background:var(--bg); border:1px solid var(--line); border-radius:6px; padding:2px 6px; }
+  .entry .key { color:var(--muted); font-family:monospace; font-size:12px; margin-left:auto; }
+  .entry .row-idx { color:var(--muted); font-size:10px; }
+  .row-actions { display:flex; gap:6px; align-items:center; }
+  .empty { color:var(--muted); font-style:italic; font-size:12px; margin:10px 0 4px; }
+  button { background:var(--line); color:var(--text); border:1px solid #2e3542; border-radius:8px; padding:5px 10px; font-size:12px; cursor:pointer; }
+  button:hover { border-color:#3a4152; }
+  button.primary { background:var(--blue); border-color:var(--blue); }
+  button.danger { color:var(--red); }
+  input, select { background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:6px 8px; color:var(--text); font-size:12px; }
+  input:focus, select:focus { outline:none; border-color:#3a4152; }
+  .add { border-top:1px solid var(--line); margin-top:12px; padding-top:12px; }
+  .add .flds { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+  .add .flds .wide { grid-column:1 / -1; }
+  .add label { font-size:10px; color:var(--muted); text-transform:uppercase; letter-spacing:.03em; display:block; margin-bottom:3px; }
+  .add input, .add select { width:100%; }
+  .extra-fld { grid-column:1 / -1; }
+  .model-fld { display:flex; gap:6px; align-items:stretch; }
+  .model-fld select { flex:1; min-width:0; }
+  .model-fld button { white-space:nowrap; flex:0 0 auto; font-size:11px; }
+  .model-custom { margin-top:6px; }
+  .model-note { color:var(--muted); }
+  details { margin-top:8px; }
+  details summary { cursor:pointer; color:var(--muted); font-size:11px; }
+  .slot { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:8px 0; border-top:1px solid var(--line); font-size:13px; }
+  .slot:first-of-type { border-top:none; margin-top:8px; }
+  .slot .name { color:var(--muted); font-size:11px; }
+  .slot .val { font-family:monospace; }
+  .slot .empty { color:var(--muted); font-style:italic; }
+  form.inline { display:inline; }
+  footer { margin-top:24px; color:var(--muted); font-size:11px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>API keys</h1>
+  <span class="sub">LLM gateway rotation buckets + provider keys</span>
+</header>
+
+{% if message %}<div class="banner ok">{{ message }}</div>{% endif %}
+{% if error %}<div class="banner err">{{ error }}</div>{% endif %}
+
+<h2 class="section">🔁 LLM gateway — rotation buckets</h2>
+{% for g in bucket_groups %}
+<section class="modality modality--{{ g.id }}">
+  <div class="modality-head">
+    <span class="modality-icon">{{ g.icon }}</span>
+    <div class="modality-heading">
+      <h3 class="modality-title">{{ g.title }}</h3>
+      <p class="modality-sub">{{ g.subtitle }}</p>
+    </div>
+    <span class="modality-count">{{ g.total_entries }} key{{ "" if g.total_entries == 1 else "s" }} configured</span>
+  </div>
+  <div class="grid">
+  {% for b in g.buckets %}
+  <div class="card tier-{{ b.tier }}">
+    <h2>
+      <span>{{ b.label }}</span>
+      <span style="display:flex; gap:6px; align-items:baseline;">
+        <span class="tier-tag tier-{{ b.tier }}">{{ b.tier }}</span>
+        <span class="badge">{{ b.entries|length }} key{{ "" if b.entries|length == 1 else "s" }}</span>
+      </span>
+    </h2>
+    <p class="help">{{ b.help }}</p>
+
+    {% if b.entries %}
+      {% for e in b.entries %}
+      <div class="entry">
+        <span class="row-idx">#{{ loop.index }}</span>
+        <span class="prov">{{ e.provider }}</span>
+        {% if e.model %}<span class="mod">{{ e.model }}</span>{% else %}<span class="mod">default model</span>{% endif %}
+        <span class="key">{{ e.masked if e.has_key else "no key" }}</span>
+        <div class="row-actions">
+          <details style="position:relative">
+            <summary>replace key</summary>
+            <form method="post" action="/keys-admin/bucket/replace" class="add">
+              <input type="hidden" name="bucket" value="{{ b.id }}" />
+              <input type="hidden" name="row_id" value="{{ e.id }}" />
+              <label>New key</label>
+              <input type="text" name="key" placeholder="Paste new key…" required autocomplete="off" />
+              <p style="margin:6px 0 0"><button type="submit" class="primary">Replace</button></p>
+            </form>
+          </details>
+          <form method="post" action="/keys-admin/bucket/remove" class="inline">
+            <input type="hidden" name="bucket" value="{{ b.id }}" />
+            <input type="hidden" name="row_id" value="{{ e.id }}" />
+            <button type="submit" class="danger" onclick="return confirm('Remove {{ e.provider }} / {{ e.model or 'default' }} and restart affected containers?')">Remove</button>
+          </form>
+        </div>
+      </div>
+      {% endfor %}
+    {% else %}
+      <div class="empty">No entries yet — calls fall through to the next bucket.</div>
+    {% endif %}
+
+<form method="post" action="/keys-admin/bucket/add" class="add" autocomplete="off">
+      <input type="hidden" name="bucket" value="{{ b.id }}" />
+      <div class="flds">
+        <div>
+          <label>Provider</label>
+          <select name="provider" class="provider-sel" data-bucket="{{ b.id }}" onchange="updateBucketForm(this)" autocomplete="off">
+            {% for o in b.provider_options %}
+            <option value="{{ o.value }}" {% if o.value == b.default_provider %}selected{% endif %}>{{ o.label }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div>
+          <label>Model{{ " (default)" if b.model_optional else "" }}</label>
+          <div class="model-fld">
+            <select name="model" class="model-sel" data-bucket="{{ b.id }}"
+                    data-vision="{{ 1 if b.vision_only else 0 }}"
+                    data-optional="{{ 1 if b.model_optional else 0 }}"
+                    data-kind="{{ b.kind }}"
+                    onchange="onModelChange(this)" autocomplete="off"></select>
+            <button type="button" class="model-fetch" data-bucket="{{ b.id }}"
+                    onclick="fetchLiveModels(this)"
+                    title="Ask the provider what it serves, using the key pasted below">Fetch live</button>
+          </div>
+          <input type="text" name="model_custom" class="model-custom" data-bucket="{{ b.id }}" hidden
+                 placeholder="{{ 'google/gemini-2.5-flash' if b.id == 'multi_token' else 'deepseek/deepseek-v4-flash' }}"
+                 autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" />
+        </div>
+        <div class="wise">
+          <label>API key</label>
+          <input type="text" name="key" id="key-{{ b.id }}"
+                 data-default-placeholder="Paste {{ b.label }} key…"
+                 placeholder="Paste {{ b.label }} key…" required autocomplete="off"
+                 autocorrect="off" autocapitalize="none" spellcheck="false" />
+        </div>
+        {% for name, label, placeholder in b.extra_fields %}
+        <div class="extra-fld" data-extras-group="{{ b.id }}" data-field="{{ name }}" hidden>
+          <label>{{ label }}</label>
+          <input type="text" name="{{ name }}" placeholder="{{ placeholder }}" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" />
+        </div>
+        {% endfor %}
+      </div>
+      <details>
+        <summary>Advanced (base URL, weekly limits)</summary>
+        <div class="flds" style="margin-top:6px">
+          <div class="wise">
+            <label>Base URL <span style="text-transform:none">(auto-filled for selected provider — override if needed)</span></label>
+            <input type="text" name="base" id="base-{{ b.id }}" placeholder="https://provider.example.com/v1" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" />
+          </div>
+          <div>
+            <label>Weekly request cap</label>
+            <input type="text" name="weekly_limit_requests" placeholder="e.g. 1500" autocomplete="off" />
+          </div>
+          <div>
+            <label>Weekly token cap</label>
+            <input type="text" name="weekly_limit_tokens" placeholder="e.g. 5000000" autocomplete="off" />
+          </div>
+          <div>
+            <label>Reset every N days</label>
+            <input type="text" name="reset_days" placeholder="7" autocomplete="off" />
+          </div>
+        </div>
+      </details>
+      <p style="margin:10px 0 0"><button type="submit" class="primary">Add entry</button></p>
+    </form>
+  </div>
+  {% endfor %}
+  </div>
+</section>
+{% endfor %}
+
+<h2 class="section">🔑 Other provider keys</h2>
+<div class="grid">
+  {% for p in flat_providers %}
+  <div class="card">
+    <h2>{{ p.label }} <span class="badge">{{ "multi-key" if p.multi else "single key" }}</span></h2>
+    {% for s in p.slots %}
+    <div class="slot">
+      <div>
+        <div class="name">{{ s.env_var }}</div>
+        {% if s.configured %}
+          <div class="val">{{ s.masked }}</div>
+        {% else %}
+          <div class="empty">empty</div>
+        {% endif %}
+      </div>
+      {% if s.configured %}
+      <form class="inline" method="post" action="/keys-admin/disable">
+        <input type="hidden" name="provider" value="{{ p.id }}" />
+        <input type="hidden" name="env_var" value="{{ s.env_var }}" />
+        <button type="submit" class="danger" onclick="return confirm('Disable {{ s.env_var }} and restart affected containers?')">Disable</button>
+      </form>
+      {% endif %}
+    </div>
+    {% endfor %}
+    {% set has_free = p.slots|selectattr("configured", "equalto", false)|list|length > 0 %}
+    {% if has_free %}
+    <form method="post" action="/keys-admin/add" class="add-row" style="display:flex;gap:8px;margin-top:12px;">
+      <input type="hidden" name="provider" value="{{ p.id }}" />
+      <input type="text" name="value" placeholder="Paste new {{ p.label }} key…" required autocomplete="off" style="flex:1" />
+      <button type="submit" class="primary">Add</button>
+    </form>
+    {% else %}
+    <div class="empty" style="margin-top:12px">All {{ p.slots|length }} slot(s) in use.</div>
+    {% endif %}
+  </div>
+  {% endfor %}
+</div>
+
+<footer>Adding or changing a key restarts the containers that use it — expect a few seconds of interruption. Keys are stored in /opt/hermes/.env.rotator-keys and only ever shown masked (…last4).</footer>
+
+<script>
+  const PMETA = {{ provider_meta|tojson }};
+  const CUSTOM = '__custom__';
+
+  const byBucket = (cls, bid) => document.querySelector(cls + '[data-bucket="' + bid + '"]');
+
+  /* Rebuild a bucket's Model <select> from the selected provider's catalog.
+     Multimodal buckets (data-vision="1") only offer vision-capable models, so a
+     vision request is never stranded on a text-only model. Providers with no
+     catalog (openorca, custom OpenAI-compatible) collapse to "Custom…", which
+     is exactly how the field behaved before it became a dropdown. */
+  function rebuildModelOptions(bid, provider, extra) {
+    const sel = byBucket('select.model-sel', bid);
+    if (!sel) return;
+    const meta = PMETA[provider] || {};
+    const kind = sel.dataset.kind || 'chat';
+    const visionOnly = sel.dataset.vision === '1';
+    const optional = sel.dataset.optional === '1';
+    const previous = sel.value;
+
+    /* image_* buckets pull from a SEPARATE catalog: a provider's image-model
+       ids are a different id space entirely from its chat/vision ids (nvidia's
+       chat catalog has no relation to "black-forest-labs/flux.1-dev"), so
+       there is no vision-style filtering to apply here -- every imageModels
+       entry is already image-only. */
+    const catalog = kind === 'image'
+      ? (meta.imageModels || [])
+      : (meta.models || []).filter(m => !visionOnly || m.vision);
+    const known = new Set(catalog.map(m => m.id));
+
+    sel.innerHTML = '';
+    if (optional) {
+      sel.appendChild(new Option('(provider default)', ''));
+    } else if (catalog.length) {
+      /* Required buckets keep an empty placeholder so a model is a deliberate
+         choice, matching the old required-text-input behaviour instead of
+         silently pre-selecting whatever happens to be first in the catalog. */
+      sel.appendChild(new Option('— select a model —', ''));
+    }
+    if (catalog.length) {
+      const g = document.createElement('optgroup');
+      g.label = kind === 'image' ? 'image models — see notes' : (visionOnly ? 'vision-capable — verified' : 'verified');
+      catalog.forEach(m => {
+        g.appendChild(new Option(m.note ? m.id + '  — ' + m.note : m.id, m.id));
+      });
+      sel.appendChild(g);
+    }
+    /* Ids the provider advertises but we have not verified. NVIDIA lists ~82
+       models yet only entitles the "Free Endpoint" subset, so these must look
+       visibly less trustworthy than the verified group above. */
+    const unverified = (extra || []).filter(id => !known.has(id));
+    if (unverified.length) {
+      const g = document.createElement('optgroup');
+      g.label = 'from provider — not verified';
+      unverified.forEach(id => g.appendChild(new Option(id, id)));
+      sel.appendChild(g);
+    }
+    sel.appendChild(new Option('Custom…', CUSTOM));
+
+    /* Keep the operator's choice across a re-render when it is still offered. */
+    const stillThere = Array.from(sel.options).some(o => o.value === previous);
+    if (previous && stillThere) {
+      sel.value = previous;
+    } else if (!optional && !catalog.length) {
+      sel.value = CUSTOM;   // no catalog: go straight to the text input
+    }
+    onModelChange(sel);
+  }
+
+  /* "Custom…" reveals the free-text input and makes it the required field. */
+  function onModelChange(sel) {
+    const bid = sel.dataset.bucket;
+    const custom = byBucket('input.model-custom', bid);
+    if (!custom) return;
+    const isCustom = sel.value === CUSTOM;
+    custom.hidden = !isCustom;
+    custom.required = isCustom && sel.dataset.optional !== '1';
+    /* Only one of the two can be required at a time, else an empty hidden
+       input blocks submit with an unfocusable validation bubble. */
+    sel.required = !isCustom && sel.dataset.optional !== '1';
+    if (isCustom) custom.focus();
+  }
+
+  async function fetchLiveModels(btn) {
+    const bid = btn.dataset.bucket;
+    const form = btn.closest('form');
+    const provSel = byBucket('select.provider-sel', bid);
+    if (!form || !provSel) return;
+    const body = new URLSearchParams({
+      bucket: bid,
+      provider: provSel.value,
+      key: (form.querySelector('input[name="key"]') || {}).value || '',
+      base: (form.querySelector('input[name="base"]') || {}).value || '',
+      account_id: (form.querySelector('input[name="account_id"]') || {}).value || '',
+      resource: (form.querySelector('input[name="resource"]') || {}).value || '',
+    });
+    const label = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = 'Fetching…';
+    try {
+      const r = await fetch('/keys-admin/models/fetch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: body.toString(),
+      });
+      const data = await r.json();
+      if (!data.ok) throw new Error(data.error || 'could not list models');
+      rebuildModelOptions(bid, provSel.value, data.models);
+      btn.textContent = data.models.length + ' found';
+      setTimeout(() => { btn.textContent = label; }, 2500);
+    } catch (e) {
+      btn.textContent = 'failed';
+      btn.title = String(e.message || e);
+      setTimeout(() => { btn.textContent = label; }, 3000);
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  function updateBucketForm(sel) {
+    const bid = sel.dataset.bucket;
+    const meta = PMETA[sel.value] || {};
+    const baseInp = document.getElementById('base-' + bid);
+    if (baseInp) baseInp.value = meta.base || '';
+    const want = new Set(meta.extra_fields || []);
+    document.querySelectorAll('[data-extras-group="' + bid + '"]').forEach(el => {
+      el.hidden = !want.has(el.dataset.field);
+    });
+    /* A keyless provider (meta.keyless -- none currently configured; Pollinations
+       held this until it started requiring a paid balance on 2026-09-27) gets its
+       key field un-required, rather than blocking submit on a key that does not
+       exist. Any other provider keeps the normal required key. */
+    const keyInp = document.getElementById('key-' + bid);
+    if (keyInp) {
+      keyInp.required = !meta.keyless;
+      keyInp.placeholder = meta.keyless
+        ? 'No key needed for this provider — leave blank'
+        : (keyInp.dataset.defaultPlaceholder || keyInp.placeholder);
+    }
+    rebuildModelOptions(bid, sel.value, null);
+  }
+  document.querySelectorAll('select.provider-sel').forEach(updateBucketForm);
+</script>
+</body>
+</html>

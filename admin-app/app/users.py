@@ -1,11 +1,50 @@
 import logging
+import os
 from pathlib import Path
 
 from fastapi import APIRouter, Request, Form
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from .jinja_env import env
-from .vault_client import VaultClient, VaultError, MANAGED_APPS
+from .openwebui import sync_chat_users
+from .vault_client import VaultClient, VaultError, MANAGED_APPS, write_app_emails_file
+
+# llm_gateway is deliberately NOT in MANAGED_APPS -- that list defaults every
+# app to True for an unset key (see app_states below), which is wrong here.
+# llm_gateway mirrors the vault daemon's own check_access semantics exactly:
+# admins are granted automatically, everyone else needs the explicit toggle.
+
+def _is_admin_identity(identity: dict) -> bool:
+    perms = identity.get("permissions", {}) or {}
+    return identity.get("role") == "admin" or perms.get("vault_admin") is True
+
+
+def llm_gateway_state(identity: dict) -> bool:
+    apps = (identity.get("permissions", {}) or {}).get("apps", {}) or {}
+    return _is_admin_identity(identity) or apps.get("llm_gateway") is True
+
+
+CHAT_EMAILS_FILE = os.environ.get("CHAT_EMAILS_FILE", "/secrets/chat-emails.txt")
+
+
+def _sync_chat_emails() -> None:
+    """Push a chat-access change out to everything that enforces it.
+
+    The vault is the single source of truth: it feeds oauth2-proxy's email
+    allowlist (who may reach chat.ahfl.in at all) and Open WebUI, where each
+    allowed user is created, activated and put in the Hermes group — and each
+    revoked one is taken out of it and set back to pending. Ticking or
+    unticking "chat" here is therefore the whole job, in both directions;
+    nothing is granted or revoked inside Open WebUI itself.
+    """
+    try:
+        write_app_emails_file("chat", CHAT_EMAILS_FILE)
+    except Exception:  # noqa: BLE001
+        logger.warning("chat emails regeneration failed", exc_info=True)
+    try:
+        sync_chat_users()
+    except Exception:  # noqa: BLE001
+        logger.warning("Open WebUI chat user sync failed", exc_info=True)
 
 router = APIRouter()
 logger = logging.getLogger("admin-app.users")
@@ -61,7 +100,7 @@ async def new_user_form(request: Request):
 @router.post("/new")
 async def create_user(
     request: Request,
-    user_id: str = Form(...),
+    user_id: str = Form(""),
     email: str = Form(...),
     telegram_id: str = Form(""),
     phone: str = Form(""),
@@ -69,14 +108,21 @@ async def create_user(
     role: str = Form("employee"),
 ):
     vault: VaultClient = request.app.state.vault
+    form = await request.form()
     slug = user_id or _slug_from_email(email)
     gbrain_home = f"/data/hermes/users/{slug}"
+    if role == "admin":
+        # Admins get all apps by default (vault check_access also honors this).
+        apps = {app: True for app in MANAGED_APPS}
+    else:
+        apps = {app: (form.get(f"app_{app}") is not None) for app in MANAGED_APPS}
+    apps["llm_gateway"] = (role == "admin")
     permissions = {
         "vault_admin": role == "admin",
         "manage_users": role == "admin",
         "multi_google": False,
         "cross_message_allowed": False,
-        "apps": {app: True for app in MANAGED_APPS},
+        "apps": apps,
     }
     try:
         vault.add_identity(
@@ -102,6 +148,7 @@ async def create_user(
         gbrain_dir = Path(hermes_home) / "users" / slug
         gbrain_dir.mkdir(parents=True, exist_ok=True)
 
+    _sync_chat_emails()
     return RedirectResponse(url="/users", status_code=303)
 
 
@@ -127,6 +174,7 @@ async def view_user(request: Request, user_id: str):
     phone_value = identity.get("phone") or ""
     apps_perms = (identity.get("permissions", {}) or {}).get("apps", {}) or {}
     app_states = {app: apps_perms.get(app, True) for app in MANAGED_APPS}
+    llm_gateway_enabled = llm_gateway_state(identity)
 
     full_permissions = identity.get("permissions", {}) or {}
     oauth_providers = full_permissions.get("oauth_providers", {}) or {}
@@ -142,6 +190,7 @@ async def view_user(request: Request, user_id: str):
         services=services, token_meta=token_meta, VAULT_SERVICE_NAMES=VAULT_SERVICE_NAMES,
         pretty_service=_pretty_service,
         managed_apps=MANAGED_APPS, app_states=app_states,
+        llm_gateway_enabled=llm_gateway_enabled,
         full_permissions=full_permissions,
         oauth_providers=oauth_providers,
         oauth_google_emails=oauth_google_emails,
@@ -156,6 +205,25 @@ async def update_app_permissions(request: Request, user_id: str):
     desired = {app: (app in form) for app in MANAGED_APPS}
     try:
         vault.set_app_permissions(user_id, desired)
+    except VaultError as e:
+        return HTMLResponse(env.get_template("error.html").render(
+            user=request.session.get("user"), error=str(e)
+        ), status_code=500)
+    _sync_chat_emails()
+    return RedirectResponse(url=f"/users/{user_id}", status_code=303)
+
+
+@router.post("/{user_id}/llm-gateway")
+async def update_llm_gateway_access(request: Request, user_id: str):
+    """Toggle the llm_gateway flag. Kept separate from /apps (MANAGED_APPS)
+    because that endpoint's semantics ("checked" == explicit True for every
+    app in the list) would be correct too, but llm_gateway is intentionally
+    NOT in MANAGED_APPS -- see the comment on llm_gateway_state() above."""
+    vault: VaultClient = request.app.state.vault
+    form = await request.form()
+    enabled = "llm_gateway" in form
+    try:
+        vault.set_app_permissions(user_id, {"llm_gateway": enabled})
     except VaultError as e:
         return HTMLResponse(env.get_template("error.html").render(
             user=request.session.get("user"), error=str(e)
@@ -200,6 +268,7 @@ async def update_user_permissions(request: Request, user_id: str):
         return HTMLResponse(env.get_template("error.html").render(
             user=request.session.get("user"), error=str(e)
         ), status_code=500)
+    _sync_chat_emails()
     return RedirectResponse(url=f"/users/{user_id}", status_code=303)
 
 
@@ -238,6 +307,7 @@ async def update_oauth_providers(request: Request, user_id: str):
         return HTMLResponse(env.get_template("error.html").render(
             user=request.session.get("user"), error=str(e)
         ), status_code=500)
+    _sync_chat_emails()
     return RedirectResponse(url=f"/users/{user_id}", status_code=303)
 
 
@@ -252,6 +322,7 @@ async def add_user_identity(request: Request, user_id: str,
         return HTMLResponse(env.get_template("error.html").render(
             user=request.session.get("user"), error=str(e)
         ), status_code=500)
+    _sync_chat_emails()
     return RedirectResponse(url=f"/users/{user_id}", status_code=303)
 
 
@@ -266,6 +337,7 @@ async def delete_identity(request: Request, user_id: str,
         return HTMLResponse(env.get_template("error.html").render(
             user=request.session.get("user"), error=str(e)
         ), status_code=500)
+    _sync_chat_emails()
     return RedirectResponse(url=f"/users/{user_id}", status_code=303)
 
 
@@ -278,4 +350,5 @@ async def delete_user(request: Request, user_id: str):
         return HTMLResponse(env.get_template("error.html").render(
             user=request.session.get("user"), error=str(e)
         ), status_code=500)
+    _sync_chat_emails()
     return RedirectResponse(url="/users", status_code=303)

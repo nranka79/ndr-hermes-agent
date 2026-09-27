@@ -1,0 +1,117 @@
+{% extends "base.html" %}
+{% block title %}Domain-wide delegation{% endblock %}
+{% block heading %}Domain-wide delegation{% endblock %}
+{% block content %}
+
+<div class="bg-amber-50 border border-amber-200 rounded-2xl px-6 py-4 flex items-start gap-3">
+  <svg class="w-5 h-5 text-amber-600 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>
+  <div>
+    <p class="text-sm font-semibold text-amber-800">Domain-wide delegation grants full access to every user.</p>
+    <p class="text-sm text-amber-700 mt-0.5">Scope the client ID in <span class="font-mono">admin.google.com</span>; keep the key in the vault only. The key is stored as <span class="font-mono">{{ system_admin }} / google-dwd</span> and is never shown in this panel.</p>
+  </div>
+</div>
+
+{% if message %}<div class="bg-emerald-50 border border-emerald-200 text-emerald-700 rounded-2xl px-4 py-3 text-sm">{{ message }}</div>{% endif %}
+{% if error %}<div class="bg-red-50 border border-red-200 text-red-700 rounded-2xl px-4 py-3 text-sm">{{ error }}</div>{% endif %}
+
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+
+  <!-- Status card -->
+  <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+    <div class="px-6 py-4 border-b border-gray-100">
+      <h3 class="text-sm font-semibold text-gray-900 uppercase tracking-wider">DWD service-account key</h3>
+    </div>
+    <div class="p-6">
+      <dl class="grid grid-cols-2 gap-x-6 gap-y-3 text-sm">
+        <div>
+          <dt class="text-gray-400 text-xs uppercase tracking-wider">Provisioned</dt>
+          <dd class="mt-0.5">
+            {% if status.exists %}
+            <span class="inline-flex items-center gap-1.5 text-emerald-600 font-medium">
+              <span class="w-2 h-2 rounded-full bg-emerald-400"></span>Yes
+            </span>
+            {% else %}
+            <span class="inline-flex items-center gap-1.5 text-gray-400 font-medium">
+              <span class="w-2 h-2 rounded-full bg-gray-300"></span>No
+            </span>
+            {% endif %}
+          </dd>
+        </div>
+        <div>
+          <dt class="text-gray-400 text-xs uppercase tracking-wider">Created</dt>
+          <dd class="text-gray-700 mt-0.5">
+            {%- if status.exists -%}
+              {%- if status.approx -%}<span class="text-gray-400" title="Approximate (seeded from file date)">~</span>{%- endif -%}
+              {{ status.created_at | ist }}
+            {%- else -%}-{%- endif %}
+          </dd>
+        </div>
+        <div>
+          <dt class="text-gray-400 text-xs uppercase tracking-wider">Owner</dt>
+          <dd class="font-mono text-xs text-indigo-600 mt-0.5"><code>{{ system_admin }}</code></dd>
+        </div>
+        <div>
+          <dt class="text-gray-400 text-xs uppercase tracking-wider">Service</dt>
+          <dd class="font-mono text-xs text-gray-600 mt-0.5"><code>{{ "google-dwd" }}</code></dd>
+        </div>
+      </dl>
+
+      <form method="post" action="/vault/dwd/upload" class="mt-6">
+        <label class="block text-sm font-medium text-gray-700 mb-1">Service-account JSON key</label>
+        <textarea name="token_json" rows="8" spellcheck="false" required
+                  class="w-full px-3 py-2 text-xs font-mono border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
+                  placeholder='{"type": "service_account", "project_id": "...", "client_email": "...@....iam.gserviceaccount.com", "client_id": "...", "private_key": "-----BEGIN PRIVATE KEY-----..."}'></textarea>
+        <div class="mt-3 flex items-center gap-3">
+          <button type="submit" class="px-4 py-2 text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg transition">
+            Upload / replace key
+          </button>
+        </div>
+      </form>
+      {% if status.exists %}
+      <form method="post" action="/vault/dwd/delete" class="mt-3"
+            onsubmit="return confirm('Delete the DWD service-account key? All delegated access immediately stops.');">
+        <button type="submit" class="px-4 py-2 text-sm font-medium text-red-600 hover:text-red-800 rounded-lg transition">
+          Delete key
+        </button>
+      </form>
+      {% endif %}
+    </div>
+  </div>
+
+  <!-- Test as user card -->
+  <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+    <div class="px-6 py-4 border-b border-gray-100">
+      <h3 class="text-sm font-semibold text-gray-900 uppercase tracking-wider">Test as user</h3>
+    </div>
+    <div class="p-6">
+      <p class="text-xs text-gray-400 mb-4">Enter a name or email. The vault resolves the person and reports which credential mode would be used — your own token (user) or the DWD key (dwd). The key itself is never shown.</p>
+      <form method="post" action="/vault/dwd/test" class="flex gap-3">
+        <input type="text" name="target" value="{{ test_target }}" required
+               placeholder="Name or email, e.g. Alice or alice@example.com"
+               class="flex-1 px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500">
+        <button type="submit" class="px-4 py-2 text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg transition">Test</button>
+      </form>
+
+      {% if test_result %}
+      <div class="mt-4 rounded-xl border border-gray-100 bg-gray-50 p-4 text-sm space-y-2">
+        <div class="flex items-center gap-2">
+          <span class="text-gray-400 text-xs uppercase tracking-wider">Mode</span>
+          {% if test_result.mode == "dwd" %}
+          <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-purple-100 text-purple-700">dwd</span>
+          <span class="text-xs text-gray-400">act on this user via the service account</span>
+          {% else %}
+          <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-emerald-100 text-emerald-700">user</span>
+          {% endif %}
+        </div>
+        <div><span class="text-gray-400 text-xs uppercase tracking-wider">Resolved user</span> <span class="font-mono text-xs text-gray-700 ml-1"><code>{{ test_result.user_id }}</code></span></div>
+        <div><span class="text-gray-400 text-xs uppercase tracking-wider">Resolved email</span> <span class="font-mono text-xs text-gray-700 ml-1"><code>{{ test_result.email }}</code></span></div>
+        {% if test_result.needs_auth %}
+        <div class="text-xs text-amber-600">This user has no personal Google token yet — they need to authorize once (via the normal OAuth flow) before their own account can be used.</div>
+        {% endif %}
+      </div>
+      {% endif %}
+    </div>
+  </div>
+
+</div>
+{% endblock %}
