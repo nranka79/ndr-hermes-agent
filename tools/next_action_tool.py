@@ -148,7 +148,7 @@ def _log_completion(service, task_id: str, row: list, final_status: str, notes_s
     service.spreadsheets().values().append(
         spreadsheetId=SPREADSHEET_ID,
         range=COMPLETED_LOG_RANGE,
-        valueInputOption="USER_ENTERED",
+        valueInputOption="RAW",
         insertDataOption="INSERT_ROWS",
         body={"values": [[
             task_id, date, slot, action, context, final_status,
@@ -264,7 +264,7 @@ def _handle_add(args: Optional[dict], **kw) -> str:
         service.spreadsheets().values().append(
             spreadsheetId=SPREADSHEET_ID,
             range=ACTIONS_RANGE,
-            valueInputOption="USER_ENTERED",
+            valueInputOption="RAW",
             insertDataOption="INSERT_ROWS",
             body={"values": [row]},
         ).execute()
@@ -351,7 +351,7 @@ def _handle_update(args: Optional[dict], **kw) -> str:
         service.spreadsheets().values().update(
             spreadsheetId=SPREADSHEET_ID,
             range=f"{ACTIONS_TAB}!A{row_num}:J{row_num}",
-            valueInputOption="USER_ENTERED",
+            valueInputOption="RAW",
             body={"values": [row]},
         ).execute()
     except Exception as exc:
@@ -505,7 +505,7 @@ def _handle_ask(args: Optional[dict], **kw) -> str:
         service.spreadsheets().values().append(
             spreadsheetId=SPREADSHEET_ID,
             range=CLARIFICATIONS_RANGE,
-            valueInputOption="USER_ENTERED",
+            valueInputOption="RAW",
             insertDataOption="INSERT_ROWS",
             body={"values": [[task_id, question, "", _now_ist_str(), ""]]},
         ).execute()
@@ -514,7 +514,7 @@ def _handle_ask(args: Optional[dict], **kw) -> str:
         service.spreadsheets().values().update(
             spreadsheetId=SPREADSHEET_ID,
             range=f"{ACTIONS_TAB}!A{row_num}:J{row_num}",
-            valueInputOption="USER_ENTERED",
+            valueInputOption="RAW",
             body={"values": [row]},
         ).execute()
     except Exception as exc:
@@ -602,7 +602,7 @@ def _handle_check_answers(args: Optional[dict], **kw) -> str:
                 service.spreadsheets().values().update(
                     spreadsheetId=SPREADSHEET_ID,
                     range=f"{ACTIONS_TAB}!A{row_num}:J{row_num}",
-                    valueInputOption="USER_ENTERED",
+                    valueInputOption="RAW",
                     body={"values": [row]},
                 ).execute()
     except Exception as exc:
