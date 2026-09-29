@@ -491,7 +491,8 @@ TOOLSETS = {
             "hermes-data/skills/productivity/next-agent-action/SKILL.md."
         ),
         "tools": [
-            "next_action_add",
+            "next_action_add", "next_action_update", "next_action_complete",
+            "next_action_cancel", "next_action_ask", "next_action_check_answers",
         ],
         "includes": [],
     },
