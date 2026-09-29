@@ -1,6 +1,6 @@
 ---
 name: dra-content-artifacts
-description: 'Publish, update and verify artifacts in the DRA Content system (content.ahfl.in) — interactive HTML comparators, visual studies, reports, dashboards. DRA Content holds WEBSITES - HTML plus the CSS, JavaScript, images, fonts and data files that page renders. Standalone documents (PDF, Word, Excel, PowerPoint) go to Google Drive instead, never here. Carries that routing rule, the render-origin constraints, the publishing routes, classification and sharing discipline, and the verification recipe. Multi-file artifacts with external CSS, external JavaScript and real image files are SUPPORTED - the opaque-origin/CORP restriction that once forced single self-contained files was a platform bug, fixed on 2026-09-27. TRIGGERS — "publish this to our content publishing system", "put this on content.ahfl.in", "create an artifact", "make this an interactive HTML and publish it", "update artifact DRA-ART-...", "share the artifact with X", "the artifact looks broken / unstyled / images are missing", "the published page is blank".'
+description: 'Publish, update and verify artifacts in the DRA Content system (content.ahfl.in) — interactive HTML comparators, visual studies, reports, dashboards. DRA Content holds WEBSITES: HTML plus the CSS, JavaScript, images, fonts and data such a page renders. Standalone documents (PDF, Word, Excel, PowerPoint) go to Google Drive instead, never here. Carries the routing rule, render-origin constraints, publishing routes, classification and sharing discipline, and the verification recipe. Multi-file artifacts with external CSS, external JavaScript and real image files are SUPPORTED - the opaque-origin/CORP restriction that once forced single self-contained files was a platform bug, fixed 2026-09-27. TRIGGERS — "publish this to our content publishing system", "put this on content.ahfl.in", "create an artifact", "make this an interactive HTML and publish it", "update artifact DRA-ART-...", "share the artifact with X", "the artifact looks broken / unstyled / images are missing", "the published page is blank".'
 ---
 
 # DRA Content Artifacts (publish / update / verify)
@@ -142,8 +142,35 @@ passes through your context.
 {"path": "img/v01.webp", "source_path": "/data/hermes/tmp/renders/v01.webp"}
 ```
 
-Limits: 20 MB per file and 20 MB per version (the request is JSON, base64
-inflates by a third, and nginx caps the body at 30 MB).
+Limits: 20 MB per file, 20 MB per version, and **200 FILES per version**
+(the request is JSON, base64 inflates by a third, and nginx caps the body at
+30 MB). The file-count cap is the one that bites — an image comparator blows
+past it long before it blows past the byte caps.
+
+### The 200-file-per-version cap — pack sprites, do NOT thin the set
+
+content-api rejects a version with more than 200 files:
+`HTTP 422 {"detail":"311 files exceeds the limit of 200"}`. It is **not** in the
+OpenAPI schema (`VersionCreate.files` declares `minItems: 1` and no `maxItems`)
+and there is no repo or container access from here to raise it — treat it as hard.
+Probe it cheaply the same way you probe the token: a rejected POST answers in
+under a second, so you find out at publish time, not at build time.
+
+Sizing that bites: 28 views x (10 variations + 1 original) + 3 text = **311 files**.
+Do NOT solve this by dropping variations or views — that silently changes the
+deliverable the user asked for. **Pack each group of images into one sprite
+sheet** and render the cells with CSS `background-position`. The 280 variations
+become 28 files; every image keeps full quality and full interactivity. Measured
+on DRA-ART-2026-000034: 311 files / 11.56 MB -> **59 files / 11.35 MB**
+(b64 15.13 MB, inside both caps). Note the byte size barely moved — the blocker
+is the COUNT, so pack; do not re-compress to chase a size that was never the
+problem.
+
+`scripts/pack_sprite_sheets.py` builds the sheets.
+`references/file-count-limit-and-sprites.md` has the geometry, the CSS, the
+lightbox pattern and the verification gotcha. Choose this over a contact sheet
+(merges images into one picture, loses per-item zoom) and over splitting into two
+artifacts (splits the share the user asked for as one link).
 
 The older advice here was to bypass the tool because it refused binary and
 could not carry a multi-MB payload. Both are fixed. Prefer the tool.
@@ -285,25 +312,32 @@ surface, not two:
 
 - **The site** = the thing to LOOK at (original held fixed, variation beside
   it, per-variation prompt + QA), and it is also where the images actually
-  live now — real files, not `data:` URIs, uploaded via `source_path`. One
-  link, and it versions in place.
+  live now — real files (or sprite sheets, past the 200-file cap above), not
+  `data:` URIs, uploaded via `source_path`. One link, and it versions in place.
 - **A site's own images never go to Drive. Not by default, not on request,
   not as a one-off.** This is not "prefer the site" — it is the only place
   they go. Drive became a parallel asset host only because the publish tool
   used to be unable to carry binary; that limitation is gone, and so is the
   reason. If someone genuinely needs the raw files later, that is a manual
-  export done by hand at that time, not a step in publishing. (Drive still
+  export done by hand at that time, not a step in publishing — and note that
+  if the images were sprite-packed to fit the 200-file cap, the site itself
+  is no longer full-resolution; a real export means going back to the
+  original working files, not extracting from the sprite sheet. (Drive still
   gets standalone documents in their own right — a source PDF, the master
   prompt file — per the routing rule at the top of this skill; that is
   unaffected.)
 
-Upload idempotently and verify by LISTING BACK, never by trusting the
-uploader's stdout: list the destination first and skip names already present,
-create with `MediaFileUpload(..., resumable=False)`, then re-list and compare
-each file's Drive `size` field against `os.path.getsize(local)`. On the
-2026-09-27 Set C delivery this read back 11/11 OK and is what made the links
-safe to hand out. `upload_setC.py`-style scripts live in the run directory;
-the pattern is one small script, not a tool call per file.
+**History.** Until 2026-09-29 this section said to upload the originals to a
+Drive TMP folder "if the user explicitly asks," with idempotent-upload
+mechanics (`MediaFileUpload(resumable=False)`, list-back-and-compare-size)
+included right here. Concrete trigger for removing the exception entirely:
+the 2026-09-28 AJ Farmhouse delivery plan still proposed a full 308-image
+Drive TMP upload alongside the same images already published as real files
+in the site — the "optional" wording left room to read it as sometimes
+appropriate, and it was. If a Drive upload is ever genuinely warranted for
+something that is NOT a site's own images (e.g. the source corpus, per the
+section below), the list-back verification pattern above is still the right
+one to reuse — it just no longer belongs to this workflow.
 
 **The user's "V2" is not the system's version number.** NDR said "make it a V2
 content" meaning *push the next version of that artifact* — the system counted
@@ -373,8 +407,134 @@ Design rules learned the hard way:
   thumbnail to switch"). If the copy promises prev/next buttons you cannot build,
   the page reads as broken rather than as deliberately different.
 
+## Publishing does NOT license deleting the source assets (learned 2026-09-28)
+
+The publish is often followed by *"and now delete everything from Drive so we don't
+have dual copies — we're short of storage."* Do NOT treat the artifact as a
+replacement for the Drive set. Three checks BEFORE deleting anything:
+
+1. **The artifact is a VIEWER, not an archive.** Images inside an artifact are
+   normally packed as sprite sheets at reduced cell size (see the 200-file cap
+   above). Delete the Drive originals and the full-resolution set exists nowhere.
+   Check whether the local working copy still exists — it frequently does not
+   (`/tmp/<project>` is cleared between sessions). If it is gone, Drive IS the
+   only copy.
+2. **Enumerate the live shares first.** `content_user_access(email)` and
+   `GET /api/artifacts/{id}/permissions` show who holds access to artifacts — but
+   the DRIVE folders have their own, independent permission system that DRA
+   Content cannot see. Before deleting a Drive folder, list its permissions and
+   check whether it was shared with an external reviewer. Those links are
+   typically already sitting in SENT email — deleting the folder kills the link
+   silently, and the reviewer only finds out when they click it.
+3. **Name what breaks, then ask.** Do not execute a broad cleanup on a one-line
+   instruction. Report: which folders are the only surviving copy, which are
+   shared and with whom, and what the safe-to-delete subset is. Offer the
+   container-side cleanup (`/opt/data/<project>` working files) as the
+   zero-risk option when the user's actual concern is space.
+
+Deleting a superseded intermediate build is fine. Deleting the SOURCE CORPUS or a
+folder already shared with an external party is not — surface it and let the user
+decide. Publishing and cleanup are separate decisions.
+
+## A lightbox that opens the WRONG image is a KEY-MISMATCH bug (2026-09-28)
+
+Reported as *"when I click on the image it opens right from G1 again — every panel opens the
+same first image."* That symptom has one shape: **the lookup key built at click time never
+matches any key in the item list, the index stays at its initial `-1`, and the renderer falls
+through to item 0.** In a cumulative study the item 0 is the first frame of the first run, which
+is exactly why every panel appeared to open "G1".
+
+Two bugs, and you must fix BOTH — fixing only the first still opens the wrong image:
+
+1. **The clicked element did not carry the identity the list was keyed by.** Tiles were tagged
+   `kind:sheet:cell`; the lightbox list was keyed `kind:sheet:cell:runId`. No run tile could ever
+   match. Fix: tag the tile with its owning group id at build time (`runId`) and build the lookup
+   key from the SAME fields on both sides.
+2. **The key was not unique across groups.** 20 of the sheet/cell pairs were reused across
+   different runs — every run started at `sheet 0, cell 0`. So even a naive fix keying on
+   `sheet:cell` alone silently opens whichever group was pushed first. The group id is not
+   decoration; it is load-bearing.
+
+```js
+// build: carry the owner id on the element
+if (runId) t.dataset.run = runId;
+// click: include it
+var key = kind + ":" + si + ":" + ci + (tile.dataset.run ? ":" + tile.dataset.run : "");
+// and never leave the index unset — fall through is what produces the "always image 1" bug
+stackIdx = -1;
+stack.forEach(function (it, i) { if (it.key === key) stackIdx = i; });
+if (stackIdx < 0) stackIdx = 0;
+```
+
+**Prove it with a collision count before you publish.** Do not eyeball this — compute it: for
+every group, assert `len({(sheet, cell)})` per group is less than the total across groups, i.e.
+count how many `(sheet, cell)` pairs appear in MORE THAN ONE group. On this artifact that number
+was **20** — that single figure is the proof the group id is required in the key. Then assert
+`tiles_with_no_matching_item == 0` with the fix applied.
+
+**Verify on the LIVE page by clicking the LAST tile of several different groups,** not the first —
+the first tile of every group is cell 0, which is precisely the tile a broken fallback would
+render correctly by accident and mask the bug. Click-through shape that caught it:
+
+```js
+['g3','g5','g10','g12'].forEach(function(id){
+  close(); openPanel(id);
+  var tiles = document.querySelectorAll('#panel-'+id+' .tile');
+  tiles[tiles.length-1].click();                       // last, not first
+  results.push({run:id, clicked: label, opened: lbLabel.textContent,
+                promptHead: promptHead.textContent});
+});
+```
+
+Each group must open its OWN label and its OWN prompt heading. On the fixed v2 build the four
+checks returned the cladding prompt, the night-garden prompt, the bottle-window prompt and the
+laterite-portal prompt respectively — four different answers where the broken build gave one.
+
+**Rename/restructure bugs ride shotgun with this one.** The same session found duplicate
+reference labels (`"REF · 1"` vs `"REF1"` vs `"REF · 1 lobby jaali"` — one file, three labels)
+and a dedupe helper that collapsed them by a key computed inconsistently. If the artifact has a
+labelling step, assert unique labels in the payload before publishing, not after a user reports
+"the same thing twice".
+
 ## Pitfalls
 
+- **Probe that you can actually publish BEFORE you build the payload.** On 2026-09-28 a
+  12.1 MB / 311-file artifact (28 view chips × 10 variations, images as `img/*.webp`) was
+  fully built and browser-verified before anyone checked the route — and every content call
+  then answered `DRA_CONTENT_SERVICE_TOKEN is not configured`, so the deliverable could not
+  be published or shared at all that session. One cheap authenticated metadata call at the
+  START of the job (`content_get` on any known artifact id) settles it in a second. If it
+  comes back unconfigured: **stop building, re-plan around the Drive fallback** (zip of the
+  interactive bundle + one labelled contact sheet per view + the master prompt doc, shared
+  with the reviewer), and tell the user the publish is pending on config *before* they are
+  waiting on a link. When you do report, say plainly that nothing was published — never hand
+  over a URL you did not receive from the API.
+  **Diagnosing the token absence (2026-09-28) — it is a CONFIG problem, not a service outage.**
+  Prove the distinction in four cheap moves before answering the user, because "give me the
+  published URL" is a question about system state, not about your memory: (1) any `content_get` /
+  `content_find` answers `DRA_CONTENT_SERVICE_TOKEN is not configured`; (2) the variable is absent
+  from the process env AND from `/data/hermes/.env` — grep for the NAME only, never print a value;
+  (3) `curl -o /dev/null -w '%{http_code}'` the API host — `content-api:8650` answered **302**, so
+  the service is UP and only this process's transport credential is missing; (4) `tools/dra_content_client.py`
+  shows `_headers()` raises *before* any request when `SERVICE_TOKEN` is empty, which is why every
+  call fails with the identical message. Unblock path, cheapest first: the content-api operator mints
+  a service token, then `hermes config set DRA_CONTENT_SERVICE_TOKEN <token>` and restart the session
+  — a token written only into `.env` is NOT auto-exported into `os.environ` (same trap as any other
+  `.env`-only credential). Until then the honest answer is **no URL exists yet, for anyone** — the
+  SSO shell page included, since nothing was created to authenticate to. Say that, offer the Drive
+  fallback in the same reply, and do not phrase it as a pending publish the user should wait on.
+- **`scripts/publish_artifact.py` in this skill is top-level-only and text-only.** It walks
+  `os.listdir` (no recursion) and skips anything outside `TEXT_EXT`, so an artifact whose
+  images live in `img/` publishes with **zero images and no error**. Two routes for an
+  image-bearing multi-file artifact: the `content_publish` tool's `source_path` (one entry
+  per image, bytes read from disk so nothing large passes through context), or a
+  recursive, binary-aware publisher of your own. For the tool route, stage the build at a
+  SHORT path (`/tmp/<slug>/`) — 311 `{"path":…,"source_path":"…"}` entries at full
+  `/opt/data/<project>/pub/img/...` length is a needlessly large single call. Watch the
+  body cap: 12.1 MB of images ≈ 16 MB base64, comfortably inside the limit; the same set at
+  900 px/q76 was 17.4 MB ≈ 23 MB base64 and too close to it. Size the WebP set (e.g.
+  640 px q68 for variation grids, 900 px q76 for the hero original) to land the binary
+  total near 12 MB.
 - **Do not trust the `content_publish` tool description on file layout.** It
   tells you to split CSS/JS into separate files; on this render origin that is
   precisely what breaks. Verify with `scripts/csp_probe.py`.
@@ -430,7 +590,31 @@ Design rules learned the hard way:
   panel/tab switching above and that a row from the NEW set exists in the index
   table (`[...document.querySelectorAll('table tbody tr')].some(r=>
   r.textContent.includes('W15'))`). Zero broken images across the full page is the
-  single strongest signal the single-file discipline held.
+ single strongest signal that the artifact's own subresources all resolved.
+ **Exclude the empty-src placeholder from that count.** A lightbox `<img>` that
+ is populated on click ships with `src=""`, and the browser reports it
+ `naturalWidth === 0` — a guaranteed false positive that makes a clean page look
+ broken. Filter it: `imgs.filter(i => i.src && (!i.complete ||
+ i.naturalWidth === 0))`. When a variation is rendered as a sprite cell rather
+ than an `<img>`, assert the cells instead: count `.sp`-style elements, require
+ `new Set(cells.map(c => getComputedStyle(c).backgroundPosition)).size` to equal
+ the number of cells (each cell a distinct `background-position`), and require
+ every cell to have `getBoundingClientRect().width > 0` so a cell inside a
+ hidden panel cannot pass.
+- **Converting a fixed 1280x720 scroll deck into Reveal.js: audit EVERY slide's
+  overflow, not just the ones you touched.** The usable Reveal stage is shorter
+  than 720px (with `margin:0.04` about 662px) and `overflow:hidden` clips what
+  sticks out — a scroll page could simply grow taller, a fixed slide cannot.
+  Proven 2026-09-27 on DRA-ART-2026-000025: slide 3's mini-map (`height:300px`
+  SVG) pushed the legend 36px past the bottom; the legend's
+  `getBoundingClientRect().bottom` (742) vs the section's (706) proved the clip.
+  Fix by shrinking the fixed-height child and tightening that slide's table
+  padding, then re-audit `scrollHeight - clientHeight` on every slide.
+- **The browser screenshot tool re-loads the URL before capturing**, so it
+  always captures slide 1 (Reveal with `hash:false` restarts there). That is a
+  harness quirk, not a deck bug — do not chase it. Navigation and per-slide
+  layout must be verified in the console, where DOM state persists across
+  `browser_console` calls; use the screenshot only as a styling sanity check.
 - **Baseline the whole page before you attach it**, because `'self'` matches
   nothing: if a design needs a subresource, it needs a `data:` URI or an inline
   block, with no third option.
@@ -548,3 +732,12 @@ to retry around.
 - `references/render-origin-constraints.md` — the full measured analysis: exact
   headers, the sandbox/opaque-origin/CORP interaction, the reproduced failure
   transcript, and the single-file workaround for each blocked mechanism.
+- `references/file-count-limit-and-sprites.md` — the 200-file-per-version cap
+  (how to detect it, what it rejects) and the sprite-sheet pack that fits an
+  N-image comparator under it: cell geometry, the CSS `background-size` /
+  `background-position` math, the lightbox sprite layer, and the empty-src
+  verification gotcha.
+- `scripts/pack_sprite_sheets.py` — generic sprite packer: groups images into
+  one sheet per group (`--in-template` / `--out-template` / `--views` / `--vars`
+  / `--cols` / `--cell`) and reports the resulting file count and b64 size, so
+  you can check the 200-file and 20 MB caps before publishing.
