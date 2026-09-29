@@ -277,21 +277,25 @@ omitting `permission` grants **VIEWER**, omitting `days` grants **365 days**.
 Never grant ADMIN unless explicitly asked, and never treat this as a way to make
 something public (there is no public/anonymous level).
 
-## Delivering a large image set — the images belong in the artifact
+## Delivering a large image set — the images live in the site, never in Drive
 
-When the artifact is a comparator over 25–50 renders, the user will still ask
-"give me links to the generated images" after the artifact is live. Both
-surfaces are wanted:
+When the site is a comparator over 25–50 renders, the user will still ask
+"give me links to the generated images" after it is live. There is one
+surface, not two:
 
-- **Artifact** = the thing to LOOK at (original held fixed, variation beside
-  it, per-variation prompt + QA). One link, and it versions in place.
-- **Drive** = optional, and no longer the asset host. Upload the originals
-  there only if the user explicitly asks for the source files (see
-  `draas-drive-organization` — TMP only, never the project folder), and hand
-  over the folder link plus the contact sheet, not N individual file links.
-  Drive became the asset host only because the publish tool could not carry
-  binary. It can now, via `source_path`. Default to shipping the images inside
-  the artifact and not touching Drive at all.
+- **The site** = the thing to LOOK at (original held fixed, variation beside
+  it, per-variation prompt + QA), and it is also where the images actually
+  live now — real files, not `data:` URIs, uploaded via `source_path`. One
+  link, and it versions in place.
+- **A site's own images never go to Drive. Not by default, not on request,
+  not as a one-off.** This is not "prefer the site" — it is the only place
+  they go. Drive became a parallel asset host only because the publish tool
+  used to be unable to carry binary; that limitation is gone, and so is the
+  reason. If someone genuinely needs the raw files later, that is a manual
+  export done by hand at that time, not a step in publishing. (Drive still
+  gets standalone documents in their own right — a source PDF, the master
+  prompt file — per the routing rule at the top of this skill; that is
+  unaffected.)
 
 Upload idempotently and verify by LISTING BACK, never by trusting the
 uploader's stdout: list the destination first and skip names already present,
@@ -476,13 +480,13 @@ Return the essentials, not filesystem paths or internal metadata:
 
 ```
 Published: <title>
-Artifact: <artifact_id>
+Site: <artifact_id>
 Version: <version>
 Access: Administrators only (default)
 URL: <canonical url>
 ```
 
-For an update, the same shape with `Updated:`, `Artifact: <id> (unchanged)` and
+For an update, the same shape with `Updated:`, `Site: <id> (unchanged)` and
 the same canonical URL.
 
 ## Export to Drive
