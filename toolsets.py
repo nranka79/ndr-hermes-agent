@@ -482,6 +482,19 @@ TOOLSETS = {
         ],
         "includes": [],
     },
+    "next_action": {
+        "description": (
+            "Next Agent Action sheet CRUD -- schedule future-dated actions "
+            "the cron agent executes automatically, park async clarifying "
+            "questions when the cron agent can't proceed, and mark tasks "
+            "complete/cancelled. See "
+            "hermes-data/skills/productivity/next-agent-action/SKILL.md."
+        ),
+        "tools": [
+            "next_action_add",
+        ],
+        "includes": [],
+    },
 
     "discord": {
         "description": "Discord read and participate tools (fetch messages, search members, create threads)",
