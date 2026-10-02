@@ -28,9 +28,23 @@ logger = logging.getLogger(__name__)
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 _OPENROUTER_RE = re.compile(r"open\s*router", re.IGNORECASE)
+# Was a 17-word generic list (look at|see|view|read|scan|analyze|describe|
+# interpret|extract text/content|transcribe|ocr|vision|image|photo|picture|
+# screenshot|pdf|page) matched ANYWHERE in the prompt -- fired on ordinary
+# business prose for pure text-generation asks ("describe the emotional
+# hooks", "this brand image", "landing page", "a complete analysis") because
+# those are just common English words, not evidence of an actual image/PDF
+# attachment. Confirmed 2026-10-02: a design-brief request got blocked on
+# every retry, including prompts with all "visual" vocabulary deliberately
+# stripped out, because the guard was never looking for visual vocabulary --
+# it was tripping on ordinary verbs like "describe". Narrowed to require
+# either an unambiguous visual-input term (ocr/transcribe/screenshot) or a
+# determiner immediately before a visual-object noun ("this image", "the
+# attached pdf"), not a bare word anywhere in a long prompt.
 _VISION_HINT_RE = re.compile(
-    r"\b(look at|see|view|read|scan|analy[sz]e|describe|interpret|extract (?:text|content)"
-    r"|transcrib|ocr|vision|image|photo|picture|screenshot|pdf|page)\b",
+    r"\bocr\b|\btranscrib\w*|\bscreenshot"
+    r"|\blook at (?:the|this|that|these|those|your|my|attached|uploaded)"
+    r"|\b(?:the|this|that|these|those|your|my|attached|uploaded)\s+(?:image|photo|picture|scan|pdf)s?\b",
     re.IGNORECASE,
 )
 
