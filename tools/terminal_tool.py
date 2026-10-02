@@ -2401,6 +2401,11 @@ def terminal_tool(
                         # the wrong user. Fail closed: no identity -> empty var,
                         # never a stale one.
                         env.env["HERMES_SESSION_USER_ID"] = _session_tid or ""
+                        try:
+                            from gateway.session_context import get_session_env as _gse_sk
+                            env.env["HERMES_SESSION_KEY"] = _gse_sk("HERMES_SESSION_KEY", "")
+                        except Exception:
+                            pass
                         logger.info(
                             "terminal identity inject: task=%s gws_identity=%r",
                             effective_task_id,

@@ -6332,6 +6332,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Otherwise control/session commands like /new or /help get silently
         # consumed as update answers instead of being dispatched normally.
         _quick_key = self._session_key_for_source(source)
+        try:
+            self._consume_pending_skill_model_switch(_quick_key)
+        except Exception as _mc_exc:
+            logger.warning("model-changer skill consume failed: %s", _mc_exc)
         _update_prompts = getattr(self, "_update_prompt_pending", {})
         if _update_prompts.get(_quick_key):
             raw = (event.text or "").strip()
@@ -12134,6 +12138,157 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             default=str,
         )
         return hashlib.sha256(blob.encode()).hexdigest()[:16]
+
+    def _consume_pending_skill_model_switch(self, session_key: str) -> None:
+        """Pick up a model-switch request written by the model-changer skill's
+        scripts/main.py (run via the `terminal` tool -- a separate OS process
+        that cannot mutate this live gateway's in-memory state directly).
+
+        Mirrors the apply-logic in `_handle_model_command` so a skill-triggered
+        switch takes effect the same way a typed `/model` command would -- but
+        only from the NEXT incoming message, since this file is only ever
+        checked here, at the top of `_handle_message`, after the triggering
+        turn (which ran the script) has already finished.
+
+        Added 2026-10-02 -- see hermes-data/skills/configuration/model-changer.
+        Before this, the script wrote its handoff file to a location nothing
+        ever read, so skill-triggered model switches silently did nothing.
+        """
+        if not session_key:
+            return
+        import hashlib
+        req_dir = Path("/data/hermes/model_switch_requests")
+        fname = hashlib.sha256(session_key.encode("utf-8")).hexdigest()[:24] + ".json"
+        req_path = req_dir / fname
+        if not req_path.exists():
+            return
+
+        try:
+            with open(req_path, "r", encoding="utf-8") as f:
+                request = json.load(f)
+        except Exception as e:
+            logger.warning(
+                "model-changer handoff: unreadable request for session=%s: %s",
+                session_key, e,
+            )
+            try:
+                req_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+            return
+
+        # Consume immediately -- a switch is applied at most once, even if the
+        # apply below fails, so a bad request can't loop forever.
+        try:
+            req_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+        model_input = (request.get("model") or "").strip()
+        explicit_provider = (request.get("provider") or "").strip()
+        keyword = request.get("keyword") or model_input
+        if not model_input:
+            return
+
+        from hermes_cli.model_switch import switch_model as _switch_model
+
+        current_model = ""
+        current_provider = "openrouter"
+        current_base_url = ""
+        current_api_key = ""
+        user_provs = None
+        custom_provs = None
+        try:
+            cfg = _load_gateway_config()
+            if cfg:
+                model_cfg = cfg.get("model", {})
+                if isinstance(model_cfg, dict):
+                    current_model = model_cfg.get("default", "")
+                    current_provider = model_cfg.get("provider", current_provider)
+                    current_base_url = model_cfg.get("base_url", "")
+                user_provs = cfg.get("providers")
+                try:
+                    from hermes_cli.config import get_compatible_custom_providers
+                    custom_provs = get_compatible_custom_providers(cfg)
+                except Exception:
+                    custom_provs = cfg.get("custom_providers")
+        except Exception:
+            pass
+
+        override = self._session_model_overrides.get(session_key, {})
+        if override:
+            current_model = override.get("model", current_model)
+            current_provider = override.get("provider", current_provider)
+            current_base_url = override.get("base_url", current_base_url)
+            current_api_key = override.get("api_key", current_api_key)
+
+        result = _switch_model(
+            raw_input=model_input,
+            current_provider=current_provider,
+            current_model=current_model,
+            current_base_url=current_base_url,
+            current_api_key=current_api_key,
+            is_global=False,
+            explicit_provider=explicit_provider,
+            user_providers=user_provs,
+            custom_providers=custom_provs,
+        )
+
+        if not hasattr(self, "_pending_model_notes"):
+            self._pending_model_notes = {}
+
+        if not result.success:
+            logger.warning(
+                "model-changer skill switch failed for session=%s keyword=%s: %s",
+                session_key, keyword, result.error_message,
+            )
+            self._pending_model_notes[session_key] = (
+                f"[Note: the model-changer skill tried to switch to '{keyword}' but it failed: "
+                f"{result.error_message}. You are still on {current_model or 'the default model'}.]"
+            )
+            return
+
+        cached_entry = None
+        _cache_lock = getattr(self, "_agent_cache_lock", None)
+        _cache = getattr(self, "_agent_cache", None)
+        if _cache_lock and _cache is not None:
+            with _cache_lock:
+                cached_entry = _cache.get(session_key)
+        if cached_entry and cached_entry[0] is not None:
+            try:
+                cached_entry[0].switch_model(
+                    new_model=result.new_model,
+                    new_provider=result.target_provider,
+                    api_key=result.api_key,
+                    base_url=result.base_url,
+                    api_mode=result.api_mode,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "model-changer skill: in-place switch failed for cached agent: %s", exc
+                )
+
+        self._pending_model_notes[session_key] = (
+            f"[Note: model was just switched to {result.new_model} via "
+            f"{result.provider_label or result.target_provider} "
+            f"(model-changer skill, keyword='{keyword}'). "
+            f"Adjust your self-identification accordingly.]"
+        )
+
+        self._session_model_overrides[session_key] = {
+            "model": result.new_model,
+            "provider": result.target_provider,
+            "api_key": result.api_key,
+            "base_url": result.base_url,
+            "api_mode": result.api_mode,
+        }
+
+        self._evict_cached_agent(session_key)
+        logger.info(
+            "model-changer skill: switched session=%s to %s/%s",
+            session_key, result.target_provider, result.new_model,
+        )
+
 
     def _apply_session_model_override(
         self, session_key: str, model: str, runtime_kwargs: dict
