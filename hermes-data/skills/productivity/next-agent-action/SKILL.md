@@ -25,9 +25,19 @@ A Google Sheet-based system for scheduling and automatically executing future-da
 
 ## Cron Job
 
-- **Schedule:** `30 2,7,12 * * *` (8am, 1pm, 6pm IST)
-- **Job ID:** 73f6fc9a4d69
+- **Schedule:** `30 2,7,12 * * *` (8:00 / 13:00 / 18:00 IST — Morning slot fires at **8am**, not 9am; if NDR asks for an exact 9am action, flag the 1-hour delta or pin a dedicated one-shot cron at 09:00 — verified 2026-09-23: "30th 9am" landed in Morning slot at 8am)
+- **Job ID:** `d3f42e304a5e` (name "Next Agent Action — scan sheet 3x daily"; **RECREATED 2026-09-23 — the old documented ID 73f6fc9a4d69 no longer existed in jobs.json**)
+- **Recovery pitfall:** if `cronjob(action='list')` shows no Next Agent Action job, recreate it from this SKILL (schedule `30 2,7,12 * * *`, deliver origin, skills=[next-agent-action], enabled_toolsets=[web,browser,search,terminal,file]) and update this line. A dead job is SILENT — rows pile up as overdue Pending (worked example: 3 rows accumulated 2026-08-11..09-17 undetected because the job had been lost).
 - Runs autonomously — follows the Execution Procedure below.
+- **Delivery-error quirk — do NOT assume the run failed:** a run may log `delivery error: Adapter send failed: API server uses HTTP request/response, not send()` when the origin is a web/API-session channel. The agent run itself succeeded and wrote the sheet; only the closing chat message failed to deliver. VERIFY by reading the sheet rows (Status + Notes), not the last_delivery_error field. Report the run outcome from the sheet.
+- **Manual catch-up sweep (NDR: "run it once today / update the next action on all tasks"):** when the cron has been dead and rows piled up, NDR asks for a one-shot sweep — process ALL non-Done/non-Cancelled rows regardless of date/slot in one pass: for each, Step 4 (Gmail check for already-resolved) → execute → update Status/Notes with `[YYYY-MM-DD HH:MM IST]`. For rows that spawn future follow-ups (e.g. judgment pending on a later date), ADD a new Pending row with the follow-up date + self-contained context, same action slot, then mark the parent Done. Verified 2026-09-23: dead job (73f6fc9a4d69 lost) had accumulated 3 overdue rows for a month; the recreated job's first run cleared all three and created 1 follow-up row.
+
+NDR calls this **"the sheet where we track future jobs"** — that is THIS sheet (Next Agent Action), NOT the NDR_Master_Task_Tracker (that is the live backlog, see personal-task-tracker skill). When he asks "which sheet", answer Next Agent Action with the sheet ID.
+
+**"Can you give me a link to that sheet?" (verified 2026-09-27)** — answer with all three parts, not just the URL:
+1. the editable link: `https://docs.google.com/spreadsheets/d/1YR5LMHr4JG42anEKTYSdsIBwEVVcBHRBqOxUTNtIM1g/edit`
+2. **the sheet's current state** — read `Actions!A:F` and list the rows whose Status is not Done/Cancelled (Date | Slot | Action), stating explicitly whether anything is OVERDUE. Checking the sheet is the fastest proof the cron is alive: a healthy sheet with correctly future-dated Pending rows is the answer he wants.
+3. **cron health** — `cronjob(action='list')`, find job `d3f42e304a5e`, and quote its `last_run_at` / `next_run_at` (IST). If it's missing, recreate it (job IDs have been lost before).
 
 ## Execution Procedure (for the cron agent)
 
@@ -89,5 +99,19 @@ When NDR says "add a reminder for [date]" or "set an action for [date]":
 3. **Editing an entry**: Use sheets API to update the specific row (match on Date + Action)
 4. **Removing an entry**: Set Status to "Cancelled" (don't delete rows — keeps audit trail)
 5. **Session references**: When available, include this session's context so the cron agent has full background
+6. **Temporary permission/access-expiry pattern (verified 2026-09-02):** when NDR opens a Drive file's share settings for a limited window ("anyone with the link for 15 days so X can circulate it, then restrict it again to authorized only"), the follow-up RESTRICTION belongs here as a future-dated row — NOT a fresh cron job; the existing 3x/day cron already covers it. NDR's explicit question "is the sheet good enough rather than a fresh cron job?" → answer yes, use the sheet. Row recipe: Date = window end (YYYY-MM-DD), Slot = Morning (or per preference), Action = precise description ("Restrict <file> — remove anyone-with-link, keep editor for <person>"), Context = fully self-contained (Drive file ID + service_name, permission to delete: `permissions().list` → remove the entry whose `type=='anyone'`, what to KEEP: named user writers, verification steps, Gmail/session counter-instruction check), Status = Pending.
 
-The cron job (Job ID: 73f6fc9a4d69) picks up the entry automatically on the matching date+slot.
+7. **Case-watch / takeover rows must be SELF-REFRESHING (verified 2026-09-28).** When NDR takes a
+   matter over from a reportee and wants the agent watching it — *"make it a next agent task rather
+   than Prakash's task … check once today on the high court website and accordingly keep updating me"*
+   — the Context field must carry everything a memoryless cron agent needs: case number, CNR, bench,
+   last-known hearing date, the exact site/portal to check, the Drive folder id holding the case
+   papers, precisely what to report and to whom — **plus an explicit instruction to ADD a new Pending
+   row for the next hearing date**, so the watch continues itself without NDR re-asking. Flag URGENT
+   when the matter is listed within 7 days. Then, in the master tracker
+   (`personal-task-tracker`), note that the check now lives here and flip that row's assignee to NDR
+   if he has taken it over. Worked: WP 7542/2025 (Ashok Kumar v UOI, DGGI GST) — CNR KAHC010176662025,
+   Justice B.M. Shyam Prasad, papers folder `1rzy3mpXX8H2nU0TtCGR8hd7aGVubQUB4`; row appended at
+   `Actions!A9:F9`, Afternoon slot.
+
+The cron job (Job ID: d3f42e304a5e) picks up the entry automatically on the matching date+slot.
