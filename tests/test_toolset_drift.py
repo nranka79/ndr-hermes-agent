@@ -34,14 +34,14 @@ _CORE_REACHABLE = {
     "telegram": {
         "whatsapp_link", "send_message", "send_oauth_url",
         "gws_gmail_search", "gws_drive_list", "kelsa_call_tool",
-        "web_search", "web_extract",
+        "tailortalk_call_tool", "web_search", "web_extract",
     },
     # api_server (OpenWebUI / chat.ahfl.in) carries exactly Telegram's
     # toolset -- see test_openwebui_toolset_matches_telegram below.
     "api_server": {
         "whatsapp_link", "send_message", "send_oauth_url",
         "gws_gmail_search", "gws_drive_list", "kelsa_call_tool",
-        "web_search", "web_extract",
+        "tailortalk_call_tool", "web_search", "web_extract",
     },
     "cron": {
         "whatsapp_link", "gws_gmail_search", "gws_drive_list", "web_extract",

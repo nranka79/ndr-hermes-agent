@@ -82,6 +82,8 @@ CONFIGURABLE_TOOLSETS = [
     ("discord_admin",   "🛡️  Discord Server Admin",    "list channels/roles, pin, assign roles"),
     ("yuanbao",          "🤖 Yuanbao",                  "group info, member queries, DM"),
     ("computer_use",     "🖱️  Computer Use (macOS)",     "background desktop control via cua-driver"),
+    ("dra_content",      "📄 DRA Content",                "publish, update, search, share, archive and export documents/presentations via DRA Content"),
+    ("next_action",      "📅 Next Agent Action",         "add/update/cancel future-dated actions and clarification requests on the Next Agent Action sheet"),
 ]
 
 

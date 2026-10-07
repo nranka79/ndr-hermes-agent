@@ -5273,6 +5273,105 @@ class APIServerAdapter(BasePlatformAdapter):
         finally:
             clear_session_vars(tokens)
 
+    async def _handle_tailortalk_auth_callback(self, request: "web.Request") -> "web.Response":
+        """GET /tailortalk/auth/callback — receives the OAuth code from
+        TailorTalk, exchanges it and stores the token in the vault.
+
+        Twin of ``_handle_kelsa_auth_callback``: ``state`` carries
+        ``"{user_id}:{code_verifier}"``, so identity and the PKCE verifier
+        both come from the state we generated in ``tailortalk_login`` --
+        nothing is taken from the model or the user.
+        """
+        code = request.rel_url.query.get("code", "")
+        raw_state = request.rel_url.query.get("state", "")
+        error = request.rel_url.query.get("error", "")
+
+        if error or not code or not raw_state:
+            reason = error or "missing code or state"
+            logger.warning("TailorTalk auth callback failed: %s", reason)
+            return web.Response(
+                content_type="text/html",
+                text=f"<h1>Authorization failed</h1><p>{reason}</p><p>Please try again from the chat.</p>",
+            )
+
+        if ":" not in raw_state:
+            logger.warning("TailorTalk auth callback: malformed state (no verifier): %s", raw_state)
+            return web.Response(
+                content_type="text/html",
+                text="<h1>Authorization failed</h1><p>Malformed state parameter. Please try again from the chat.</p>",
+            )
+        user_id, code_verifier = raw_state.split(":", 1)
+        user_id = user_id.strip()
+        code_verifier = code_verifier.strip()
+
+        from gateway.session_context import set_session_vars, clear_session_vars
+        tokens = set_session_vars(user_id=user_id)
+        try:
+            from tools.tailortalk_auth import (
+                exchange_and_store,
+                _clear_auth_url_cache,
+                _clear_notify_context,
+                get_notify_context,
+            )
+
+            exchange_and_store(code, code_verifier)
+            logger.info("TailorTalk token stored for user_id=%s", user_id)
+
+            # Read the notification context BEFORE clearing anything.
+            notify_ctx = get_notify_context()
+            init_platform = notify_ctx.get("platform", "")
+            init_chat_id = notify_ctx.get("chat_id", "")
+
+            _clear_auth_url_cache()
+            _clear_notify_context()
+
+            # Release the tailortalk_tool pending-auth guard (local import to
+            # avoid a module-load-order cycle).
+            try:
+                from tools.tailortalk_tool import _pending_auth
+                _pending_auth.discard(user_id)
+            except Exception:
+                logger.debug("TailorTalk callback: could not clear _pending_auth for %s", user_id, exc_info=True)
+
+            try:
+                from tools._user_registry import get_user_config
+                uconf = get_user_config(user_id)
+                display = uconf.get("name") or uconf.get("email") or ("user " + user_id)
+            except Exception:
+                display = "user " + user_id
+
+            if init_platform == "telegram" and init_chat_id:
+                asyncio.create_task(self._notify_telegram_user(
+                    init_chat_id,
+                    "TailorTalk authorized for " + display
+                    + ". Close this tab and return to Telegram.",
+                ))
+            elif init_platform and init_chat_id:
+                logger.info(
+                    "TailorTalk callback: no notification driver for platform=%s "
+                    "chat_id=%s -- user must confirm via the callback page",
+                    init_platform, init_chat_id,
+                )
+            else:
+                logger.info(
+                    "TailorTalk callback: no notification context for user %s "
+                    "-- user must confirm via the callback page",
+                    user_id,
+                )
+
+            return web.Response(
+                content_type="text/html",
+                text="<h1>Authorization successful!</h1><p>TailorTalk is now connected to your Hermes account.</p><p>You can close this tab and return to the chat.</p>",
+            )
+        except Exception as exc:
+            logger.exception("TailorTalk auth callback error for state=%s: %s", raw_state, exc)
+            return web.Response(
+                content_type="text/html",
+                text=f"<h1>Error</h1><p>Authorization failed: {exc}</p>",
+            )
+        finally:
+            clear_session_vars(tokens)
+
     async def _notify_telegram_user(self, telegram_id: str, text: str) -> None:
         bot_token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
         if not bot_token:
@@ -5387,6 +5486,7 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_post("/v1/runs/{run_id}/stop", self._handle_stop_run)
             self._app.router.add_get("/gws/auth/callback", self._handle_gws_auth_callback)
             self._app.router.add_get("/kelsa/auth/callback", self._handle_kelsa_auth_callback)
+            self._app.router.add_get("/tailortalk/auth/callback", self._handle_tailortalk_auth_callback)
             # Store the adapter after native routes are registered. Local Hermes-Relay
             # bootstrap shims use this key as a feature-detection hook; registering
             # native routes first lets those shims no-op instead of shadowing the

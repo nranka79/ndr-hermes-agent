@@ -142,6 +142,9 @@ _HERMES_CORE_TOOLS = [
     # that lost a freshly-authorized token to a vault-write crash. See
     # tools/kelsa_auth.py and tools/kelsa_tool.py.
     "kelsa_login", "kelsa_complete_login", "kelsa_list_tools", "kelsa_call_tool",
+    # TailorTalk MCP per-user OAuth (2026-10-07) -- same shape as Kelsa; see
+    # tools/tailortalk_auth.py and tools/tailortalk_tool.py.
+    "tailortalk_login", "tailortalk_list_tools", "tailortalk_call_tool",
     # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
     "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
     # Kanban multi-agent coordination — only in schema when the agent is
@@ -361,7 +364,8 @@ TOOLSETS = {
                        "class of failures where small chat models silently truncate substrings "
                        "like 'google.' from OAuth client_ids.",
         "tools": ["send_oauth_url", "kelsa_login", "kelsa_complete_login",
-                  "kelsa_list_tools", "kelsa_call_tool"],
+                  "kelsa_list_tools", "kelsa_call_tool",
+                  "tailortalk_login", "tailortalk_list_tools", "tailortalk_call_tool"],
         "includes": []
     },
 
@@ -464,6 +468,39 @@ TOOLSETS = {
         ],
         "includes": [],
     },
+
+    "dra_content": {
+        "description": (
+            "DRA Content artifact publishing -- create, update, search, "
+            "share and export websites (HTML plus its CSS, JavaScript, "
+            "images and data files) through the DRA Content platform "
+            "(content.ahfl.in). Standalone documents -- PDF, Word, Excel, "
+            "PowerPoint -- go to Google Drive instead and are rejected here. "
+            "See hermes-data/skills/productivity/dra-content-artifacts/SKILL.md."
+        ),
+        "tools": [
+            "content_publish", "content_update", "content_find", "content_get",
+            "content_list_versions", "content_share", "content_revoke",
+            "content_access_list", "content_user_access", "content_archive",
+            "content_export",
+        ],
+        "includes": [],
+    },
+    "next_action": {
+        "description": (
+            "Next Agent Action sheet CRUD -- schedule future-dated actions "
+            "the cron agent executes automatically, park async clarifying "
+            "questions when the cron agent can't proceed, and mark tasks "
+            "complete/cancelled. See "
+            "hermes-data/skills/productivity/next-agent-action/SKILL.md."
+        ),
+        "tools": [
+            "next_action_add", "next_action_update", "next_action_complete",
+            "next_action_cancel", "next_action_ask", "next_action_check_answers",
+        ],
+        "includes": [],
+    },
+
 
     "discord": {
         "description": "Discord read and participate tools (fetch messages, search members, create threads)",
