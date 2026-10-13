@@ -6,27 +6,62 @@
 <title>Quota — Hermes Admin</title>
 <style>
   :root { --bg:#0f1116; --card:#171a21; --line:#232833; --text:#e6ebf0; --muted:#8b95a7;
-          --blue:#1a73e8; --green:#78c878; --amber:#f9ab00; --red:#d93025; }
+          --blue:#1a73e8; --green:#78c878; --amber:#f9ab00; --red:#d93025; --metric-bg:#11141a; }
   * { box-sizing: border-box; }
-  body { margin:0; background:var(--bg); color:var(--text); font-family:system-ui,-apple-system,"Segoe UI",sans-serif; padding:24px; }
+  body { margin:0; background:var(--bg); color:var(--text); font-family:system-ui,-apple-system,"Segoe UI",sans-serif; padding:24px; font-variant-numeric:tabular-nums; }
   header { display:flex; align-items:baseline; gap:12px; margin-bottom:20px; flex-wrap:wrap; }
   h1 { font-size:20px; margin:0; }
   .sub { color:var(--muted); font-size:13px; }
   #status { margin-left:auto; font-size:12px; color:var(--muted); }
   #status.err { color:var(--red); }
 
-  /* Hero: whichever window (5h/weekly/monthly, any key) is closest to
-     running out — same concept as the Android widget, for consistency. */
-  .hero { background:var(--card); border:1px solid var(--line); border-radius:16px; padding:20px 24px; margin-bottom:20px; }
-  .hero-top { display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:16px; }
-  .hero-eyebrow { font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.08em; font-weight:600; }
-  .hero-pct { font-size:44px; font-weight:700; line-height:1.1; margin-top:4px; }
-  .hero-sub { color:var(--muted); font-size:13px; margin-top:4px; }
-  .modes { display:flex; gap:6px; flex-wrap:wrap; }
-  .mode-btn { background:var(--bg); border:1px solid var(--line); color:var(--muted); font-size:12px; padding:7px 14px;
-              border-radius:10px; cursor:pointer; font-family:inherit; }
-  .mode-btn.active { background:var(--blue); border-color:var(--blue); color:#fff; }
-  .mode-btn:hover:not(.active) { border-color:#3a4152; }
+  /* ---- Hero: pooled remaining quota per LLM tier (free / subscription / api).
+     Each tier sums remaining_usd across every key it owns, per period
+     (5h / weekly / monthly) or balance. The lowest aggregate within a tier
+     is that tier's real bottleneck -- never a single key's own number. ---- */
+  .quota-hero { width:min(100%,2440px); margin:0 0 24px; }
+  .hero-head { display:flex; align-items:flex-end; justify-content:space-between; gap:16px; margin-bottom:12px; flex-wrap:wrap; }
+  .hero-eyebrow { font-size:11px; color:#8ab4f8; text-transform:uppercase; letter-spacing:.08em; font-weight:700; margin:0 0 3px; }
+  .hero-head h2 { margin:0; font-size:clamp(16px,2vw,19px); }
+  .hero-legend { color:var(--muted); font-size:12px; max-width:28rem; text-align:right; margin:0; }
+
+  .tier-grid { display:grid; grid-template-columns:1fr; gap:12px; }
+  .tier-card { min-width:0; padding:14px; background:var(--card); border:1px solid var(--line); border-radius:12px; }
+  .tier-card__header { display:flex; align-items:baseline; justify-content:space-between; gap:12px; margin-bottom:10px; }
+  .tier-card__header h3 { margin:0; font-size:14px; }
+  .tier-card__header span { color:var(--muted); font-size:11px; white-space:nowrap; }
+
+  .metrics { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; }
+  .metric { position:relative; min-width:0; min-height:84px; padding:10px; background:var(--metric-bg); border:1px solid var(--line); border-radius:9px; overflow:hidden; }
+  .metric dt { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:4px 8px; color:var(--muted); font-size:10px; font-weight:700; letter-spacing:.04em; text-transform:uppercase; margin:0; }
+  .metric dd { margin:7px 0 0; font-size:clamp(17px,3vw,21px); font-weight:700; letter-spacing:-.02em; }
+  .metric dd small { color:var(--muted); font-size:11px; font-weight:500; }
+  .metric p { margin:6px 0 0; color:var(--muted); font-size:11px; line-height:1.3; }
+
+  .metric.is-bottleneck { padding-left:13px; border:2px solid var(--blue); background:linear-gradient(135deg, rgba(26,115,232,.14), transparent 62%), var(--metric-bg); }
+  .metric.is-bottleneck::before { content:""; position:absolute; inset:7px auto 7px 4px; width:3px; background:var(--blue); border-radius:999px; }
+  .bottleneck-tag { color:#8ab4f8; font-size:9px; letter-spacing:.05em; white-space:nowrap; }
+
+  .health-healthy dd { color:var(--green); }
+  .health-warning dd { color:var(--amber); }
+  .health-critical dd { color:#ff746c; }
+
+  .metric.is-empty { background:transparent; border-style:dashed; }
+  .metric.is-empty dd, .metric.is-empty p { color:#5d6676; }
+
+  @media (min-width:900px){
+    .tier-grid { grid-template-columns:repeat(3,minmax(0,1fr)); }
+  }
+  @media (min-width:2000px){
+    .tier-grid { gap:16px; }
+    .metrics { grid-template-columns:repeat(4,minmax(0,1fr)); }
+    .metric { min-height:96px; }
+  }
+  @media (max-width:420px){
+    .hero-head { flex-direction:column; align-items:flex-start; gap:6px; }
+    .hero-legend { text-align:left; max-width:none; }
+    .tier-card { padding:12px; }
+  }
 
   /* Bucket (LLM / Multimodal) -> tier (free / subscription / api) -> cards */
   .bucket { margin-top:28px; }
@@ -62,21 +97,16 @@
   <span id="status">loading…</span>
 </header>
 
-<div class="hero">
-  <div class="hero-top">
+<section class="quota-hero" aria-label="LLM quota pooled by tier">
+  <div class="hero-head">
     <div>
-      <div class="hero-eyebrow" id="heroEyebrow">Tightest right now</div>
-      <div class="hero-pct" id="heroPct">—</div>
-      <div class="hero-sub" id="heroSub">Loading…</div>
+      <p class="hero-eyebrow">LLM quota — pooled by tier</p>
+      <h2>What's actually running out, per tier</h2>
     </div>
-    <div class="modes" id="modes">
-      <button class="mode-btn active" data-mode="auto">Auto</button>
-      <button class="mode-btn" data-mode="rolling">5h</button>
-      <button class="mode-btn" data-mode="weekly">Weekly</button>
-      <button class="mode-btn" data-mode="monthly">Monthly</button>
-    </div>
+    <p class="hero-legend">Each number is the <b>sum</b> across every key in that tier for that period. ◆ marks the tier's own bottleneck — the period/pool with the least left.</p>
   </div>
-</div>
+  <div class="tier-grid" id="tierGrid"></div>
+</section>
 
 <div id="buckets"></div>
 <footer>Auto-refreshes every 30s. Accounts are discovered from the LLM_*_POOL rotation buckets
@@ -86,15 +116,14 @@ written by <a href="/keys-admin" style="color:var(--blue)">keys-admin</a>, so a 
 const REFRESH_MS = 30000;
 const $buckets = document.getElementById("buckets");
 const $status = document.getElementById("status");
-const $heroPct = document.getElementById("heroPct");
-const $heroSub = document.getElementById("heroSub");
-const $modes = document.getElementById("modes");
+const $tierGrid = document.getElementById("tierGrid");
 
-let mode = "auto"; // auto | rolling | weekly | monthly
 let lastSnap = null;
-const WINDOW_LABELS = { rolling: "5h", weekly: "Weekly", monthly: "Monthly" };
 const MODALITY_ORDER = ["llm", "multimodal"];
 const TIER_ORDER = ["free", "subscription", "api"];
+const TIER_TITLES = { free: "Free", subscription: "Subscription", api: "API / pay-per-call" };
+const WINDOW_ORDER = ["rolling", "weekly", "monthly", "balance"];
+const WINDOW_TITLES = { rolling: "5-hour", weekly: "Weekly", monthly: "Monthly", balance: "Standing balance" };
 
 function pctColor(p){ if(p==null)return"#444"; if(p>=90)return"var(--red)"; if(p>=70)return"var(--amber)"; return"var(--blue)"; }
 function pct(p){ return p==null?"—":Math.round(p)+"%"; }
@@ -115,51 +144,153 @@ function timeUntil(iso){
   return `resets in ${m}m`;
 }
 
-/** Same concept as QuotaRanking.kt in the Android app: pull every
- *  comparable window (5h/weekly/monthly) out of every account, so the
- *  hero can rank across all keys uniformly. Balance-only providers
- *  (OpenRouter, Token Harbor) have no window and are excluded. */
-function collectWindows(snap){
-  const out = [];
-  for (const acc of Object.values(snap.accounts||{})) {
-    if (acc.error || !acc.configured) continue;
-    if (acc.windows) {
-      for (const [key, w] of Object.entries(acc.windows)) {
-        out.push({ label: acc.label, windowKey: key, windowLabel: WINDOW_LABELS[key]||key, percent: w.percent, resetsAt: w.resets_at });
+/** Pool every key's remaining quota into its tier, period by period. This is
+ *  the fix: the old hero ranked individual keys/windows against each other
+ *  ("tightest right now"); this instead answers "how much does this *tier*
+ *  actually have left, in each period" -- a key with $2 left doesn't matter
+ *  if two siblings in the same tier/period still have $30 each. */
+/** Tier processing order used only for balance de-dup attribution (see
+ *  below) -- display order is still TIER_ORDER (free/subscription/api). */
+const BALANCE_DEDUPE_PRIORITY = ["api", "subscription", "free"];
+
+function aggregateTiers(snap){
+  const tiers = {};
+  for (const t of TIER_ORDER) {
+    tiers[t] = { keyCount: 0, pools: {}, limits: {}, resets: {} };
+  }
+  const accounts = Object.values(snap.accounts || {}).filter(a => (a.modality || "llm") === "llm");
+
+  for (const acc of accounts) {
+    const tier = tiers[acc.tier] ? acc.tier : "api";
+    tiers[tier].keyCount += 1;
+  }
+
+  // Windowed quota (5h/weekly/monthly) is NESTED, not independent: 5h draws
+  // from weekly which draws from monthly, for the same key. Some providers
+  // report each window's own percent-used independently, which can show a
+  // narrow window as "healthy" even though the broader window backing it is
+  // already exhausted (seen live: monthly at 100%/$0 left, but that same
+  // key's weekly still reported 0% used / $30 left -- nonsense, since there
+  // is no monthly budget left to draw that weekly allowance from). Clamp
+  // narrow windows to never exceed their own key's broader windows before
+  // summing into the tier.
+  for (const acc of accounts) {
+    if (acc.error || !acc.configured || !acc.windows) continue;
+    const t = tiers[tiers[acc.tier] ? acc.tier : "api"];
+    let cap = Infinity; // running ceiling from the broader windows already processed
+    for (const wk of ["monthly", "weekly", "rolling"]) { // broadest -> narrowest
+      const w = acc.windows[wk];
+      if (!w || w.remaining_usd == null) continue;
+      const effective = Math.min(w.remaining_usd, cap);
+      cap = effective;
+      t.pools[wk] = (t.pools[wk] ?? 0) + effective;
+      t.limits[wk] = (t.limits[wk] ?? 0) + (w.limit_usd ?? 0);
+      if (w.resets_at && (!t.resets[wk] || new Date(w.resets_at) < new Date(t.resets[wk]))) {
+        t.resets[wk] = w.resets_at;
       }
-    } else if (acc.weekly_percent != null) {
-      out.push({ label: acc.label, windowKey: "weekly", windowLabel: "Weekly", percent: acc.weekly_percent, resetsAt: acc.resets_at });
     }
   }
-  return out;
+
+  // Standing balance: some providers (OpenRouter here) report one shared
+  // org-wide balance via a single management key -- every key under that
+  // org returns the IDENTICAL {total_purchased, total_used, balance}
+  // regardless of which tier its own routing key lives in. Summing that
+  // naively would double/triple-count the same money. De-dupe by that
+  // signature globally, attributing each distinct balance to only the
+  // first tier that claims it, preferring api > subscription > free
+  // since a shared/management-key balance is fundamentally a
+  // pay-per-call (api) resource.
+  const seenBalance = new Set();
+  for (const tier of BALANCE_DEDUPE_PRIORITY) {
+    for (const acc of accounts) {
+      if ((tiers[acc.tier] ? acc.tier : "api") !== tier) continue;
+      if (acc.error || !acc.configured || acc.windows) continue;
+      const c = acc.credits;
+      if (!c || c.balance == null) continue;
+      const sig = c.total_purchased != null && c.total_used != null
+        ? `${acc.provider}:${c.total_purchased}:${c.total_used}`
+        : `${acc.id}`; // no totals to de-dupe on -- assume distinct account
+      if (seenBalance.has(sig)) continue;
+      seenBalance.add(sig);
+      tiers[tier].pools.balance = (tiers[tier].pools.balance ?? 0) + c.balance;
+    }
+  }
+
+  return tiers;
 }
 
-function tightest(windows, m){
-  const pool = m === "auto" ? windows : windows.filter(w => w.windowKey === m);
-  return pool.reduce((best, w) => (w.percent!=null && (best==null || w.percent > best.percent)) ? w : best, null);
+function bottleneckKey(tierData){
+  let best = null;
+  for (const wk of WINDOW_ORDER) {
+    const v = tierData.pools[wk];
+    if (v == null) continue;
+    if (best == null || v < tierData.pools[best]) best = wk;
+  }
+  return best;
+}
+
+function healthClass(wk, tierData){
+  if (wk === "balance") return tierData.pools.balance < 0 ? "health-critical" : "";
+  const remaining = tierData.pools[wk], limit = tierData.limits[wk];
+  if (remaining == null || !limit) return "";
+  const usedPct = (1 - remaining / limit) * 100;
+  if (usedPct >= 90) return "health-critical";
+  if (usedPct >= 70) return "health-warning";
+  return "health-healthy";
+}
+
+function metricCell(wk, tierData, isBottleneck){
+  const hasData = tierData.pools[wk] != null;
+  const m = el("div", "metric" + (isBottleneck ? " is-bottleneck" : "") + (hasData ? "" : " is-empty")
+                 + (hasData ? " " + healthClass(wk, tierData) : ""));
+  const dt = el("dt");
+  dt.appendChild(txt("span", null, WINDOW_TITLES[wk]));
+  if (isBottleneck) dt.appendChild(txt("span", "bottleneck-tag", "◆ Bottleneck"));
+  m.appendChild(dt);
+  if (!hasData) {
+    m.appendChild(el("dd", null, "—"));
+    m.appendChild(txt("p", null, "No data in this tier"));
+    return m;
+  }
+  const limit = tierData.limits[wk];
+  m.appendChild(el("dd", null, usd(tierData.pools[wk]) + (wk !== "balance" && limit ? ` <small>/${Math.round(limit)}</small>` : "")));
+  if (wk === "balance") {
+    m.appendChild(txt("p", null, "No reset · top up to refill"));
+  } else if (isBottleneck) {
+    const reset = timeUntil(tierData.resets[wk]);
+    if (reset) m.appendChild(txt("p", null, "Next reset " + reset.replace("resets ", "")));
+  }
+  return m;
+}
+
+function tierCard(tier, tierData){
+  const card = el("article", "tier-card");
+  const h = el("div", "tier-card__header");
+  h.appendChild(txt("h3", null, TIER_TITLES[tier]));
+  h.appendChild(txt("span", null, tierData.keyCount + " key" + (tierData.keyCount === 1 ? "" : "s")));
+  card.appendChild(h);
+
+  const dl = el("dl", "metrics");
+  if (tierData.keyCount === 0) {
+    card.appendChild(txt("div", "empty", "No keys in this tier."));
+    return card;
+  }
+  const bk = bottleneckKey(tierData);
+  for (const wk of WINDOW_ORDER) {
+    dl.appendChild(metricCell(wk, tierData, wk === bk && bk != null));
+  }
+  card.appendChild(dl);
+  return card;
 }
 
 function renderHero(){
   if (!lastSnap) return;
-  const pick = tightest(collectWindows(lastSnap), mode);
-  if (!pick) {
-    $heroPct.textContent = "—";
-    $heroPct.style.color = "var(--text)";
-    $heroSub.textContent = "No windowed quota in this view";
-    return;
+  const tiers = aggregateTiers(lastSnap);
+  $tierGrid.innerHTML = "";
+  for (const tier of TIER_ORDER) {
+    $tierGrid.appendChild(tierCard(tier, tiers[tier]));
   }
-  $heroPct.textContent = pct(pick.percent);
-  $heroPct.style.color = pctColor(pick.percent);
-  $heroSub.textContent = [`${pick.label} · ${pick.windowLabel}`, timeUntil(pick.resetsAt)].filter(Boolean).join(" · ");
 }
-
-$modes.addEventListener("click", (e) => {
-  const btn = e.target.closest(".mode-btn");
-  if (!btn) return;
-  mode = btn.dataset.mode;
-  for (const b of $modes.querySelectorAll(".mode-btn")) b.classList.toggle("active", b === btn);
-  renderHero();
-});
 
 function card(acc, body){
   const c = el("div","card");
