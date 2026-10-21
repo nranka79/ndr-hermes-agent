@@ -15,7 +15,7 @@ metadata:
   hermes:
     tags: [real-estate, title, due-diligence, rtc, land-records, bbmp, mca, khata, kannada, ec, karnataka]
     category: domain
-    related_skills: [karnataka-rera-collector, legal-document-drafting, rera-compliance, maps, ocr-and-documents, property-rd]
+    related_skills: [karnataka-land-title-due-diligence, real-estate-legal-compliance, karnataka-succession-title-chains, ec-transaction-review, karnataka-rera-collector, legal-document-drafting, rera-compliance, maps, ocr-and-documents, property-rd]
 ---
 
 # Property Title Due Diligence
@@ -1190,6 +1190,10 @@ where the user wants a structured analysis alongside proposed content.
 
 ## Related Skills
 
+- `karnataka-land-title-due-diligence` — the full 13-stage legal investigation methodology (government/grant origin, succession legal-framework, litigation finality, possession, survey reconciliation, risk-gated decision status) built ON TOP of the mechanics in this skill. Use this skill for BBMP/MCA/Drive/RTC-reading tool mechanics; use that skill when the ask is a complete ground-up investigation, not just document discovery/organization.
+- `real-estate-legal-compliance` — umbrella that absorbed this skill's playbook (see that skill's "Skills Absorbed" note); also owns the fast opinion-grading checklist and TNCDBR/KRERA compliance work.
+- `karnataka-succession-title-chains` — Will/heirship-specific Kannada-reading mechanics (deed direction, MR Form-12 bridge, 300dpi name disambiguation) when the chain-of-title involves inheritance.
+- `ec-transaction-review` — when the input is an EC-transaction spreadsheet rather than raw EC PDFs.
 - `karnataka-rera-collector` — statutory RERA registration/promoter/units data for Karnataka projects (complementary: title DD for ownership, RERA for project registration)
 - `legal-document-drafting` — if due diligence findings lead to drafting agreements
 - `rera-compliance` — if project-level RERA compliance is also needed

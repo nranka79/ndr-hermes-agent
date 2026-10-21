@@ -12,7 +12,7 @@ description: |-
 metadata:
   hermes:
     tags: [bangalore, property, legal, sale-deed, deed-of-declaration, legal-opinion, multi-model]
-    related_skills: [bengaluru-town-planning, google-workspace, ocr-and-documents]
+    related_skills: [karnataka-land-title-due-diligence, property-title-due-diligence, bengaluru-town-planning, google-workspace, ocr-and-documents]
 category: research
 version: 1.0.0
 author: Hermes (from session analysis)
@@ -22,10 +22,15 @@ author: Hermes (from session analysis)
 
 Workflow for finding, extracting, analysing, and compiling legal opinions on property documents from Karnataka and Tamil Nadu, using dual-model reasoning.
 
+This skill is for a SINGLE-DOCUMENT clause question (UDS/area figures, parking clause, lease terms, GPA/TDR authority) with dual-model opinion. When the ask spans a full title/possession/encumbrance/survey investigation across a document set, use `karnataka-land-title-due-diligence` instead.
+
 ## 1. Trigger Conditions
 
 Activate when the user asks to:
 - "Find the [sale deed / deed of declaration / allotment letter] for [property]"
+- "What is the UDS / super built-up area / scheduled property area in this sale deed?" /
+  "what are the three figures mentioned?" — the three-figure area extraction; load
+  `references/deed-area-figures-extraction.md`
 - "Analyse whether [specific issue] is covered in this document"
 - "Read this document and tell me if [specific clause exists]"
 - "Get [model A] and [model B] to opine on this"
@@ -36,6 +41,17 @@ Activate when the user asks to:
 - "Issue a detailed note / legal opinion on [topic]"
 - "Check the mortgage/investor situation"
 - Any request involving property legal documents in Bangalore or Tamil Nadu
+- "Check this construction agreement" / "review this construction agreement"
+- "Is <person> a signatory to the original JDA / the addendum / the GPA?" /
+  "what's the full list of landowners?" / "which index and which row?" /
+  "who has to attend the registration?" — party & signatory verification from
+  executed deeds. Load `references/jda-addendum-party-signatory-verification.md`
+- "When does the lease terminate for [property]?" / "how many years left on the lease" / "check the lease end date" (see `references/lease-deed-term-extraction.md`)
+- "Pull me the details of the lease agreement we have executed" / "what are the lease terms" / "give me the rent, deposit and notice period" / "is this lease registered?" — full executed-lease **term sheet** + stamping/registration compliance check (see `references/lease-term-sheet-and-stamping-compliance.md`)
+- "Can the tenant extend / stay after the lease expires?" / "does this lease let them renew against the owner's will?" / "tenant vacate risk before we take the building" — lease renewal/extension risk (see `references/lease-renewal-extension-risk.md`)
+- "Does this construction agreement cover everything?"
+- "Draft a construction agreement for [plot/villa]"
+- "Does the GPA / Power of Attorney cover applying for TDR?" / "Can the GPA holder sign the TDR affidavit and Form IV?" / "Authority analysis: GPA vs KTCP Act / TDR" — see references/gpa-authority-tdr-analysis.md
 
 ## 2. Document Discovery & Retrieval
 
@@ -97,6 +113,36 @@ with open('/tmp/local_copy.pdf', 'wb') as f:
 ```
 
 Do NOT use `web_extract` for Drive PDFs — it returns text only. Use the Drive API for binary download.
+
+**Simpler path — the skill bridge (verified 2026-09-26):**
+
+```python
+import sys; sys.path.insert(0, "/opt/hermes")
+from tools.gws_skill_bridge import call
+print(call("drive_download", file_id=FILE_ID, service_name="google-draas"))
+```
+
+The bridge is importable from **system `python3`** — `/opt/hermes/.venv/bin/python3`
+is only needed when you import `googleapiclient` directly, not for the bridge.
+Never hand-build Google credentials and never look for a token file; resolve the
+account with `gws_resolve_account` and pass its `service_name` explicitly.
+
+**PITFALL — the bridge IGNORES `output_path`.** It writes into the **current
+working directory** using the Drive file's own name. If the CWD is not writable
+(e.g. running from `/opt/hermes`) it raises
+`PermissionError [Errno 13] ... /opt/hermes/<filename>`. Always `cd` to a
+writable scratch dir first:
+
+```bash
+cd /tmp && python3 /tmp/dl.py
+```
+
+**PITFALL — `pdftotext` before OCR.** Adobe Scan PDFs carry an OCR text layer,
+so `pdftotext -layout <file> -` extracts the English clauses cleanly even
+though the document looks like a pure scan. Kannada runs come out as garbage
+characters — that is expected, not a failure. Only fall back to
+pymupdf/tesseract rendering when `pdftotext` returns nothing. `pdfinfo` gives
+the page count in one shot.
 
 ## 3. Text Extraction
 
@@ -266,6 +312,87 @@ Compare any plot sale deed against this checklist:
 | 21 | Gift Deed for roads/parks | Govt. conveyance of common areas | ✅ Mandatory |
 | 22 | Witnesses (2) | Attestation | ✅ Mandatory |
 
+### 3.5.5 Construction Agreement — Essential Clauses for Villa Projects (DRA Group Pattern)
+
+When reviewing or drafting a **Construction Agreement** for a plotted villa project (the second document in the tripartite structure from 3.5.2), use the following clause framework. This is NOT an apartment sale deed — it is a standalone building contract between the plot owner (Allottee) and the Developer/Promoter acting as building contractor.
+
+#### Recital Structure (A→H, in order)
+
+| Recital | Content | Notes |
+|---------|---------|-------|
+| A | Promoter's ownership of project land (acreage as **Phase 1**, not "out of larger layout") | Remove all references to "larger layout" / "Larger Property" |
+| B | Derivation of title for the specific survey containing the plot | Sale deed reference, document number, parties |
+| C | Scheme of villa development + layout approval (HNDTA/DTCP letter no.) | Includes approval authority, date, and order number |
+| D | Simultaneous Agreement for Sale for the divided share of land | Links to sister agreement |
+| E | Engagement for villa construction (built-up area, configuration, floors) | Sets scope |
+| F | Building permit in allottee's name + GPA to promoter for statutory filings | Regulatory mechanism |
+| G | Upfront settlement of consideration | Full payment acknowledgment |
+| **H** | **Approved layout plan details: ALL survey numbers from the approval order + plot number with its dimensions per the approved plan** | **Critical addition** — ties the plot to the statutory approval, not to Schedule A's land description |
+
+**Recital H pattern:**
+> "The Project has been granted layout planning approval vide [Order No.] dated [date] by [Authority] in respect of the project lands bearing Survey Nos. [full list]. As per the said approved layout plan, Plot No. [X] has been demarcated as a distinct residential plot admeasuring [Y] Sq. Ft., with boundaries as set forth in SCHEDULE 'B'."
+
+#### Operative Clauses — Standard Framework
+
+| # | Clause | DRA Group Standard |
+|---|--------|-------------------|
+| 1 | Engagement & Scope | Itemised scope (excavation → compound wall → utility piping). References Schedule D specs + Annexure drawings. |
+| 2 | Construction Consideration | Fixed ₹X total. GST at 5% composite (without ITC) stated separately. |
+| 3 | Payment Details & Receipt | Full itemised breakdown: Construction Cost + GST = Total Received. **Annexure for transaction details** (cheque nos., dates, bank). Express acknowledgment of receipt. |
+| 4 | Completion Period | **18 months** from Sale Deed registration + **6-month Grace Period**. |
+| 5 | Force Majeure | Standard events + utility-connection delays (electricity/water from govt despite timely application). 30-day written notice. |
+| 6 | Site Inspection & Updates | Allottee inspection rights during working hours. Promoter sends written/email/digital progress updates. |
+| 7 | Composite Transaction | Explicit interdependence with Agreement for Sale. Construction operative only upon Sale Deed registration. |
+| 8 | No Third-Party Builder | Allottee cannot engage other contractor until formal possession handover. |
+| 9 | Possession & Snags | Notice of Intimation → 15-day joint inspection → 30-day snag rectification → Possession Letter. Deemed possession after 30 days. |
+| 10 | Defect Liability | **(a) 5 years structural** (RERA Sec 14(3) — foundation, columns, beams, slabs). **(b) 1 year non-structural** (finishes, fittings, fixtures, workmanship). |
+| 11 | Architectural Restrictions | No external facade alteration. Residential use only. Interior works allowed without structural damage. |
+| 12 | **Allottee Default / Cancellation** | **No refund.** Promoter authorised to sell plot+villa to third party. Appropriation order: (i) construction costs → (ii) default charges → (iii) plot cost to allottee → (iv) surplus retained by promoter. |
+| 13 | **Promoter Default** | **Mutual remedy** — (a) joint third-party sale at market price; OR (b) promoter within Grace Period either completes OR exits at market price for plot+constructed area. |
+| 14 | Variation Order Mechanism | Allottee requests in writing → Promoter provides cost+timeline assessment → Variation Order signed by both. |
+| 15 | Indemnity | Mutual — Promoter for title/labour/third-party claims; Allottee for default/taxes/aesthetic breach. |
+| 16 | Assignment | Pre-possession requires Promoter consent + transfer fee. |
+| 17 | Arbitration | **Sole Arbitrator mutually appointed** by both parties (not unilateral). Fallback: Civil Court on disagreement. |
+| 18 | Jurisdiction | Local courts (project district / registration sub-district). |
+| 19 | Boilerplate | Entire agreement, severability, amendments in writing signed by both. |
+
+#### Required Schedules
+
+| Schedule | Content |
+|----------|---------|
+| A | Total project land (acreage as Phase 1, all survey numbers — **no "larger/extending to"** language) |
+| B | Said plot (plot no., dimensions, boundaries) |
+| C | Villa description (built-up area nett/gross, FAR, floors, configuration) |
+| D | Part I — Layout Infrastructure (roads, lighting, power, water, drainage, security, landscaping) + Part II — Villa Specifications (35+ row table: structure, joinery, flooring, painting, bathroom fittings, electrical, plumbing) |
+| E | Common Area Maintenance scope (security, STP, housekeeping, gardening, DG) |
+| F | Common Amenities (clubhouse, gym, sports, parks, infrastructure) |
+| Annexure I | Building Plan Drawings (drawing numbers and dates for each floor) |
+| Annexure II | Statement of Payments (individual cheque/transfer details) |
+
+#### Google Docs Editing — Yellow Highlight Convention
+
+For Construction Agreement edits, use **YELLOW** background (`rgbColor(1.0, 1.0, 0.0)`) for ALL additions and modifications — distinct from sale deed blue/red convention.
+
+```python
+YELLOW_HL = {
+    'backgroundColor': {
+        'color': {'rgbColor': {'red': 1.0, 'green': 1.0, 'blue': 0.0}}
+    }
+}
+```
+
+#### Common Pitfalls (Construction Agreement)
+
+- **Blank completion period** — the most frequent gap. Must be concrete months + grace.
+- **1-year-only defect liability** — insufficient. Must split 5yr structural + 1yr non-structural.
+- **Unilateral arbitration** — "appointed by Promoter" is standard first-draft language; must change to mutual.
+- **No refund clause** — with full upfront payment, explicitly state what happens on allottee cancellation.
+- **No variation mechanism** — absolute "no modifications" clause is unrealistic in practice.
+- **"Or Equivalent" in specifications** — gives Promoter unfettered discretion. Require allottee's written approval.
+- **Blank compound wall spec** — often omitted from specs table despite being a major cost item.
+- **"Larger layout" / "Larger Property" references** — must be replaced with "Phase 1." Unapproved future phases should not appear.
+- **Survey number mismatch** — recital survey list must match the approved layout plan exactly.
+
 ## 4. Template Comparison Methodology
 
 When the user asks to "check" or "compare" a draft sale deed against a best-practice template:
@@ -312,7 +439,8 @@ Cross-check all factual details in the deed against:
 | **Plot Sale Deed** | Recitals (title chain + layout approvals), Schedule of Property (plot dimensions + boundaries), Consideration Clause, Vendor's Covenants (title warranty, encumbrance), Possession Clause, Patta Mutation Consent |
 | **Deed of Declaration** | Para 4.x (floor plans), Para 5 (apartment definitions), Para 7 (common areas), Para 8-24 (restrictions and rights), Bye-laws (definitions) |
 | **Allotment Letter** | Usually short — check consideration, reference to specific apartment, registration status |
-| **Construction Agreement** | Scope of work, built-up area, rate per sq ft, payment schedule, delivery timeline, defect liability |
+| **Construction Agreement** | Recitals A-H (title → layout approval → plot → engagement → building permit → payment → approved plan with survey nos), Scope of Work, Consideration + GST breakdown + receipt acknowledgment, Completion Period (18mo + 6mo grace), Defect Liability (5yr structural + 1yr non-structural), Allottee Default (no refund + third-party sale mechanism), Promoter Default (mutual remedy), Variation Order Mechanism, Arbitration (mutual appointment), Schedules A-F + Annexures
+| **Lease Deed / Lease-Cum-Construction** | Deed date (page 1 — may differ from filename's registration date), parties (lessor/lessees incl. firm name), operative term clause ("period … fixed for N years" — mid-document ~page 4), rent clause + from-date, extension clause, constructions-vest-with-lessor clause, schedule of property. See `references/lease-deed-term-extraction.md` for the scanned-deed workflow |
 | **Association Agreement** | Clubhouse/common amenity rights, maintenance charges, usage rules, transfer mechanism |
 
 ### 4.2 Track cross-references
@@ -643,6 +771,124 @@ When drafting a sale deed for a tripartite structure (plot sale + construction a
 
 Each obligation must stay in its own agreement. The sale deed should contain an explicit recital stating that construction and amenities are covered separately.
 
+### P12. Construction Agreement — missing or inadequate default/exit clauses
+
+The most common gaps found in DRA Group villa Construction Agreements:
+1. **No explicit refund prohibition** on allottee cancellation — with full upfront payment, this creates massive ambiguity if the allottee walks away mid-construction
+2. **No mechanism to complete/exit** on promoter default — the agreement must specify a concrete remedy (third-party sale or exit at market price), not just interest on delayed payment
+3. **Blank completion period** — the single most frequent gap; no months are filled in
+4. **Unilateral arbitration clause** — routinely present in first drafts, must be changed to mutual appointment
+5. **No variation mechanism** — "no modifications" is unrealistic; a formal Variation Order process is essential for villa projects where buyers often have customisation requests
+6. **"Or Equivalent" / multiple alternatives without approval mechanism** — allows the promoter to choose the cheapest option unless the allottee's written approval is required
+7. **Phase 1 reference missing** — the document should use "Phase 1" language and remove all references to unapproved future phases ("larger layout extending to X acres")
+
+### P13. Party/signatory questions — never answer from memory, and cite sheet + row (USER-CORRECTED 2026-09-17)
+
+When NDR asks whether a named person is a party/signatory to a JDA, addendum or
+GPA, the answer decides whether that person must physically attend a
+sub-registrar registration — so it must come from executed documents, not from
+memory or from an earlier turn's summary.
+
+- **Cite provenance.** NDR's verbatim challenge, after a provenance-free answer:
+  *"where did you get this information from, which index are we referring to, and
+  which row of the index?"* Always give sheet/document name + row number + the
+  literal cell text. If you cannot point at a row, say "not found".
+- **Bulk-renamed Drive filenames are unreliable.** The Allalasandra
+  `19990415 Allalsandra Site N Sale Deed – <owner>.pdf` batch disagrees with the
+  registered JDA on five of eight sites. Reconcile against the khata suffix
+  (`.../14/1/<site>`) and the 1999 sale-deed doc number cited in the JDA schedule.
+- **In a JDA schedule, `Held by:` closes the PRECEDING item** — the line often
+  sits on a later scanned page than its `Item No.N` heading. Confirm with the
+  `North by: Site No.N+1` / `South by: Site No.N-1` boundary chain.
+- **Handwritten signatures do not OCR.** "Cannot verify from this scan" is a valid
+  answer — never infer a signature from a printed party label.
+- A person *named* as a party ≠ a person who can *execute* via GPA today: as of
+  Sep 2026 the sub-registrar does not accept an **unregistered** GPA for
+  representation.
+- If NDR has already told a third party something the documents contradict, flag
+  the conflict explicitly and early rather than quietly answering the question.
+
+Full workflow, source hierarchy, OCR chain for image-only deed scans, and the
+Ranka North Star worked example: `references/jda-addendum-party-signatory-verification.md`.
+
+### P14. Deed dates come from the DEED, not the filename (verified 2026-09-26)
+
+DRAAS filenames follow `YYYYMMDD_Property_DocType_Party.pdf`. The prefix is a
+convention and is usually right — **but it is not evidence.** When NDR asks
+"which year was this deed executed?", open the deed and quote (a) the **execution
+clause** — *"THIS DEED OF SALE executed on the 02nd day of August Two Thousand
+Ten (02.08.2010)"* — and (b) the **registration endorsement** (Document No.,
+Book, C.D. No., sub-registrar's office). Give the year AND the full date, the
+parties, and the registration number. If execution and registration dates
+differ, state both — do not collapse them.
+
+Disambiguation pitfall: the family has **both** directions of transaction on
+Embassy Habitat (flat 1503 PURCHASED 2010; flat 914 SOLD 2026). Establish which
+flat and which direction before answering.
+
+Worked example and extraction mechanics:
+`references/deed-execution-date-verification.md`.
+
+### P15. NEVER report a search result you did not obtain — and do not over-retract either (SELF-CORRECTED 2026-09-26)
+
+During a Ranka Iris document sweep I reported Drive findings — a "licence document", a
+"BUX RANKA" file, a specific file ID — that **I had never actually retrieved**. When the
+user asked for the link, I then over-corrected and declared the file ID fabricated, when in
+fact it resolved perfectly. Two distinct failures, both of which mislead the user:
+
+1. **Inventing a result.** A plausible-looking filename, an ID, or a "search came back with
+   X" is never acceptable output. **A tool response is the ONLY thing you may report.** If
+   the search path is unavailable, or you simply have not run it, say exactly that and stop.
+   *"I can't search Drive right now — here is what I'd need to run"* is a complete and
+   correct answer. A fabricated ID that happens to resolve is still a fabrication: its
+   provenance is wrong even when its bytes are right.
+2. **Disowning a real result.** Before declaring any ID/document fabricated, **re-run the
+   lookup**. Retracting a true finding is its own falsehood and sends the user hunting for
+   something that existed all along.
+
+Corollaries:
+- Never emit a Drive URL / link that you did not read out of a tool response.
+- When a capability genuinely is missing (no CLI on PATH, no vault token), state the gap in
+  one line, name the fix or the alternative, and **offer to attempt it** — do not narrate a
+  search that did not happen.
+- If you have already made an unverified claim earlier in the conversation, correct it by
+  *running the verification*, not by apologising harder. The fix is evidence, not contrition.
+
+### P16. Drive timestamps are NOT issuance dates — fix the submission window FIRST (USER-CORRECTED 2026-09-26)
+
+When identifying **which version of a drawing/document was actually filed with an authority**,
+do not rank candidates by Drive `createdTime` / `modifiedTime`, by upload date, or by how
+official the filename looks.
+
+**Establish the process window from the timeline before comparing candidates.** NDR's
+correction verbatim: *"any AutoCAD related to as-built drawing would not have been made
+before 2026-06 [Q2 2025] because we submitted for OC in 2025 last quarter / from June
+onwards — so any older AutoCAD file there is no point examining."* No as-built for a
+building could predate the commencement of its OC submission, so **every candidate outside
+that window is disqualified regardless of its filename** — in that sweep, both a
+07-Apr-2026 `.dwg` and the "9 PDF sheets" (actually headed *11 JAN 2023* — sanction-era
+sheets) were correctly eliminated.
+
+Working order:
+1. **Fix the window** from the process timeline (when did the submission actually begin?).
+2. **Disqualify** everything outside it — check the artifact's *own title block / internal
+   date*, not its Drive metadata.
+3. **Rank the survivors** on custody and explicit naming — a file named
+   `..._AsBuiltDrawing_OCSubmission.dwg` held in the liaisoning folder beats a generic
+   `As Built.dwg` emailed later by the architect. Two near-identical saves of one drawing
+   (differing by ~56 KB, sharing ~14,366 of 14,400 internal string entries) are versions of
+   the same sheet, not independent documents.
+4. **State the confidence honestly.** "Most likely the submitted file, on naming and custody
+   — but no email in the mailbox shows it attached to a BBMP submission" is the right
+   answer. If the department record must be certain, the ask is an acknowledgement or portal
+   attachment receipt from the liaisoning person.
+
+**Also: read the cover block before trusting a document's identity.** In the same session
+`Zonal Regulation 2007.pdf` was actually RMP-2015 Volume III, and
+`Revised setback gazette copy.pdf` was the Nov-2025 draft amendment — and a BBMP building
+licence filed inside the Iris folder belonged to a different project entirely (Suruchi
+Properties, Kodihalli). Naming conventions are a hint, never evidence.
+
 ### P8. The re-allocation question (selling one apartment but retaining parking for another)
 
 Common real-world scenario for owners with multiple apartments in the same complex. Key analytical framework:
@@ -677,8 +923,19 @@ Common real-world scenario for owners with multiple apartments in the same compl
 
 ## 8. References
 
+- `references/lease-term-sheet-and-stamping-compliance.md` — EXECUTED lease → full key-terms summary (parties, premises, term, rent ladder + escalations, deposit, maintenance, renewal, termination, arbitration, stamp/registration) + the two compliance checks: e-stamp **article/classification vs the actual term** (certificate said "not exceeding 1 year"/₹500 on a 3-year deed) and **registered-vs-signed-only** status. Which copy is the executed one (signed vs unsigned draft vs counsel's Doc vs predecessor deed), per-file text-layer check (2024 deed 27k chars vs 2021 scan 0), and the Drive-share role-matching rule. BHC / Prestige Hermitage Apt 601 worked example (11-Dec-2024).
+- `references/lease-deed-term-extraction.md` — Lease term/expiry extraction from old scanned Indian lease deeds (1984/1986 Ranka Chambers worked example: deed-date vs filename-date pitfall, tesseract-triage → vision_analyze extraction, stamp-paper corroboration, 60yr/58yr terms → both end 2044)
+- `references/lease-renewal-extension-risk-analysis.md` — "Can the tenant extend / stay past expiry?" lease review (Miller's Road / Silver tip Foods-India Chai worked example, 2026-10-12): expiry-date correction, no-renewal-clause proof, the security-deposit holdover hook, s.116 TP Act holding-over, Karnataka Rent Act exemption threshold, subletting check, action plan.
+- `references/lease-renewal-extension-risk-review.md` — "Can the tenant extend / refuse to vacate?" renewal-risk checklist: fixed-term no-extension wording, absence of renewal/ROFR options, the security-deposit self-help hook (the ONE lawful continuation route), Karnataka Rent Act ₹3,500 threshold, s.116 TP Act holding over, operator-vs-tenant sublet breach, action plan. Silver tip Foods / India Chai / Millers Road 70/3 worked example (lease ends 31 Jan 2028, not the Dec 2027 NDR recalled).
+- `references/lease-renewal-extension-risk.md` — "Can the tenant extend/stay after expiry?" clause-hunting checklist (duration/no-renewal language, SD-refund continuation hook, s.116 TP Act holdover, Karnataka Rent Act ₹-threshold shield, subletting-breach route) + Millers Road 70/3 / Silver tip Foods ("India Chai") worked example (2018 deed, term to 31/01/2028, clause 5.5 rent-free-occupation hook, no renewal right)
+- `references/deed-execution-date-verification.md` — Answering "which year was this deed executed/registered?": cite the execution clause + registration endorsement, never the Drive filename prefix; the Embassy Habitat 1503 worked example (executed & registered 2 Aug 2010, Doc No. GAN-1-00849-2010-11); the purchase-vs-sale direction disambiguation (flat 1503 bought 2010 vs flat 914 sold 2026); and the pdftotext-on-Adobe-Scan extraction recipe.
+- `references/deed-area-figures-extraction.md` — The three area figures in an apartment sale deed (Schedule 'A' scheduled property area / Schedule 'B' UDS / Schedule 'C' super built-up area): verbatim schedule anchors to grep, the Prestige Hermitage 801 worked example (7,481 / 2,322 / 53,424 sq ft), derived UDS ratios, and the PDF-Title-metadata-contradicts-the-body pitfall.
 - `references/embassy-habitat-parking-analysis.md` — Worked example of parking rights analysis (apartment sale deed + Deed of Declaration cross-reference)
 - `references/ranka-oasis-plot-sale-deed-comparison.md` — Worked example of plot sale deed vs template comparison, including tripartite structure, mortgage timing, survey number verification, and approval number extraction (TN plotted development)
+- `references/ranka-oasis-construction-agreement-patterns.md` — Construction Agreement review checklist with clause-by-clause analysis for DRA Group villa projects: Ranka Oasis Villa 119 worked example (completion period, defect liability, default/termination frameworks, variation orders, recital structure, payment acknowledgment)
+- `references/jda-addendum-party-signatory-verification.md` — Party & signatory verification for JDA / addendum / GPA questions: source hierarchy (executed deed → legal index sheet → extracted-document index → Drive filename last), the "cite sheet + row" rule, bulk-renamed Drive filename unreliability, the `Held by:` closes-the-preceding-item schedule pitfall, the pdftoppm+tesseract chain for image-only deed scans, and the Ranka North Star / Allalasandra worked example (2014 JDA + 2024 addendum party lists, the 18.08.2003 GPA register rows, 2013 consent-cum-confirmation GPA usage, 2026 assignment-of-rights affidavits)
+- `references/preliminary-title-report-analysis.md` — Scanned Karnataka preliminary title opinion (Pattanshetti/BRK Law format): render + vision pipeline, opinion-language tiers, per-parcel caveats, Annexure A/B structure.
+- `references/gpa-authority-tdr-analysis.md` — GPA clause-by-clause analysis for TDR/DRC applications: tiered authority framework (KTCP, land acquisition, broad statutory, general/residual), purpose limitation analysis, entity mismatch between GPA grantee and current developer, execution format for affidavit/Form IV with GPA-holder signing, annexure creation via qpdf merge. See references/gpa-authority-tdr-analysis.md.
 
 ## 9. Google Docs API — Direct Editing of Legal Documents
 
@@ -793,3 +1050,33 @@ The user's HOME is `/data/hermes/home`. Without this export, gws-auth can't loca
 | Add TDS compliance | Insert after Vendee's Acknowledgments | Blue |
 | Flag construction content | `updateTextStyle` on specific elements | Red |
 | Fill blank fields (TNRERA no., etc.) | `replaceAllText` on placeholder markers | Blue |
+
+### 9.7 Construction Agreement Google Docs editing — Yellow Highlight Convention
+
+For Construction Agreement tracked changes, use **YELLOW background** instead of blue:
+
+```python
+YELLOW = {
+    'backgroundColor': {
+        'color': {
+            'rgbColor': {'red': 1.0, 'green': 1.0, 'blue': 0.0}
+        }
+    }
+}
+```
+
+**Strategy:**
+1. Use `replaceAllText` for clause rewrites (dates, completion period, default clauses, arbitration)
+2. Use `insertText` at paragraph breaks for new clauses (Recital H, Variation Order, expanded payment clause)
+3. Apply yellow `updateTextStyle({backgroundColor: YELLOW}, fields='backgroundColor')` over the entire range of each changed section
+4. Replacements first, then insertions, then formatting — because insertions shift subsequent indices
+
+**Editing pattern for clause replacements:**
+- Replace the OLD clause text with NEW clause text via `replaceAllText`
+- Then highlight the NEW text range by finding its absolute indices in the re-read doc
+
+**Editing pattern for new recitals:**
+- Insert at `endIndex` of the existing last recital paragraph (find the textRun containing the last sentence of Recital G)
+- Inserts between Recitals and "NOW THIS AGREEMENT WITNESSETH" go at the paragraph boundary
+
+**Pitfall:** `replaceAllText` matches the OLD text exactly. If the doc has slightly different whitespace, tabs, or line breaks, the match fails. Always verify by re-reading the document and checking exact characters.

@@ -1,11 +1,12 @@
-# Kannada Government Letter Processing → English HTML Replica
+# Kannada Government Letter Processing → English PDF Replica
 
-For **formal Kannada government letters** from BIAAPA, DC office, Tahsildar, etc. — NOT land records (RTC/MR/EC). These are structured correspondence documents with letterhead, reference number, addressee, subject, body, and signature.
+For **formal Kannada government letters** from BMTF, BIAAPA, DC office, Tahsildar, BBMP Police, etc. — NOT land records (RTC/MR/EC). These are structured correspondence documents with letterhead, reference number, addressee, subject, body, and signature.
 
 ## Document Classes
 
 | Class | Source | Typical Subject |
 |---|---|---|
+| **BMTF Police Notice** | Bengaluru Metropolitan Task Force (BBMP HQ, N.R. Circle) | Encroachment complaint, bylaw violation, buffer zone, hearing summons |
 | **BIAAPA Letter** | Bengaluru International Airport Area Planning Authority | Land conversion, layout approval, NOC, zoning |
 | **DC Letter** | Deputy Commissioner, Bengaluru Rural District | Conversion cancellation, land acquisition |
 | **Tahsildar Letter** | Tahsildar Office | Revenue entries, mutation orders |
@@ -13,48 +14,36 @@ For **formal Kannada government letters** from BIAAPA, DC office, Tahsildar, etc
 
 ## Workflow
 
-### Step 1: OCR with Kannada Tesseract
+### Step 1: Convert PDF to Image (for scanned documents)
 
 ```bash
-# Kannada traineddata must be downloaded separately (not in apt)
-mkdir -p /data/hermes/tessdata
-curl -sL -o /data/hermes/tessdata/kan.traineddata \
-  https://github.com/tesseract-ocr/tessdata/raw/main/kan.traineddata
+# Check if PDF has embedded images (scanned = image-only PDF)
+pdfimages -list input.pdf
 
-# Run OCR
-tesseract /path/to/image.jpg /path/to/output -l kan \
-  --tessdata-dir /data/hermes/tessdata
+# Check if PDF has text layer
+pdftotext input.pdf - | head -20
+
+# Convert to PNG for OCR — use high DPI (300) for small Kannada text
+pdftoppm -png -r 300 input.pdf /tmp/output_page
 ```
 
-**Note:** The image may already be cached at `/data/hermes/image_cache/img_*.jpg` if the user uploaded it via Telegram.
+### Step 2: OCR + Translation — PRIMARY: vision_analyze (recommended)
 
-### Step 2: Translate to English
-
-**Two methods — offer both for cross-verification:**
-
-#### Method A — Manual translation (always available)
-
-Read the Tesseract OCR output and translate directly. Use the glossary below.
-
-#### Method B — Gemini 3.5 Flash via OpenRouter (when credits available)
+**vision_analyze** via `vision_analyze(image_url=..., question=...)` gives the BEST results for Kannada government letters. It returns complete Kannada text AND English translation in a single call, with excellent accuracy on clean scanned PDFs (300 DPI). No separate Tesseract setup needed.
 
 ```python
-# Works when OpenRouter credits are sufficient
-call_openrouter_model(
-    model="google/gemini-3.5-flash",
-    prompt="You are a Kannada→English translator. Translate this Kannada document...",
-    user_trigger_phrase='"translate via OpenRouter"'
+# Works for scanned PDFs converted to PNG
+vision_analyze(
+    image_url="/tmp/output_page-1.png",
+    question="Extract ALL text from this Kannada government letter. Read every word: header, reference number, date, addressee, subject, body paragraphs, numbered items, signature, stamps, contact numbers. Then provide full English translation."
 )
 ```
 
-`google/gemini-3.5-flash` gives accurate Kannada→English results with good formatting.
-Create a separate HTML file marked as "Gemini 3.5 Flash Translated" so the user can compare both versions side-by-side.
+**When vision_analyze returns image-not-found (PDF direct):** Convert to PNG first with pdftoppm, then pass the PNG path.
 
-**Convert original image to PDF** using ImageMagick (`convert input.jpg output.pdf`) and file it alongside the translation — the user explicitly requires the source document filed as PDF in the same folder as the translated HTML.
+### Step 2b: OCR + Translation — FALLBACK: Tesseract
 
-**Note:** OpenRouter may return HTTP 402 (insufficient credits). Offer manual translation as fallback.
-
-Read the OCR output and translate manually. Key government letter terminology:
+Use this only when vision_analyze is unavailable:"
 
 | Kannada | English |
 |---|---|
@@ -83,34 +72,91 @@ Read the OCR output and translate manually. Key government letter terminology:
 | ಪರಿಶೀಲಿಸಿ | Inspect / Examine |
 | ಅಭಿಪ್ರಾಯ | Opinion |
 
-### Step 3: Create HTML Replica
+### Step 3: Create HTML Replica (Kannada + English Combined)
 
-Format the English translation as an HTML document that mirrors the original government letter layout.
+Create an HTML document with TWO sections — the Kannada original reproduced exactly (matching layout/emblem/fonts) on top, and the English translation below, separated by a divider. This gives the user ONE document containing both, which is cleaner than separate files.
+
+**Format: Kannada Original → Divider → English Translation**
+
+The HTML should reproduce the original letter's visual layout faithfully including:
+- Government emblem (SVG approximation)
+- Department/authority name
+- Office address and contact
+- Reference number and date
+- "Police Notice" / subject title
+- Body text with exact Kannada content (from vision_analyze OCR, NOT Tesseract garbled text)
+- Numbered document lists
+- Addressee block
+- Signature block with name, designation, contact number
 
 **Layout Structure (top to bottom):**
 
-1. **Header** — Authority name (bold, centered, royal blue #1a237e, uppercase), subtitle "(Constituted under...)"
-2. **Address line** — Office address in smaller font, centered
-3. **Contact bar** — Phone, Email, Website in a single row
-4. **Reference + Date row** — Left: Ref No. (bold) | Right: Date (bold, right-aligned)
-5. **Addressee block** — "To," then name/title, address lines, then salutation "Sir / Madam,"
-6. **Subject block** — "Subject:" label, then underlined subject text
-7. **Reference line** — "Reference:" with letter number and date
-8. **Separator line** — Dashed line
-9. **Body text** — Justified, 12px, 1.9 line-height, bold for key figures (acres, survey numbers, amounts)
-10. **Signature** — Right-aligned, designation with "Joint Director & Member Secretary" etc.
-11. **Footer disclaimer** — "This is a computer-generated English translation..."
+1. **Emblem** — Government of Karnataka emblem (SVG), centered
+2. **Header** — "Karnataka Rajya" → department → authority name (bold, centered)
+3. **Address line** — Office address, centered
+4. **Contact** — Phone number
+5. **Reference + Date row** — Left: Ref No. | Right: Date
+6. **Sender block** — Office of the [designation], authority name
+7. **Notice title** — Bold, centered, with asterisks/separators
+8. **Body text** — Justified, 11px, 1.75 line-height
+9. **Numbered list** — Ordered list of required items
+10. **Addressee block** — "To," then name/address
+11. **Signature block** — Right-aligned: name in parentheses, designation, station, contact number
+12. **Divider** — 3px double line or gradient
+13. **English Translation** — Same structure but in English
 
-**CSS Notes:**
-- Font: 'Noto Sans' (Google Fonts) for clean government-document look
-- Background: light gray (#e8e8e8) with white letter card
-- Box shadow: subtle (0 4px 20px rgba(0,0,0,0.15))
-- Max-width: 800px
-- Print-friendly with @media print styles
+**CSS Notes (from verified Ranka Amber BMTF Notice, Sep 2026):**
+- Font: 'Noto Sans Kannada' + 'Noto Sans' (Google Fonts) for bilingual
+- Background: #e8e8e8 with white letter card
+- Box shadow: 0 4px 20px rgba(0,0,0,0.15)
+- Kannada body text: 11px font, English translation: 11px
+- Max-width: 800px, padding: 50-60px
+- Translation section: light background (#fafaf8) with header + border
+- Print-friendly @media print styles
 
-## BIAAPA-Specific Document Keywords
+### Step 4: Convert HTML to PDF via weasyprint
 
-When OCR output contains these Kannada keywords, identify as BIAAPA document:
+Install weasyprint and convert:
+
+```bash
+uv pip install weasyprint
+```
+
+```python
+from weasyprint import HTML
+HTML("/tmp/notice.html").write_pdf("/tmp/notice.pdf")
+```
+
+**Critical:** weasyprint produces a PDF that exactly mirrors the HTML layout — government emblem, Kannada text, numbered lists, and English translation all in one document. No Tesseract needed, no separate upload steps.
+
+### Step 5: File on Google Drive
+
+**Rename to YYYYMMDD convention** (per DRAAS global naming rule):
+
+```
+20260903_RankaAmber_BMTF_Police_Notice.pdf
+20260903_RankaAmber_BMTF_Police_Notice_Original_Scan.pdf
+```
+
+**Filing location:**
+- BMTF/BBMP Police notices → project folder > Legal Notices (create if absent)
+- Always create a dedicated "Legal Notices" subfolder under the project folder, NOT TMP
+- Upload BOTH the reproduced PDF AND the original scan side by side
+
+Upload code (from terminal(), not execute_code — vault socket not available in sandbox):
+
+```python
+from googleapiclient.http import MediaFileUpload
+media = MediaFileUpload(local_path, mimetype='application/pdf')
+uploaded = svc.files().create(
+    body={'name': 'YYYYMMDD_Project_BMTF_Police_Notice.pdf', 'parents': [folder_id]},
+    media_body=media, fields='id,name,webViewLink'
+).execute()
+```
+
+## Document-Type-Specific Keywords
+
+### BIAAPA-Specific
 
 | Kannada Keyword | English |
 |---|---|
@@ -119,6 +165,42 @@ When OCR output contains these Kannada keywords, identify as BIAAPA document:
 | ವಿನ್ಯಾಸ ನಕ್ಷೆ ಅನುಮೋದನೆ | Layout plan approval |
 | ಭೂಪರಿವರ್ತನಾ ಆದೇಶ | Land conversion order |
 | ದೇವನಹಳ್ಳಿ | Devanahalli (BIAAPA HQ) |
+
+### BMTF Police Notice-Specific
+
+| Kannada Keyword | English |
+|---|---|
+| ಬೆಂಗಳೂರ ಮಹಾನಗರಕಾರ್ಯಾಚರಣೆ ಪಡೆ | Bengaluru Metropolitan Task Force (BMTF) |
+| ಬಿಎಂಟಿಎಫ್ | BMTF (in reference no.) |
+| ಪೊಲೀಸ್ ನೊಟೀಸ್ | Police Notice |
+| ಸಬ್ ಇನ್ಸ್‌ಪೆಕ್ಟರ್ | Sub Inspector |
+| ಪೆಟಿಷನ್ | Petition (in ref no.) |
+| ಖರಾಬು ಜಾಗ | Kharab land (government waste/gutter land) |
+| ಒತ್ತುವರಿ | Encroachment |
+| ಬಫರ್ ಜಾಗ | Buffer zone |
+| ಬೈಲಾವನ್ನು ಉಲ್ಲಾಂಘನೆ | Bylaw violation |
+| ವಿಚಾರಣೆ | Inquiry / Hearing |
+| ಹಾಜರಾಗುವಂತೆ ಸೂಚಿಸಿದೆ | Instructed to appear |
+| ಸ್ವತ್ತಿನ ನೊಂದಣಿಕ್ರಯ ಪತ್ರ | Property registration/sale deed |
+| ಭೂ ಪರಿವರ್ತನಾ ಪ್ರಮಾಣ ಪತ್ರ | Land Conversion Certificate (CLU) |
+| ಅನುಮೋದಿತ ನಕ್ಷೆ | Approved plan / Sanctioned plan |
+| ಪರಿತ್ಯಾಜನಾ ಪತ್ರ | Relinquishment deed |
+| ಆರ್.ಟಿ.ಸಿ | RTC (Record of Rights, Tenancy and Crops) |
+| ಆಕಾರ್‌ಬಂದ್ | Akarband (land measurement sketch) |
+| ಮ್ಯುಟೇಷನ್ | Mutation |
+| ನಿರಕ್ಷೇಪಣಾ ಪತ್ರ | No Objection Certificate (NOC) |
+| ರೇರಾ | RERA |
+
+### 8 Documents Required for a BMTF Hearing (standard list found in 2026 notices)
+
+1. Property registration / sale deed
+2. Land conversion certificate (CLU)
+3. Approved plan from planning authority
+4. Relinquishment deed, survey documents
+5. RTC and Akarband
+6. Mutation documents and RR and ILR
+7. NOCs from competent authorities
+8. RERA NOC for sale
 
 ### Step 4: Find the Correct Drive Folder for Filing
 
@@ -183,32 +265,47 @@ def upload_to_drive(local_path, target_folder_id, display_name):
     return uploaded.get('webViewLink', '')
 ```
 
-**Naming convention:**
-- Manual translation: `BIAAPA_Letter_English_Manual_Translation.html`
-- Gemini AI translation: `BIAAPA_Letter_English_Gemini35Flash_Translated.html`
-- Original Kannada image as PDF: `BIAAPA_Letter_Kannada_Original_<Date>.pdf`
+**Naming convention (YYYYMMDD per global DRAAS rule):**
 
-**Always file three artifacts together:**
-1. Manual translation HTML
-2. Gemini translation HTML (if created)
-3. Original Kannada letter as PDF (converted from the source image)
+- PDF replica: `YYYYMMDD_ProjectOrEntity_BMTF_Police_Notice.pdf`
+- Original scan: `YYYYMMDD_ProjectOrEntity_BMTF_Police_Notice_Original_Scan.pdf`
+
+Examples:
+- `20260903_RankaAmber_BMTF_Police_Notice.pdf` (reproduction)
+- `20260903_RankaAmber_BMTF_Police_Notice_Original_Scan.pdf` (source)
+- `20260622_GodwadBhavanTrust_BIAAPA_LandConversion_Cancellation_Report.pdf` (BIAAPA)
+
+**Always file two artifacts together:**
+1. Reproduced PDF (Kannada + English in one document)
+2. Original scanned PDF (renamed per convention)
 
 ## Pitfalls
 
-- **OpenRouter credits**: `google/gemini-3.5-flash` works well when credits are available. Without credits, fall back to manual translation from Tesseract OCR. Do NOT keep retrying failed OpenRouter calls — check available models first via API.
-- **Tesseract quality on Kannada**: ~60-70% accuracy on clean 250+ DPI scans. Cross-reference dates/amounts visually from the original image. Some Kannada characters render as garbled Latin.
-- **Vision model fails on Kannada**: Both built-in vision and OpenRouter Gemini may produce garbled OCR on Kannada. Tesseract with `-l kan` gives better results.
-- **Write location permissions**: Cannot write to `/tmp/` or `/data/hermes/users/ndr/` paths. Use `/opt/data/` or `/data/hermes/cron/output/ndr/` for local staging before Drive upload.
-- **⚠️ Do NOT default to temp.tmp for legal documents**: Legal correspondence (BIAAPA, DC, Tahsildar) about a specific survey number must go in the legal documentation folder for that property. Search for entity names (trusts), legal-docs folders with the survey number, and the project's legal subfolder before falling back to temp.tmp. The user will correct you if you file legal docs in a generic folder.
-- **Convert the original image to PDF and file alongside the translations**: The user expects the source Kannada document to be filed as PDF in the same folder as the translated HTMLs.
-- **Search multiple name variants for the target folder**: The legal docs for a property may be under the trust/entity name (Godwad Bhavan Jain Trust), the village name (Hulurugurki), a dedicated survey-number folder (Bamnolim Sy No 93-2 Legal Documents), or the project name (Serenity Hill View). Search all of these — the project name alone is not enough.
+- **Vision model works WELL on Kannada — do NOT default to Tesseract.** vision_analyze (Gemini-based) produces clean, complete Kannada text + English translation from a single 300 DPI PNG. The old pitfall claiming otherwise was based on earlier models. Use Tesseract `-l kan` ONLY when vision_analyze is unavailable (no vision provider configured). Tesseract accuracy is ~60-70% on Kannada and produces garbled text.
+- **OpenRouter credits**: `google/gemini-3.5-flash` works well when credits are available. Without credits, vision_analyze's built-in fallback handles translation without OpenRouter.
+- **Write location permissions**: Cannot write to `/mnt/uploads/` (read-only filesystem). Stage files in `/tmp/` before uploading to Drive.
+- **⚠️ Do NOT default to TMP folder for legal documents**: Legal notices (BMTF, BIAAPA, DC, Tahsildar) about a specific property MUST go in the project's legal documentation folder. Create a "Legal Notices" subfolder under the project's Drive folder.
+- **Always upload the original scan alongside the reproduction**: The user expects the source Kannada PDF to be filed in the same folder.
+- **Search multiple name variants for the target folder**: The legal docs for a property may be under the trust/entity name, project name, or a dedicated folder.
+- **BMTF Notice specific: 8 documents required for hearing.** When the notice demands documents (sale deed, CLU, approved plan, relinquishment deed, RTC/Akarband, mutation/RR/ILR, NOCs, RERA NOC), list them explicitly in the translation. These are urgent — hearing dates are typically within days.
+- **weasyprint must be installed via uv** — `uv pip install weasyprint`. Not available in base Python.
 
 ## Verified Examples
 
-### Example 1 — BIAAPA Letter No. BIAAPA/TP/MIS/07/2025-26/26 (22 JUN 2026)
+### Example 1 — BMTF Police Notice for Ranka Amber (03 SEP 2026)
+
+- **Letter:** No.BMTF/ADGP/Petition/1237/2026, dated 03/04/2026
+- **Issuer:** Office of PSI Manoj Kurane, Bengaluru Metropolitan Task Force, BBMP HQ, N.R. Circle
+- **Subject:** Encroachment complaint — government kharab land encroached, buffer zone not left, bylaw violation at Plot 1-B, Katha 4/124, PID 7057785976, D'Silva Layout, Pattandur Agrahara
+- **Hearing:** 07/09/2026 at 11:30 AM — 8 documents required
+- **Workflow used:** pdftoppm (300 DPI) → vision_analyze (full Kannada OCR + translation) → HTML/CSS reproduction (Kannada on top, English below) → weasyprint PDF → Drive upload to Ranka Amber > Legal Notices subfolder
+- **Output:** Single PDF with Kannada original layout + English translation
+- **Contact:** PSI Manoj Kurane, 9886876942
+- **Uploaded:** https://drive.google.com/drive/folders/1jOQzLjRAhy761CUU8aobTtDdmYqLyROm
+
+### Example 2 — BIAAPA Letter No. BIAAPA/TP/MIS/07/2025-26/26 (22 JUN 2026)
 
 - **Subject:** Sy. 93/2, Hurulugurki Village, Vijayapura Hobli — Land conversion cancellation report
 - **Key finding:** BIAAPA confirmed NO layout/development plan approval was granted for 6A-26G in Sy. 93/2
-- **Manual output:** `BIAAPA_Letter_English_Manual_Translation.html` (Tesseract OCR → manual translate)
-- **Gemini output:** `BIAAPA_Letter_English_Gemini35Flash_Translated.html` (Tesseract OCR → `google/gemini-3.5-flash`)
-- **Delivery:** Initially filed in standalone `Serenity Hill View` folder; corrected to `Godwad Bhavan Jain Trust Nandi Hills property` (where all related Sy No 93/2 legal PDFs reside)
+- **Method (old):** Tesseract Kannada OCR → manual translation → HTML
+- **Delivery:** Godwad Bhavan Jain Trust Nandi Hills property folder

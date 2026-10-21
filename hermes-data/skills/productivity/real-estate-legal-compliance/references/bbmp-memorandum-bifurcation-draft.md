@@ -439,4 +439,4 @@ When the user confirmed the memorandum is for **Ranka Iris**, the following data
 
 11. **Kannada e-Khata PDFs** — If searching for existing Khata data, note that e-Khata PDFs from BBMP e-Aasthi are in Kannada with CID-encoded text. Key English fields (address, owner name, doc number, area) are still readable with pdfminer. See `references/e-khata-filing-workflow.md` for extraction notes.
 
-12. **No gws_sa for Vinod's Drive** — Never use `gws_sa.build_service()` for Drive access. Always use `tools.gws_auth.build_service("drive", "v3")` with the Hermes venv path.
+12. **No gws_sa for Vinod's Drive** — `tools.gws_sa` does not exist (removed 2026-05-08; raises `ModuleNotFoundError`). Always use `tools.gws_auth.build_service("drive", "v3")` with the Hermes venv path.
