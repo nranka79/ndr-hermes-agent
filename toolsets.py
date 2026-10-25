@@ -486,6 +486,21 @@ TOOLSETS = {
         ],
         "includes": [],
     },
+    "whatsapp": {
+        "description": (
+            "NDR's personal WhatsApp -- read and search every chat/group, learn how he "
+            "writes to a specific counterparty, and reply in his voice. Sending is a "
+            "two-step draft/confirm flow: the bridge stores the draft and sends only the "
+            "stored text, so NDR must approve the exact message first. See "
+            "hermes-data/skills/communication/whatsapp-reply/SKILL.md."
+        ),
+        "tools": [
+            "wa_list_chats", "wa_read_messages", "wa_search_messages", "wa_style_corpus",
+            "wa_draft_reply", "wa_send_confirmed", "wa_draft_cancel", "wa_draft_status",
+            "wa_health",
+        ],
+        "includes": [],
+    },
     "next_action": {
         "description": (
             "Next Agent Action sheet CRUD -- schedule future-dated actions "
