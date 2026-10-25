@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>DNR Law Firm — Legal Opinion</title>
+<!--
+  DNR Law Firm opinion-letter template.
+  Copy, replace the sections in square brackets, delete the per-question blocks
+  you do not need. Keep the summary table — it is the part NDR cares about.
+  Render to A4 PDF (see references/law-firm-opinion-letters.md — the @page rule
+  below is mandatory or Chrome emits US Letter).
+-->
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 24px 12px; background: #e9eaec;
+    font-family: Georgia, "Times New Roman", Times, serif;
+    color: #1b1b1b; font-size: 15px; line-height: 1.6;
+  }
+  .doc {
+    max-width: 210mm; margin: 0 auto; background: #fff;
+    padding: 24mm 22mm 22mm 22mm;
+    box-shadow: 0 3px 22px rgba(0,0,0,.14);
+  }
+  .firm { text-align: center; border-bottom: 3px double #14324f; padding-bottom: 14px; }
+  .firm .name {
+    font-size: 30px; letter-spacing: .16em; color: #14324f;
+    margin: 0 0 4px 0; font-weight: normal; text-transform: uppercase;
+  }
+  .firm .sub { font-size: 11.5px; letter-spacing: .13em; text-transform: uppercase; color: #5b6b7b; margin: 0; }
+  .firm .addr { font-size: 11px; color: #6c7a88; margin: 7px 0 0 0; letter-spacing: .03em; }
+  .confid {
+    margin: 16px 0 0 0; padding: 7px 10px; text-align: center;
+    border: 1px solid #a8802f; background: #fdf7e8; color: #7d5a12;
+    font-size: 10.5px; letter-spacing: .16em; text-transform: uppercase;
+  }
+  .meta { width: 100%; border-collapse: collapse; margin: 18px 0 6px 0; font-size: 13.5px; }
+  .meta td { padding: 4px 0; vertical-align: top; }
+  .meta td.k { width: 92px; color: #5b6b7b; letter-spacing: .06em; text-transform: uppercase; font-size: 10.5px; padding-top: 6px; }
+  .meta td.v { color: #1b1b1b; }
+  .rule { border: 0; border-top: 1px solid #cfd6dd; margin: 18px 0 4px 0; }
+  h2 {
+    font-size: 13px; letter-spacing: .11em; text-transform: uppercase;
+    color: #14324f; border-bottom: 1px solid #c2cbd4;
+    padding-bottom: 6px; margin: 28px 0 13px 0; font-weight: bold;
+  }
+  h3 { font-size: 14.5px; color: #14324f; margin: 20px 0 7px 0; font-weight: normal; }
+  p { margin: 0 0 10px 0; text-align: justify; }
+  ol, ul { margin: 0 0 11px 0; padding-left: 22px; }
+  li { margin-bottom: 6px; text-align: justify; }
+  .stat {
+    border-left: 3px solid #14324f; background: #f5f8fb;
+    padding: 9px 13px; margin: 11px 0 13px 0;
+    font-size: 13.5px; color: #2a3b4d; text-align: justify;
+  }
+  .stat .lbl { display: block; font-size: 10.5px; letter-spacing: .12em; text-transform: uppercase; color: #14324f; margin-bottom: 5px; }
+  .qa {
+    border: 1px solid #14324f; background: #eef3f8;
+    padding: 11px 15px; margin: 0 0 12px 0;
+  }
+  .qa .lbl { display: block; font-size: 10.5px; letter-spacing: .12em; text-transform: uppercase; color: #14324f; margin-bottom: 5px; font-weight: bold; }
+  .ans { border: 1px solid #1c6b3a; background: #eff7f1; padding: 11px 15px; margin: 0 0 12px 0; }
+  .ans .lbl { display: block; font-size: 10.5px; letter-spacing: .12em; text-transform: uppercase; color: #1c6b3a; margin-bottom: 5px; font-weight: bold; }
+  .auth {
+    border-left: 3px solid #a8802f; background: #fdfaf1;
+    padding: 10px 14px; margin: 0 0 14px 0; font-size: 13.5px; color: #4a3a12;
+  }
+  .auth .lbl { display: block; font-size: 10.5px; letter-spacing: .12em; text-transform: uppercase; color: #7d5a12; margin-bottom: 5px; font-weight: bold; }
+  table.gen { width: 100%; border-collapse: collapse; margin: 14px 0 16px 0; font-size: 12.5px; }
+  table.gen th {
+    background: #14324f; color: #fff; text-align: left; padding: 8px 10px;
+    font-size: 10.5px; letter-spacing: .09em; text-transform: uppercase; font-weight: bold;
+  }
+  table.gen td { border: 1px solid #ccd4dc; padding: 8px 10px; vertical-align: top; text-align: left; }
+  table.gen tr:nth-child(even) td { background: #f7f9fb; }
+  .yes { color: #1c6b3a; font-weight: bold; }
+  .no { color: #8b1a1a; font-weight: bold; }
+  .sig { margin-top: 30px; }
+  .sig .line { border-top: 1px solid #1b1b1b; width: 220px; margin-bottom: 6px; }
+  .sig .nm { font-size: 14px; }
+  .sig .ttl { font-size: 11.5px; color: #5b6b7b; letter-spacing: .05em; }
+  .foot { margin-top: 26px; padding-top: 12px; border-top: 1px solid #cfd6dd; font-size: 10.5px; color: #6c7a88; text-align: center; letter-spacing: .04em; }
+  .small { font-size: 12.5px; color: #4a5b6c; }
+  @page { size: A4 portrait; margin: 0; }          /* MANDATORY — Chrome defaults to Letter */
+  @media print {
+    body { background: #fff; padding: 0; font-size: 11pt; }
+    .doc { box-shadow: none; padding: 14mm 14mm; max-width: none; }
+    h2 { page-break-after: avoid; }
+    table.gen, .qa, .ans, .auth, .stat { page-break-inside: avoid; }
+  }
+</style>
+</head>
+<body>
+<div class="doc">
+
+  <div class="firm">
+    <p class="name">DNR Law Firm</p>
+    <p class="sub">Advocates &amp; Legal Consultants</p>
+    <p class="addr">Bengaluru &nbsp;&middot;&nbsp; Chennai &nbsp;&middot;&nbsp; New Delhi</p>
+  </div>
+
+  <div class="confid">Privileged &amp; Confidential &nbsp;&middot;&nbsp; Prepared for the Addressee Only</div>
+
+  <table class="meta">
+    <tr><td class="k">To</td><td class="v">[Addressee name and capacity]</td></tr>
+    <tr><td class="k">Date</td><td class="v">[DD Month YYYY]</td></tr>
+    <tr><td class="k">Our Ref</td><td class="v">DNR/OP/[YYYY]/[MMDD]-[XX]</td></tr>
+    <tr><td class="k">Subject</td><td class="v"><strong>[Project / property] &mdash; Opinion on [precise question]</strong></td></tr>
+  </table>
+
+  <hr class="rule">
+
+  <h2>Summary of Opinion</h2>
+
+  <table class="gen">
+    <tr>
+      <th style="width:34%">Question</th>
+      <th style="width:30%">Our Opinion</th>
+      <th style="width:36%">Principal Authority</th>
+    </tr>
+    <tr>
+      <td>[Question 1]</td>
+      <td class="no">No</td>
+      <td>[Sections + case law + exhibit]</td>
+    </tr>
+    <tr>
+      <td>[Question 2]</td>
+      <td class="no">No</td>
+      <td>[Sections + case law]</td>
+    </tr>
+    <tr>
+      <td>[Question 3]</td>
+      <td>Not compulsory, but advisable</td>
+      <td>[Sections]</td>
+    </tr>
+  </table>
+
+  <h2>I. Purpose and Documents Examined</h2>
+
+  <p><strong>1.</strong> [Why instructed; what is being asked. State explicitly if a
+  neutral view was requested — "we have been asked to consider how the authority
+  might view the matter, before advancing the position of the addressee".]</p>
+
+  <p><strong>2.</strong> We have examined: (a) [instrument, with registration
+  particulars]; (b) [instrument, with e-stamp certificate number]; (c)
+  [correspondence].</p>
+
+  <h2>II. Question 1 &mdash; [Short label]</h2>
+
+  <div class="qa">
+    <span class="lbl">Question</span>
+    [The question as actually put. One or two sentences.]
+  </div>
+
+  <div class="ans">
+    <span class="lbl">Our Opinion</span>
+    <strong>[Direct answer — "It is not so chargeable."]</strong> [One paragraph of
+    reasoning. Lead with the reason, not the conclusion restated.]
+  </div>
+
+  <div class="stat">
+    <span class="lbl">Statutory Provisions</span>
+    <strong>[Section / Article, Act, year]</strong> &mdash; [operative words, in the
+    statute's own language where it matters]. <strong>[Next provision]</strong>
+    &mdash; [effect]. Quote the words the argument turns on.
+  </div>
+
+  <div class="auth">
+    <span class="lbl">Authorities Cited</span>
+    <em>[Case name]</em>, [Court (bench)], [date] &mdash; [one line holding, with a
+    short quotation if decisive].<br>
+    <em>[Exhibit relied on]</em> &mdash; [what it proves and why it binds the
+    opponent's own position].
+  </div>
+
+  <h2>III. Question 2 &mdash; [Short label]</h2>
+
+  <div class="qa">
+    <span class="lbl">Question</span>
+    [Question]
+  </div>
+
+  <div class="ans">
+    <span class="lbl">Our Opinion</span>
+    <strong>[Answer.]</strong> [Reasoning.]
+  </div>
+
+  <div class="stat">
+    <span class="lbl">Statutory Provisions</span>
+    [Provisions]
+  </div>
+
+  <div class="auth">
+    <span class="lbl">Authorities Cited</span>
+    [Authorities]
+  </div>
+
+  <h2>IV. Request to the [Authority]</h2>
+
+  <p><strong>1.</strong> We respectfully record that, upon our analysis, [position].</p>
+
+  <p><strong>2.</strong> If the [authority] should nevertheless entertain any doubt
+  as to [question], we respectfully request that the question be referred for
+  determination rather than resolved at the counter. [Provision enabling the
+  reference] enables [mechanism, fee, certificate], and upon such determination
+  [penalty relief / appellate remedy].</p>
+
+  <p><strong>3.</strong> We respectfully suggest that a reference of this nature
+  would be to the advantage of all concerned. It would place the assessment upon
+  the footing of a reasoned, appealable determination, and would equally protect
+  the [authority], which would otherwise be called upon to decide a question of
+  some complexity without notice and without the protection of an appellate
+  remedy. Our client is ready and willing to file such an application and to abide
+  by the determination.</p>
+
+  <h2>Conclusion</h2>
+
+  <p><strong>1.</strong> [Mirror point 1 of the summary table.]
+  <strong>2.</strong> [Mirror point 2.]</p>
+
+  <p class="small">This document is a summary. It is based upon the instruments and
+  correspondence placed before us and upon the law as it stands on the date hereof.
+  It is furnished for the use of the addressee and their advisers in connection
+  with [purpose], and may be produced before the [authority]. It does not
+  constitute an opinion on title, on any dispute between parties <em>inter se</em>,
+  or on any matter outside [scope].</p>
+
+  <div class="sig">
+    <div class="line"></div>
+    <p class="nm">For <strong>DNR Law Firm</strong></p>
+    <p class="ttl">Advocates &amp; Legal Consultants</p>
+  </div>
+
+  <div class="foot">
+    DNR Law Firm &nbsp;&middot;&nbsp; Bengaluru &nbsp;&middot;&nbsp; Chennai &nbsp;&middot;&nbsp; New Delhi &nbsp;&middot;&nbsp; Ref. DNR/OP/[YYYY]/[MMDD]-[XX]
+  </div>
+
+</div>
+</body>
+</html>

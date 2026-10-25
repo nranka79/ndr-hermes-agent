@@ -14,7 +14,7 @@
 > not to one under `real-estate-legal-compliance`. This umbrella already holds its own readable
 > copies of the core overlap set (bbmp-pid-formats, company-verification-workflow,
 > survey-wise-land-doc-organization, e-khata-filing-workflow, ec-mr-date-extraction-patterns,
-> kannada-land-doc-ocr-patterns, ec-compilation-merging, ranka-iris-document-set,
+> kannada-land-doc-ocr-patterns, ec-compilation-merging,
 > required-docs-procurement-sources, bbmp-memorandum-bifurcation-draft).
 
 # Property Title Due Diligence — full playbook
@@ -214,8 +214,6 @@ certificate = 2014 for Ranka Iris). Don't present them as the same event.
 Doc #015 inside the legal set but may ALSO exist as a standalone Google Drive
 file (e.g., `Amalgamation Order` PDF) in the Customer Legal Set folder. Look
 for both when the user asks for a direct link.
-
-See `references/ranka-iris-document-set.md` for a complete worked example.
 
 ### 6. Company/Entity Verification (MCA)
 
@@ -1229,7 +1227,6 @@ where the user wants a structured analysis alongside proposed content.
 - `references/ec-mr-date-extraction-patterns.md` — EC date range extraction from DDMMYYYY filenames, MR number + year range extraction from original filenames, RMN-based cross-folder duplicate detection, and name normalization patterns after multiple rename passes. Includes critical pitfalls for regex-on-already-renamed-files.
 - `references/e-khata-filing-workflow.md` — Document filing & WhatsApp notification workflow (Vinod), folder hierarchy map, naming examples
 - `references/kannada-land-doc-ocr-patterns.md` — Complete Kannada OCR keyword mapping table for Karnataka land documents (MR, EC, RTC, Sale Deed, GPA, Tippani, etc.) with classification priority, performance notes, file size heuristics, and setup commands for kan.traineddata
-- `references/ranka-iris-document-set.md` — Worked example: complete Ranka Iris 25-document legal set with file paths, index mapping, and revenue document chain
 - `references/required-docs-procurement-sources.md` — The "Obtain From" column from Prakash's PDF: where each of the 34 required document types is procured (Tahsildar Office, Sub-Registrar Office, ADLR Office, Gram Panchayat, etc.)
 - `references/survey-wise-land-doc-organization.md` — Full worked example from the Ramanagar project: Sy No extraction regex, Drive inventory structure, folder creation, file move patterns, naming convention examples, master sheet format, and rename execution details
 - `references/bbmp-memorandum-bifurcation-draft.md` — BBMP Memorandum template analysis with draft column workflow: extract template blanks, search Drive for project data (Area Statement, Khata, Plan Sanction), present as row/column table with proposed content, wait for user confirmation before generating final document

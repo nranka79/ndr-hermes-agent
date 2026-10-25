@@ -7,6 +7,81 @@
 
 ---
 
+## ⚠️ EXTENT CORRECTION (Sept 2026) — READ BEFORE USING THE NUMBERS BELOW
+
+The amalgamated extent of this property is **53,148 sq ft (4,937.6 sq m)**, NOT 53,089.
+
+The authoritative source is the **e-Khata Certificate** itself (verified Sept 2026 by direct
+read of the PDF — it has a vector text layer, no OCR needed):
+
+| Field | Value |
+|---|---|
+| Property No. | 591/1077/14/1/1 |
+| New ePID No. | 4457904186 |
+| e-Khata Document No. | 2844641 |
+| **Site Area** | **4,937.6 Sq.Mt / 53,148 Sq.Ft** |
+| Site Dimension | 284 x 187.1 / 86.6 x 57 |
+| Type of Ownership | Vacant Site |
+| Owners (joint) | Lakshmi Vaidyanathan, R Geeta Swaminathan, Sunder Padmanabhan, **Kankshita Swaminathan**, V Swaminathan, Sreeraman Vaidyanathan, A S Vaidyanathan |
+| Drive ID | `1CB2COm3SOpzoy8UFNwImjeoB0wNAG2C9` (e-Khata Allalsandra Site 1 to 8.pdf, 805 KB) |
+
+**Where 53,089 comes from and why it is wrong:** the JDA/assignment recital narrative says
+"approximately measuring 53,089 square feet or 1 Acre 8½ Guntas". The title report (Anup Shah,
+06.06.2020) repeats 53,089 in its property-description paragraph — **but that same report's own
+site-by-site schedule totals 53,148** ("Total 53148 square feet (1 Acre 8½ Guntas)"). The
+schedule and the e-Khata agree at 53,148; the 53,089 narrative is the outlier.
+
+**Trap:** a naive grep for the extent surfaces 53,089 first (it appears in the narrative
+paragraphs), and it is easy to quote it into a registrable instrument. Always reconcile the
+narrative figure against the schedule total AND the e-Khata before drafting.
+
+### Per-site schedule (matches e-Khata total of 53,148 exactly)
+
+| Site | BBMP Khata No. | Extent (sq ft) | Owner |
+|:--:|---|---:|---|
+| 1 | 591/1077/14/1/1 | 9,600 | R Geeta Swaminathan |
+| 2 | 593/1079/14/1/2 | 7,952 | A S Vaidyanathan |
+| 3 | 594/1080/14/1/3 | 5,970 | Lakshmi Vaidyanathan |
+| 4 | 589/1075/14/1/4 | 6,077 | Sunder Padmanabhan |
+| 5 | 590/1076/14/1/5 | 6,087 | Sreeraman Vaidyanathan |
+| 6 | 595/1081/14/1/6 | 5,118 * | **Kankshita Swaminathan** |
+| 7 | 596/1082/14/1/7 | 5,307 | **Kankshita Swaminathan** |
+| 8 | 592/1078/14/1/8 | 7,037 | V Swaminathan (ex V Rangammal, d. 02.08.2017) |
+| | **TOTAL** | **53,148** | |
+
+\* The title report schedule gives Site 6 as 5,118; DRA's own LO-share working sheet gives
+5,115 (4,015 site + 1,100 passage). Use 5,115 when aligning to the sharing agreement.
+
+**Kankshita Swaminathan's undivided share:** 5,115 + 5,307 = **10,422 sq ft = 19.61%** of 53,148.
+(The title-report schedule basis gives 10,425 = 19.62% — 3 sq ft difference from the Site 6 discrepancy.)
+
+### Three competing percentage bases for the same owner — do not mix them
+
+The "Allalsandra LO share Details" workbook (`1ZVwZ0oFLDG6g2-mADTaefeoa7OUwLr2vPCwLfwjETC0`)
+carries three different figures and it is easy to quote the wrong one:
+
+| Basis | Denominator | Kankshita's share |
+|---|---|---|
+| "% As per LO" (LO's own measurement) | 46,748 | 22.29% |
+| "% As Per Us" (DRA, excl. passage) | 43,028 | 18.69% |
+| **"% Land Ownership" (of e-Khata title area)** | **53,148** | **19.61%** |
+
+Use **19.61%** for title/registration/GPA purposes — it is the only one tied to the e-Khata.
+The other two are negotiation positions.
+
+### Second e-Khata — Site 10 (separate JDA 3033)
+
+| Field | Value |
+|---|---|
+| Property No. | 570/1084/14/1/10 |
+| New ePID No. | 5839585365 |
+| e-Khata Document No. | 2807266 (issued 13.02.2026) |
+| **Site Area** | **1,124.7 Sq.Mt / 12,106 Sq.Ft** |
+| Owner | Kankshita Swaminathan (spelt "KANKSHITA" in the e-Khata) |
+| Drive ID | `1ISftYLNCmYOWdzgiHXVhgWk1R7rDKBX_` |
+
+---
+
 ## Trigger
 
 User asks to generate a detailed area statement tracing the project land from original JDA through all transactions to the PreDCR plan, with per-transaction area changes and buffer/road deductions.
@@ -26,20 +101,33 @@ User asks to generate a detailed area statement tracing the project land from or
 ### Reading Scanned Legal PDFs Page-by-Page
 
 ```python
-# 1. Download via Drive API
-from tools.gws_vault_client import get_token
-from google.oauth2.credentials import Credentials
-from googleapiclient.discovery import build
-import fitz
+# 1. Download via Drive API — ALWAYS via the sanctioned auth layer.
+# NEVER read a token file, and NEVER hardcode a user id.
+import sys, io
+sys.path.insert(0, '/opt/hermes')
+from tools.gws_auth import build_service
+from googleapiclient.http import MediaIoBaseDownload
 
-tok = json.loads(get_token("psingh-8502281203", "google-draas"))
-creds = Credentials.from_authorized_user_info(tok)
-drive = build('drive', 'v3', credentials=creds)
+drive = build_service('drive', 'v3', service_name='google-draas')
 
 req = drive.files().get_media(fileId="175fTs5c8wU-Zm_xIb1VhX7fKtZNZCLPg")
-with open("/tmp/jda.pdf", "wb") as f:
-    f.write(req.execute())
+with io.FileIO("/tmp/jda.pdf", "wb") as fh:
+    dl = MediaIoBaseDownload(fh, req)
+    done = False
+    while not done:
+        _, done = dl.next_chunk()
+```
 
+**Terminal-run pitfall:** a subprocess may resolve the WRONG session identity (it can land on
+psingh@draas.com's vault key instead of NDR's). Prefix Drive/Gmail python runs with
+`HERMES_SESSION_USER_ID=7449813913` and pass `service_name='google-draas'` explicitly.
+Always assert the returned `owners[].emailAddress` before trusting a write.
+
+**Reading a downloaded PDF (no pymupdf installed on this box):** use the poppler CLI instead —
+`pdftotext -layout file.pdf -` for text layers (e-Khatas, PreDCR drawings), and
+`pdftoppm -png -r 300` → `tesseract -l eng --psm 6` for scans. Check the text-layer route
+first: e-Khata certificates and AutoDCR/PreDCR plans are digitally generated and extract
+cleanly, which is far more reliable than OCR.
 # 2. Convert key pages to images for vision_analyze
 doc = fitz.open("/tmp/jda.pdf")
 for pg in [0, 1, 2, 3, 5, 10, 15, 20, 25, 28, 32, 35]:  # key pages

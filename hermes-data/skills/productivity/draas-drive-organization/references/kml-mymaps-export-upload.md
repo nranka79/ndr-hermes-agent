@@ -48,7 +48,12 @@ print(uploaded['webViewLink'])
 
 ## Delivery
 
-- Give the Drive link in a **code block** (Prakash's Telegram links break otherwise — see user profile).
+- **Format the link for WHO is asking — this is NOT one rule for everyone.**
+  - **Prakash** → Drive link in a **code block** (his Telegram links break otherwise).
+  - **NDR** → the opposite: **plain clickable URLs, explicitly NOT in a code block**
+    (verbatim, 17-Sep-2026: *"give me links over here direct links that I can use not in the
+    code section"*). Bare URL on its own line, short label above it.
+  Getting this backwards draws a visible correction from either user — check the requester first.
 - Include import steps: open My Maps → ⋮ menu → **Import** → select KML from Drive. Mention that `.kmz` (zipped KML) imports more reliably if My Maps rejects a raw `.kml` ("kml file is not supported") — build the KMZ with `zip -j out.kmz in.kml` and upload with `mimetype='application/vnd.google-earth.kmz'`.
 
 ## Pitfall: user frustration on lookup requests

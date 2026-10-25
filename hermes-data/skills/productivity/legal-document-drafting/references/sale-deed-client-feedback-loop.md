@@ -129,7 +129,7 @@ Include a clause referencing:
 ## Contact Search — When Client Says "It's in My Contacts"
 
 When Nishant says "his number is in my contact sheet / Google Phone":
-1. Search the NDR DRAAS Google Contacts sheet (gws_sa for sheets)
+1. Search the NDR DRAAS Google Contacts sheet (`gws_auth.build_service('sheets', 'v4')`; `gws_sa` does not exist — removed 2026-05-08)
 2. Search Google People API (gws_auth for people/v1)
 3. Try MULTIPLE name variations — voice transcriptions can mishear names
 4. If still not found after trying 3+ variations, ask the client for the number directly — but only as last resort

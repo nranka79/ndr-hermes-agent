@@ -1614,3 +1614,25 @@ When presenting price tables/lists to **Prakash (psingh@draas.com)**:
     - Demand profile & growth trajectory
     - How the subject compares specifically vs each corridor's named projects
     - A summary comparison table at the end
+
+## Absorbed siblings — buy-side verdicts (2026-09 consolidation)
+
+- **Land acquisition price verdict** (absorbed `land-acquisition-verdict`): the
+  five-leg acquire / negotiate / walk verdict for an inbound parcel with an asking
+  price — normalise ₹/sqft + ₹/acre, benchmark against recorded paid prices and
+  asking comps, back-solve the max supportable land price from the end-product
+  villa/plot rate, land-as-%-of-revenue, and buy-vs-JD. Never end on a data dump —
+  the deliverable is a verdict with a number. Full workflow:
+  `references/land-acquisition-verdict.md`; solver script:
+  `scripts/solve_land_verdict.py`; worked
+  example: `references/ivc-road-uganavadi-verdict-2026-09.md`.
+- **Co-operative society layout due diligence** (absorbed
+  `cooperative-society-layout-due-diligence`): pre-deal ground truth for buying
+  plots in Karnataka co-op society layouts — the KCS Act 1959 membership-vs-
+  conveyance framework (s.16/17/18/23; buy conveyance, not membership), the
+  pre-development-booking red-flag pattern (30% down + "as-and-when-demanded"
+  instalments, no RERA, approval claims with no sanction file number), BIAAPA
+  approval verification path, ₹/sqft-saleable → per-acre gross pricing sanity
+  (~60% ratio), break-even model and risk register. Full workflow:
+  `references/cooperative-society-layout-due-diligence.md`; worked case
+  (SBI Mid Town / Nandi Greens): `references/sbi-mid-town-nandi-greens-2026-09.md`.

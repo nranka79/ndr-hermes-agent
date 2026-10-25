@@ -52,3 +52,35 @@ When served a recovery notice from a Tahsildar's office, the following tactical 
 
 3. **File a Writ Petition in the Karnataka High Court:**
    * If the Tahsildar threatens coercive action, file a Writ Petition seeking an **interim stay** because the authority is acting *ultra vires* (beyond powers) by attempting to attach properties of legal heirs without due process or exhausting recovery against the principal debtor first.
+
+---
+
+## 5. High Court Mandamus → Stay → Appeal Sequence
+
+A recurring pattern when the Thasildar sits on the attachment proceedings, forcing the decree-holder to move the High Court:
+
+### The sequence
+
+1. **Decree-holder files writ of mandamus** in HC directing the Thasildar to execute the RERA recovery or show cause for inaction
+2. **HC issues rule / mandamus** compelling the Thasildar to act
+3. **Landowner/respondent uses this opening to:**
+   - First approach the same HC for an **interim stay** against the Thasildar's recovery proceedings (on grounds of limited liability u/s 50 CPC, failure to exhaust developer assets, or the RERA order being a nullity due to lack of necessary parties)
+   - Then challenge the entire RERA order before the **Appellate Tribunal** — the stay buys time to prepare a substantive appeal
+
+### Stay petition grounds (for HC)
+
+- **No opportunity to be heard:** Legal heirs of deceased promoter (Dinesh Ranka) were never on record. Ex-parte RERA order passed without notice to actual parties-in-interest — violates natural justice.
+- **Limited liability (CPC Sec 50):** Heirs liable only to the extent of the deceased's property that devolved to them. Self-acquired assets cannot be attached.
+- **Primary liability with developer:** Delay compensation u/s 18 RERA is the developer's primary obligation under the JDA. Thasildar must exhaust developer assets first.
+- **Jurisdictional nullity:** RERA order passed without joining the real respondent (developer) — goes to the root of jurisdiction.
+
+### When this applies
+
+- Ex-parte RERA order against a deceased promoter whose heirs weren't on record
+- Thasildar recovery served on the heirs
+- HC already seized via writ of mandamus / contempt
+- Need for delay tactics: HC stay gives breathing room to prepare Tribunal appeal
+
+### Note
+
+The HC stay is **interim/interlocutory** only. The substantive appeal (challenging the RERA order on merits) must still be filed before the **RERA Appellate Tribunal** within limitation (usually 60 days from the order, or from knowledge if ex-parte). The stay merely preserves status quo — it doesn't substitute for the appeal.

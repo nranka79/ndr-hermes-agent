@@ -1,18 +1,18 @@
 ---
 name: legal-document-drafting
-description: Draft and review Indian legal documents for DRAAS — real estate (sale deeds, RERA, affidavits, PSAs), corporate governance (AoA, shareholder agreements, Companies Act compliance), and commercial arrangements (MOUs, partnership deeds, JVs, channel-partner sales mandates → references/channel-partner-sales-mandates.md; Google Docs tracked edits/new version with highlights → references/google-docs-tracked-edits.md).
+description: Draft/review Indian legal docs for DRAAS — real estate, corporate, commercial, partnership. Refs — share-sale-drafting, tamil-nadu-stamp-duty-land-contribution, channel-partner-sales-mandates, law-firm-opinion-letters, spouse-gift-deeds-and-stridhan.
 triggers:
   - draft a sale deed
-  - prepare legal document
-  - clause-by-clause analysis
-  - partnership deed / reconstitution deed
-  - authorisation letter / power of attorney
-  - commercial arrangement
-  - sole mandate / channel partner agreement review
-  - mou / memorandum of understanding
-  - land aggregation / joint monetisation
+  - legal document draft
+  - clause analysis
+  - investor agreement rate / does the rate exclude clubhouse or other charges → references/ranka-oasis-investor-agreement-terms.md
+  - partnership deed
+  - authorisation / PoA
+  - commercial / sole mandate / channel partner
+  - mou / MOU / land aggregation / JV monetisation
   - deed of declaration
   - karnataka apartment
+  - noc / consent letter / NOC for sub-lease, registered office → references/noc-consent-letters-and-sublease.md
   - draft bye-laws
   
   - update agreement proforma | Drive .docx → scripts/drive_docx_dump.py
@@ -45,19 +45,18 @@ tags:
 - `templates/bbmp-road-cutting-permission-application.md` — BBMP Road Cutting Permission for BESCOM/BWSSB after OC.
 - Guideline Value / Guidance Value certificate letters (Sub-Registrar + JDTP/ADTP): see `references/guideline-value-certificate-letters.md` — two-letter pattern, GPA-holder framing, converted-land wording, scope limitation, python-docx mechanics.
 ## Reference Files
+- `references/police-complaint-condensed-format.md` — **page budget for authority-bound docs: complaint 5–6 pp, evidence <5 pp**; A–L structure, 2-up annexures, build + verify workflow.
 - `references/guideline-value-certificate-letters.md` — Guideline value letters to Sub-Registrar + JDTP/ADTP (two-letter pattern, GPA-holder framing, converted-land, scope limitation).
 - `references/sale-deed-spa-references-patterns.md` — Sale deed generation via python-docx: 10-clause structure, SPA rules (no attorney name, no separate RERA recital), patching workaround for protected files.
 - `references/partnership-deed-analysis.md` — Deed of Declaration & Bye-laws under KOA Act.
 - `references/document-receipt-naming-filing.md` — Receiving docs from counterparties.
 - `references/drive-docx-edit-workflow.md` — Edit .docx in Drive via XML manipulation.
 - `references/rera-affidavit-corrections.md` — RERA affidavit corrections + user preferences.
-- `references/gpa-rera-authority-analysis.md` — GPA clause analysis for RERA signing authority; map clause→power (Approvals, Affidavits, Promoter, General Powers) and cite. Verified on Ranka Amber GPA.
-
-## Ranka Iris OC Review
-
-Trigger: user says "Ranka Iris", "OC correction", "occupancy certificate corrections" or similar for Ranka Iris project. See `references/ranka-iris-oc.md` for full property data, drive IDs, confirmed corrections, and HTML template structure.
-
-**Key known corrections (locked):** See `references/ranka-iris-oc.md` for full details.
+- `references/gpa-rera-authority-analysis.md` — GPA clause→power mapping for RERA signing authority (Ranka Amber GPA).
+- `references/gpa-overseas-landowner-registration.md` — overseas landowner GPA: route trap, OCR path, KYC sourcing, §12A search-NDR's-email-thread-first, §12B conflation traps when reviewing his draft.
+- `references/karnataka-jda-addendum-stamp-duty-46a-defence.md` — SRO demands full duty on a JDA Addendum over an under-stamped Assignment: Sec 34 / 46A(1) / 31.
+- `references/gpa-overseas-landowner-registration.md` — Fresh GPA for an overseas/absent landowner + consulate & District-Registrar route; power groups A–G; cancellation/revocation head; amalgamation-deed title backbone; scanned title-PDF OCR path; party KYC sourcing. Verified on Ranka North Star / Allalasandra (Kankshita → V. Swaminathan).
+- `references/allalasandra-amalgamation-deed-2014.md` — Allalasandra Sites 1–8 Amalgamation Deed (04/02/2014): 7 parties, per-site khata/dims/area + road share, Schedule A–G, 53,148 sqft amalgamated schedule with boundaries, per-site sale-deed chain, clauses K–O. Read instead of re-OCR'ing the scan.
 
 ---
 
@@ -133,21 +132,17 @@ Key formatting rules:
 - Architect: **Finding Form Design Studio** (#204-206, 2nd floor, Prism Greystone, Cunningham Road, Bangalore 560001) — this address appears in the stilt floor plan drawing
 - **LP Number in SSA (`BBMP/CC/4247/26-27`) does NOT appear in the actual Building License** — actual license numbers are `GBA/MDP/DDTP/0007/26-27` and `GBA/BECC/0540/25-26` — always verify SSA LP citations against the physical BBMP license document
 
-**Ranka Amber known facts (May 2026):**
-- BBMP LP No: **SSA cites `BBMP/CC/4247/26-27` but actual Building License uses `GBA/MDP/DDTP/0007/26-27` (file ref) and `GBA/BECC/0540/25-26` (project ref)** — verify which LP number the SSA should reference
-- Plan acceptance: 07-May-2026 (Building License date)
-- Property: D'Silva Layout, Pattandur Agrahara, Whitefield
-- Total BUA (BBMP sanctioned): **3,383.17 sq.m** — SSA states 4,686.72 sq.m (38.5% overstatement — verify before using SSA figures for sharing calculations)
-- Total saleable area: 27,543.25 sft (Block A only)
-- 50:50 sharing, 20 units: LO = 101–105, 401–405 (10 units); DEV = 201–205, 301–305 (10 units)
-- Possession target: 07-Nov-2028 (RERA date = 30 months from plan acceptance 07-May-2024)
-- Parking: 21 slots — slots 1,3,5,7,9,11,13,15,17,19 (LO); 2,4,6,8,10,12,14,16,18,20 (DEV); 21 (visitor)
-- Clause 11: deviation acknowledgment (minor parking orientation changes permissible, slot count must be maintained)
-- No irrevocable POA (developer does not sell landowner units)
-- Area deficit: sanctioned plan baseline, shortfall party compensates so landowner receives minimum committed share
-- Stamp duty + registration: borne by developer
-- Signature block: First Party = Mr. Raghu Iyer & Mrs. Farida Iyer; Second Party = M/s DRA Realty Private Limited
-- Developer name in Building License: "DRA REALIY PRIVATE LIMITED" (typo — missing T; SSA says "DRA REALTY")
+**Ranka Amber project facts (unit allocations, parking split, BBMP LP numbers, REDSOUL/PPA
+detail, cross-check red-flag patterns):** these now live in
+`references/ranka-amber-sharing-agreement-may2026.md`,
+`references/ranka-amber-ssa-building-license-crossref.md`,
+`references/ranka-amber-redsoul-ppa.md` and
+`references/ranka-amber-ssa-vs-plan-sanction-crosscheck-june2026.md`. Load those rather than
+re-deriving. Key standing warnings kept inline: BBMP LP number in the SSA
+(`BBMP/CC/4247/26-27`) does **not** match the actual Building License
+(`GBA/MDP/DDTP/0007/26-27` / `GBA/BECC/0540/25-26`) — always verify SSA LP citations against
+the physical license; and a Drive PDF named "Plan Sanction" may actually contain a PSA —
+always vision-check page 1 before assuming a file's contents match its filename.
 
 **Document comparison direction — CONFIRM before drafting:** When the user says "compare Doc A and Doc B" or "track changes," FIRST confirm which document is chronologically earlier. User may correct the direction mid-session. In the June 2026 Ranka Amber session: user clarified SSA (PDF, Aug 2025) = earlier, JDA Addendum (Google Doc, recent) = recent — comparison flows SSA → JDA Addendum (what was ADDED/REMOVED in the newer version). Always state the direction explicitly before starting the comparison: "Comparing [Earlier Doc] → [Recent Doc]: changes from the earlier to the recent version."
 
@@ -437,7 +432,7 @@ Do NOT use `exec_code` for zipfile read/write cycles on `.docx` files.
 
 22. **Drive-only research — no external browser searches** — If the user explicitly says "documents are in my drive" or "no browser search needed," do NOT attempt browser navigation. Exhaust Drive search first: (a) `name contains '<term>'`, (b) `fullText contains '<term>'` for content search, (c) MIME type filtering, (d) parent folder browsing. Only escalate to external tools if Drive searches return no relevant results and the user explicitly requests external research.
 
-23. **Drive SA upload failure → fallback to Telegram** — When `tools.gws_sa.build_service('drive', 'v3', 'ndr@draas.com')` raises `KeyError: 'GOOGLE_SA_KEY'` (SA key not set in environment), upload cannot proceed. Workaround: send the file directly via Telegram using `send_message` with `media=path` (Hermes auto-detects `.docx` and sends as document). Do not retry Drive upload in the same session — use Telegram as the reliable fallback for document delivery.
+23. **Drive upload as ndr@draas.com — use gws_dwd_tools, not gws_sa** — `tools.gws_sa` does not exist in this deployment (removed 2026-05-08) and will raise `ModuleNotFoundError`, not the old `KeyError: 'GOOGLE_SA_KEY'`. For uploading/impersonating ndr@draas.com specifically, use `tools.gws_dwd_tools` (admin-gated DWD path). If that's unavailable or fails, fall back to sending the file directly via Telegram using `send_message` with `media=path` (Hermes auto-detects `.docx` and sends as document) rather than retrying Drive upload in the same session.
 
 22. **Mirabilis Addendum Drive download — requires OAuth, not public URL** — The KPDL Mirabilis Addendum file (ID: `0Bw-tZQ5aDnc3ODhMQ1JfOVFJTWs`) cannot be downloaded via gdown or public URL — it redirects to Google sign-in. Use `drive.files().get_media()` with the user's OAuth token (via `tools.gws_auth.build_service('drive', 'v3')`). If that also returns a sign-in redirect, the file must be shared with the user's @draas.com account first before it can be accessed programmatically.
 
@@ -821,8 +816,6 @@ When searching for "family settlement" or "family arrangement" in Drive, the **r
 - `references/mirabilis-kpdl-document-family.md` — Mirabilis / KPDL / Colte Patel document family
 - `references/google-docs-api-table-coloring-limitation.md` — Google Docs API table cell red color workaround (June 2026 session)
 - `references/ssa-vs-csv-sba-discrepancy-ranka-amber.md` — SSA v3 per-unit SBA vs Area Statement CSV discrepancy (June 2026 session)
-- `references/ranka-iris-bbmp-oc-license-fee-letter-25may2026.md` — Ranka Iris OC license fee letters
-- `references/ranka-iris-oc-demand-undertakings-29may2026.md` — Ranka Iris OC demand undertaking letters
 - `references/dra-entity-gst-registrations.md` — all DRA entity GSTINs, CINs, registered addresses
 - `references/krera-preregistration-form-filling.md` — KRERA Form-2/Form-3/Allotment Letter/Agreement of Sale filling: data sourcing from plan sanction, area statement, BOQ, JDA/GPA/EC; DOCX multi-run placeholder technique; SIS spreadsheet update pitfalls; estimated cost integration
 - `references/ranka-oasis-slp-mortgage-sba-chain.md`
@@ -840,7 +833,7 @@ When searching for "family settlement" or "family arrangement" in Drive, the **r
 - `references/cma-742-pavan-kumar-vs-srinivas-krishnappa-case-master.md` — Full case Master Notes for CMA 742/2026: parties, transactions (B-schedule vs Kakkannur), bank trails, 10 grounds for dismissal, legal doctrines (approbate/reprobate, O38 R5, capital contribution test), Section 138 notice as formal admission, and advocate details (June 2026 session with Nishant Ranka)
 - `references/legal-services-scope-master-list.md` — Complete 9-section Master List of Legal Services for Real Estate (Preliminary DD, Detailed DD, Physical Verification, Boundary Establishment, Documentation, Litigation Support, Customer Support, RERA, Document Management). Sent to Sadananda Naganur (Sep 2024). Use when engaging a new law firm — send this scope and ask them to identify gaps. Gmail ID: 191dbd899f7acf56.
 
-**Updated June 2026:** Complete CMA 742/2026 defense brief now embedded in reference file above — includes 10-ground opposition strategy, money trail analysis, sequence of events, case law citations, counter memorandum structure, and advocate talking points for hearing on 3 June 2026.
+**Updated June 2026:** CMA 742/2026 defence brief is embedded in the case-master reference file above (10 grounds, money trail, counter memorandum, advocate talking points).
 
 ## Absorbed Skills (2026-05-29)
 
@@ -878,7 +871,7 @@ When searching for "family settlement" or "family arrangement" in Drive, the **r
 
 **⚠️ SSA Google Doc access via export_media:** Google Docs (mimeType `application/vnd.google-apps.document`) require `drive.files().export_media(fileId=ID, mimeType='text/plain')` — NOT `get_media()` which returns 403 "Only files with binary content can be downloaded". Binary PDFs use `get_media()`.
 
-**⚠️ OC Draft PDF not yet found — session paused:** The user said they attached an OC draft PDF and 11 voice notes (0-1 through 0-11) but these did not arrive in this session. The Excel file `Design for Ranka Iris_OCD Draft_R1.xlsx` (ID: `1AvqpMG5uQf6PcVbuYn3MOikvsVY26N0b`) is a 2021 work order for Office of Cognitive Design — **NOT** an Occupancy Certificate draft. When the user asks to review an OC draft, confirm the attachment arrived before proceeding. If no attachment is visible, ask the user to resend.
+**⚠️ OC Draft PDF not yet found — session paused:** The Excel file `Design for Ranka Iris_OCD Draft_R1.xlsx` (ID: `1AvqpMG5uQf6PcVbuYn3MOikvsVY26N0b`) is a 2021 work order for Office of Cognitive Design — **NOT** an Occupancy Certificate draft. When asked to review an OC draft, confirm the attachment arrived before proceeding.
 
 ---
 
@@ -914,7 +907,7 @@ When searching for "family settlement" or "family arrangement" in Drive, the **r
 - Each correction linked to the relevant row/field
 - Output: `/tmp/RankaIris_OC_Corrections_HTML.html` — open in browser, forward to BBMP department
 
-**⚠️ Voice note naming convention:** Numbered `0-1` through `0-11` — user explicitly said "voice notes 0 1 to 0 11". Sort audio cache by recency, filter by session date, match by numbering in the transcribed output.
+**⚠️ Voice note naming convention:** numbered `0-1` through `0-11` — sort the audio cache by recency, filter by session date, match by the numbering in the transcribed output.
 
 ---
 
@@ -1088,7 +1081,6 @@ This was the confirmed approach for cross-checking Bharat's edits to the Embassy
 | Katha number mismatch (Schedule A vs. BBMP) | SSA Schedule A vs. Plan Sanction | SSA Schedule A may show E-Katha/PID `7055785976` while BBMP sanction plan shows Khata `7057785976` — fourth digit differs. E-Katha (PID) and Khata are different numbering systems. Verify against original Khata Extract before treating either as correct. |
 | Spouse name spelling inconsistency | JDA vs. SSA vs. Schedule A | Landowner spouse appears as "Farida" in some docs and "Faridah" in others (e.g., JDA Addendum recital vs. SSA Schedule A footnote). Pick one spelling and use consistently throughout all documents to avoid registration issues. |
 | RERA status inconsistent within same document | SSA §2 vs. §15 | Section 2 states "RERA registration to be obtained"; Section 15 counts down from "date of RERA registration (target: 7th November 2028)" — implying registration is complete. Schedule F shows "To be filled upon receipt." Three conflicting positions in one document. Confirm actual RERA status before execution and harmonize all three references. |
-| Companies Act year wrong (2013 vs 1956) | JDA Addendum vs. actual | DRA Realty incorporated under Companies Act 1956 (CIN: U70100KA2011PTC058105); JDA Addendum cited 2013 — wrong Act reference |
 
 ### Confirm Before Acting
 

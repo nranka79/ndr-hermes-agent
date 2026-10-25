@@ -75,5 +75,4 @@ is noise; do not present it as evidence.
 
 ## Related
 
-- `references/ranka-iris-document-set.md` — the Iris inventory this was verified against.
 - `draas-drive-organization` — Drive search/move mechanics, cross-account handling.

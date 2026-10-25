@@ -11,6 +11,10 @@ When the user says "open the [property name] [document type] from the drive" via
 | "Kingfisher Tars" | **Kingfisher Towers** | Property name + the Towers mistranscription |
 | "Flow plan for Kingfisher" | **Kingfisher Towers — Floor Plan** | Compound query: property plus doc type |
 | "KFT plan" | **Kingfisher Towers — Floor Plan** | KFT = acronym for Kingfisher Towers, "plan" = floor plan |
+| "Ranka Vasis" | **Ranka Oasis** | /oʊ/ → /vɑ/ onset swap — the initial vowel is transcribed with a phantom 'V' (verified 2026-09-11: user said "Ranka Vasis", meant Oasis; NO "Vasis"/"Vasthi" project folder exists anywhere on Drive, so don't burn time searching variants — check the similiar project name list first) |
+| "Vasthi"/"Vashis" (context: project list) | **Oasis** (if preceded by "Ranka") | Same family as Vasis→Oasis; only use the medical "Dr Vasisth" spelling when the topic is NDR's health docs, NOT projects |
+| "IBC Colasso" / "IBC road Colasso" | **IVC + Colaso** case docs (Ronald Colaso, IVC Khimji Patel matter) | "IBC" → IVC (case prefix, not bankruptcy code); "Colasso/Collaco" → **Colaso** per the executed agreement. See `references/ivc-colaso-rrv-rrp-context.md` for folderr map + RRV vs RRP disambiguation |
+| "Ranka Raj Properties" (when hunting Colaso/IVC docs) | Actually **Ranka Raj Ventures (RRV)** — RR Ventures → Ivc kimji folder | No "Ranka Raj Properties" folder exists; RRP is a separate entity (OS 553 vs South Pacific). Verify entity from the agreement's party clause, not NDR's guess |
 
 ## Search Strategy
 

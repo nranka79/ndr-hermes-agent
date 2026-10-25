@@ -10,6 +10,52 @@ license: MIT
 
 Class-level umbrella for all DRAAS real estate legal and regulatory compliance work. Consolidates property title due diligence, RERA registration document processing, and land document management.
 
+## Development Rights Certificates (DRC / TDR) — a different asset class
+
+Full playbook: `references/drc-tdr-purchase-due-diligence.md` (gunta/2.0-FAR arithmetic, vendor-report reliance checks, limitation-based 30-year closure, DC search-letter ask, EC continuity failures, consent-decree limits, award-vs-TDR double-dip, two-audience output, and the SHORT counterparty-counsel email rule).
+
+> Reviewing a **vendor's** title report on a DRC/land parcel (buy-side verdict,
+> 30-year window rule, grant-record-unavailability arguments, EC-vs-register
+> cross-check, cash-vs-TDR double-dip, two-audience output rule, requisition
+> list, and the Byrathi DRC 2092500023 worked example):
+> `references/vendor-title-report-review.md`.
+
+A DRC is **not land**. It is a transferable FAR credit issued in lieu of cash
+compensation for land acquired by BDA/GBA. Title to the certificate and
+*usability* of the certificate are two separate questions, and a land-side
+title report answers only the first. When NDR forwards a broker's DRC proposal
+with an advocate's title report, grade the report as usual AND run the
+instrument checks a land opinion never covers: certificate face with annexures,
+GBA TDR Cell ledger confirming valid + wholly unutilised + not under recovery,
+transferability/endorsement mechanics and fees, validity period, utilisation
+charges and the FAR coverage cap at the receiving plot, and e-Khata for the
+DRC. Written answers from the TDR Cell matter more to valuation than any deed.
+
+Two checks unique to DRCs, both high-yield:
+- **Cash-versus-TDR reconciliation.** The award section usually fixes a rupee
+  figure and a later paragraph says the owners elected TDR instead. The report
+  almost never says whether the cash was drawn. If both were issued for the
+  same extent the DRC is exposed to recall — an asset-level risk, not a title
+  one. Look for a payee-signed voucher and cheque number in the BDA file; an
+  unsigned voucher with a blank cheque number is good news, not proof.
+- **Jurisdictional seam.** Acquisition and payment are done by BDA; the
+  certificate is issued by GBA. Recall, defective endorsement and
+  validity disputes all sit on that seam.
+
+Deliverable split (NDR's standing instruction for broker-sourced deals): the
+full due diligence report is **internal only**; exactly one clearly-labelled
+section — the pending-documents requisition — is shared with the broker. When a
+counterparty's DD team (e.g. Godrej Ventures) asks for documents, reply inside
+their existing thread with Drive view-links, our reading, ranked red flags, an
+item-by-item status table against their own numbered request list, and the
+framing *"our opinion is qualified; that is our gate, not a reason for you to
+wait — start your DD now, I will confirm when the file is clean."* Never send
+— draft only.
+
+See `references/drc-tdr-due-diligence.md` for the full checklist, the Karnataka
+BDA→GBA process chain, the arithmetic, the requisition groups, and the worked
+Byrathi Sy 118/1 example.
+
 ## Grading a lawyer's title report (critique, not re-do)
 
 When NDR forwards an advocate's title report or opinion and asks for *"your
@@ -813,7 +859,6 @@ CA/2018/100260, Engineer Loganathan M BCCL/BL-3.6/E-0293/24-25.
 
 ## References
 
-- **Ranka Iris utility permissions — BWSSB NOC + BBMP road cutting** (`references/ranka-iris-bwssb-bbmp-permissions.md`): the answer shape for "what does the BWSSB road cutting permission say about pipes". **There is NO BWSSB road-cutting permission for Iris** — road cutting is a BBMP matter; BWSSB issues only the connection NOC. The BBMP permission (AEE/Dom/RC-2/2026-27, 05/08/2026, ₹3,65,500) specifies only per-utility cut **lengths** (water 3m / sanitary 9m / electrical 30m), **no pipe count and no diameter**; the 12-Dec-2014 BWSSB NOC carries 24 conditions (incl. no sanitary points in basement; dual piping blue/orange) and **no pipe sizes** either. Also flags the mis-named Aug-2026 road-cutting pair and the **Allalasandra (not Iris)** 2016 NOC that *does* carry 100 mm DI pipe language.
 - `references/bmtf-notice-defense-workflow.md` — BMTF police notice handling: triage checklist, legal defects to assert, 4-phase defense strategy, document production matrix, and NDR's zero-cost delegation pattern. Use this when a BMTF/police notice arrives for any DRAAS project.
 
 See the individual absorbed skills for full reference file listings:

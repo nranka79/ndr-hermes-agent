@@ -6,7 +6,7 @@ NDR has **two distinct staging folders** on Google Drive. They are NOT the same,
 
 | Folder | Drive ID | When NDR says |
 |---|---|---|
-| **Temp** | `0B1Oc8cSaJXPGMFFCRWtqQ2lqSDQ` | "I added it to **temp**" / "I uploaded it to the temp directory" — this is the folder NDR himself uploads files to from his phone/browser |
+| **Temp** | `1vlQEyowkoteWroTgqONAjbHqiOzd4CHm` | "I added it to **temp**" / "I uploaded it to the temp directory" — this is the folder NDR himself uploads files to from his phone/browser. NOTE (2026-09-14): the old Temp id `0B1Oc8cSaJXPGMFFCRWtqQ2lqSDQ` now returns 404 (folder gone); recreated a new `Temp` folder at My Drive root with the id above. Re-verify with the name query before relying on any stored id. |
 | **TMP** | `18p74II2uL32sNDzDDwXzmlOUdJJOTmE-` | Used by the agent for staging files before filing. NOT the same as "Temp" |
 
 ## Detection Workflow
