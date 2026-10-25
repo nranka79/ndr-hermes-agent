@@ -143,3 +143,9 @@ hermes-data/users.json
 *.bak-*
 *.orig
 *.rej
+
+# Secrets staged in tools/ by mistake should never be committed (found 2026-10-25,
+# orphaned WhatsApp multi-tenant pilot tokens, unwired, plaintext).
+tools/.wa_pilot_tokens.env
+*.env
+!.env.example
