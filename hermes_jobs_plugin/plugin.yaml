@@ -1,0 +1,7 @@
+name: hermes-jobs
+version: 0.1.0
+description: "Job spine — turns a standalone instruction from any surface into its own fresh, parallel Hermes session with a visible ledger on the shared kanban board. Jobs park for human input instead of blocking, and never auto-retry or auto-die."
+author: "NDR / DRAAS"
+provides_tools:
+  - job_clarify
+  - job_complete

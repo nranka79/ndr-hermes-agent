@@ -1,0 +1,83 @@
+# DRAFT -- not yet applied to /opt/hermes/docker-compose.prod.yml.
+#
+# Two NEW, ISOLATED services. Neither touches hermes-hermes-1 or
+# hermes-apps-1 in any way -- same discipline as the rest of this build.
+# Both join the implicit default project network (hermes_default), same
+# as every other service in the file (there is no explicit top-level
+# `networks:` key on hermes/hermes-apps/etc. today -- only content-view
+# declares one, for its own isolation reasons unrelated to this).
+#
+# Paste both blocks into docker-compose.prod.yml under `services:`, then:
+#   docker compose -f docker-compose.prod.yml config   # validate first
+#   docker compose -f docker-compose.prod.yml up -d --no-deps jobs-board jobs-oauth2-proxy
+#
+# board_server.py and static/ ride along for free: they live under
+# /opt/hermes/hermes-data/plugins/hermes_jobs/, which is the SAME host
+# path already bind-mounted as /data/hermes everywhere else. No new
+# bind-mount, no custom image, no Dockerfile.
+
+  jobs-board:
+    image: hermes-hermes:latest
+    container_name: hermes-jobs-board-1
+    restart: always
+    command: ["python3", "/data/hermes/plugins/hermes_jobs/board_server.py"]
+    working_dir: /data/hermes/plugins/hermes_jobs
+    ports:
+      - "127.0.0.1:8900:8900"
+    volumes:
+      - /opt/hermes/hermes-data:/data/hermes
+    environment:
+      BOARD_PORT: "8900"
+      HERMES_STT_URL: "http://hermes-apps:8100/transcribe"
+      # Deliberately NOT API_SERVER_KEY / HERMES_API_BASE -- this service
+      # only reads/writes kanban.db and the free-whisper gateway today.
+      # Add them here if a future "trigger job now" button needs /v1/runs.
+
+  jobs-oauth2-proxy:
+    image: quay.io/oauth2-proxy/oauth2-proxy:v7.6.0
+    container_name: hermes-jobs-oauth2-proxy-1
+    restart: always
+    depends_on:
+      - jobs-board
+    ports:
+      - "127.0.0.1:4182:4180"
+    volumes:
+      - /opt/hermes/oauth2-proxy-jobs/emails.txt:/etc/oauth2-proxy/emails.txt:ro
+    environment:
+      # Reuses the SAME Google OAuth client as chat.ahfl.in (NDR adding
+      # https://jobs.ahfl.in/oauth2/callback as an additional authorized
+      # redirect URI on that client in Google Cloud Console -- a client
+      # supports multiple redirect URIs, no new OAuth app needed).
+      OAUTH2_PROXY_CLIENT_ID: ${GOOGLE_CLIENT_ID}
+      OAUTH2_PROXY_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET}
+      # Fresh secret, NOT shared with chat's -- separate app, separate
+      # session material. Generate with: openssl rand -base64 32 | cut -c1-32
+      OAUTH2_PROXY_COOKIE_SECRET: ${JOBS_OAUTH2_PROXY_COOKIE_SECRET}
+    # client-id / client-secret / cookie-secret are deliberately NOT passed
+    # as entrypoint flags: oauth2-proxy natively reads the OAUTH2_PROXY_*
+    # env vars set above (OAUTH2_PROXY_CLIENT_ID -> --client-id, etc).
+    # Passing them again here would just be a second, redundant (and
+    # earlier, broken-syntax) way of doing the same thing.
+    entrypoint:
+      - /bin/oauth2-proxy
+      - --provider=google
+      - --cookie-secure=true
+      - --cookie-domain=.ahfl.in
+      - --cookie-name=_oauth2_proxy_jobs
+      - --http-address=0.0.0.0:4180
+      - --redirect-url=https://jobs.ahfl.in/oauth2/callback
+      - --authenticated-emails-file=/etc/oauth2-proxy/emails.txt
+      - --email-domain=*
+      - --skip-provider-button=true
+      - --skip-auth-route=^/manifest.json$
+      - --skip-auth-route=^/sw.js$
+      - --skip-auth-route=^/icons/.*$
+      - --reverse-proxy=true
+      - --pass-user-headers=true
+      - --set-xauthrequest=true
+      # 240s: must exceed the free-whisper gateway's own worst case
+      # (whisper attempt ~90s + internal AssemblyAI fallback ~120s, per
+      # stt_wrapper.sh's own comments) plus margin -- a short timeout
+      # here would 502 a slow-but-succeeding dictation.
+      - --upstream-timeout=240s
+      - --upstream=http://jobs-board:8900/
