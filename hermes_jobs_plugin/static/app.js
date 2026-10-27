@@ -129,6 +129,15 @@ async function apiPostForm(path, fields, files) {
   return data;
 }
 
+function markUpdated() {
+  const el = $("#lastUpdated");
+  if (!el) return;
+  const now = new Date();
+  el.textContent = "Updated " + now.toLocaleTimeString(undefined, {
+    hour: "2-digit", minute: "2-digit", second: "2-digit",
+  });
+}
+
 async function loadJobs() {
   try {
     const data = await apiGet("/api/jobs");
@@ -144,9 +153,32 @@ async function loadJobs() {
         refreshOpenJob();
       }
     }
+    markUpdated();
   } catch (e) {
     console.error(e);
     showToast("Could not load jobs");
+  }
+}
+
+// Wraps loadJobs() with visible feedback for an explicit tap on the
+// refresh button -- spins the icon, disables the button so a second tap
+// can't pile up a duplicate request, and toasts a one-line confirmation.
+// The silent 5s background poll still calls loadJobs() directly and only
+// shows through the "Updated HH:MM:SS" label (markUpdated), which both
+// paths share -- no visible refresh ever happens without that label
+// moving.
+async function manualRefresh() {
+  const btn = $("#refreshBtn");
+  const icon = $("#refreshIcon");
+  if (btn.disabled) return;
+  btn.disabled = true;
+  icon.classList.add("spinning");
+  try {
+    await loadJobs();
+    showToast("Jobs updated");
+  } finally {
+    icon.classList.remove("spinning");
+    btn.disabled = false;
   }
 }
 
@@ -760,7 +792,7 @@ function init() {
     tab.onclick = () => setLane(tab.dataset.lane);
   });
 
-  $("#refreshBtn").onclick = loadJobs;
+  $("#refreshBtn").onclick = manualRefresh;
   $("#composerCancel").onclick = closeComposer;
   $("#composerSubmit").onclick = submitComposer;
 

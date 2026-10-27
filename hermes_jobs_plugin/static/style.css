@@ -70,6 +70,16 @@ body.modal-open { overflow: hidden; }
   border-radius: 8px;
 }
 .icon-btn:hover { background: var(--surface-2); }
+.icon-btn #refreshIcon { display: inline-block; }
+.icon-btn #refreshIcon.spinning { animation: spin 0.7s linear infinite; }
+.icon-btn:disabled { opacity: 0.6; cursor: default; }
+@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+
+.last-updated {
+  font-size: 11px;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
 
 .tabs {
   display: flex;

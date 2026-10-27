@@ -9,13 +9,16 @@
 <link rel="apple-touch-icon" href="icons/icon-192.png">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<link rel="stylesheet" href="style.css?v=20261027e">
+<link rel="stylesheet" href="style.css?v=20261027f">
 </head>
 <body>
 <header class="topbar">
   <h1>Hermes Jobs</h1>
   <div class="topbar-actions">
-    <button id="refreshBtn" class="icon-btn" aria-label="Refresh" title="Refresh">&#x21bb;</button>
+    <span id="lastUpdated" class="last-updated" aria-live="polite"></span>
+    <button id="refreshBtn" class="icon-btn" aria-label="Refresh" title="Refresh">
+      <span id="refreshIcon">&#x21bb;</span>
+    </button>
   </div>
 </header>
 
@@ -124,6 +127,6 @@
 
 <div id="toast" class="toast hidden"></div>
 
-<script src="app.js?v=20261027e"></script>
+<script src="app.js?v=20261027f"></script>
 </body>
 </html>
