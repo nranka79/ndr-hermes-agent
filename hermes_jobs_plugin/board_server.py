@@ -44,7 +44,20 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 logger = logging.getLogger("jobs-board")
 
 STATIC_DIR = Path(__file__).parent / "static"
-STT_URL = os.environ.get("HERMES_STT_URL", "http://hermes-apps:8100/transcribe")
+# Same STT chain as chat.ahfl.in / voice.ahfl.in, but addressed through the
+# AI Model Gateway (llm-gateway) so jobs dictation shares the central
+# Groq -> AssemblyAI fallback pools. The voice-app bridge and the legacy
+# free-whisper endpoint remain as fallbacks (see HERMES_STT_FALLBACK_URLS).
+STT_URL = os.environ.get(
+    "HERMES_STT_URL", "http://llm-gateway:8321/v1/audio/transcriptions",
+)
+STT_FALLBACK_URLS = [
+    u.strip() for u in os.environ.get(
+        "HERMES_STT_FALLBACK_URLS",
+        "http://hermes-apps:3000/v1/audio/transcriptions,"
+        "http://hermes-apps:8100/v1/audio/transcriptions",
+    ).split(",") if u.strip()
+]
 AUTH_HEADER = "X-Forwarded-Email"
 
 # Cosmetic display labels only (see module docstring) -- never used for
@@ -57,6 +70,8 @@ _DISPLAY_NAMES = {
 
 def _display_origin(job: Dict[str, Any]) -> str:
     platform = job.get("origin_platform") or "cli"
+    if platform == "web":
+        return "jobs.ahfl.in"
     chat_id = job.get("origin_chat_id") or job.get("tenant") or ""
     label = _DISPLAY_NAMES.get((platform, str(chat_id)))
     if label:
@@ -140,6 +155,40 @@ async def api_list_jobs(request: web.Request) -> web.Response:
     return web.json_response({"jobs": jobs, "counts": counts})
 
 
+async def api_create_job(request: web.Request) -> web.Response:
+    """Create a queued job from the board (typed or dictated instruction).
+
+    The gateway's existing job runner claims it from kanban.db exactly as it
+    does a Telegram ``/job`` -- this endpoint only inserts the row, so job
+    creation and execution keep one code path. Origin is ``web`` with no chat
+    id, which means delivery.py deliberately skips chat notifications and the
+    result is read from this board.
+    """
+    body = await request.json()
+    instruction = (body.get("instruction") or "").strip()
+    title = (body.get("title") or "").strip() or None
+    if not instruction:
+        return web.json_response({"error": "instruction is required"}, status=400)
+    who = _who(request)
+    try:
+        job_id = store.create_job(
+            instruction=instruction,
+            title=title,
+            tenant=who,
+            origin_platform="web",
+            origin_chat_id="",
+            origin_thread_id="",
+            origin_message_id="",
+        )
+    except ValueError as exc:
+        return web.json_response({"error": str(exc)}, status=400)
+    job = store.get_job(job_id)
+    data = _serialize(job or {"id": job_id})
+    data["lane"] = LANES.get(data.get("status"), "working")
+    logger.info("job %s created from board by %s", job_id, who)
+    return web.json_response({"ok": True, "job": data}, status=201)
+
+
 async def api_get_job(request: web.Request) -> web.Response:
     job = store.get_job(request.match_info["job_id"])
     if not job:
@@ -200,34 +249,62 @@ async def api_drop(request: web.Request) -> web.Response:
 
 
 async def api_transcribe(request: web.Request) -> web.Response:
-    """Proxy an audio blob to the free-whisper gateway and return text.
+    """Proxy an audio blob to the shared STT chain and return text.
 
-    Lets the PWA's mic button dictate a reply without this container
-    needing its own STT stack -- same internal gateway WhatsApp/voice
-    already use, reached by container DNS name on hermes_default.
+    Primary: the AI Model Gateway's OpenAI-compatible
+    ``/v1/audio/transcriptions`` (same Groq-whisper -> AssemblyAI pools that
+    voice.ahfl.in and chat.ahfl.in dictation use). Fallbacks: the voice-app
+    STT bridge, then the free-whisper gateway's OpenAI-compatible endpoint.
+    The legacy ``/transcribe`` route is not used: it expects a raw audio body,
+    while this PWA sends multipart.
     """
     reader = await request.multipart()
     field = await reader.next()
-    if field is None or field.name != "audio":
+    if field is None or field.name not in ("audio", "file"):
         return web.json_response({"error": "expected multipart field 'audio'"}, status=400)
     audio_bytes = await field.read(decode=False)
+    if not audio_bytes:
+        return web.json_response({"error": "empty audio upload"}, status=400)
+    if len(audio_bytes) > 25 * 1024 * 1024:
+        return web.json_response({"error": "audio too large"}, status=413)
 
-    form = FormData()
-    form.add_field("file", audio_bytes, filename="audio.webm", content_type="audio/webm")
-    try:
-        async with ClientSession() as session:
-            async with session.post(STT_URL, data=form, timeout=230) as resp:
-                if resp.status != 200:
-                    detail = await resp.text()
-                    logger.warning("transcribe upstream %s: %s", resp.status, detail[:200])
-                    return web.json_response({"error": "transcription failed"}, status=502)
-                result = await resp.json()
-    except Exception:
-        logger.exception("transcribe proxy failed")
-        return web.json_response({"error": "transcription service unreachable"}, status=502)
+    ctype = field.headers.get("Content-Type") or "audio/webm"
+    urls = [STT_URL] + [u for u in STT_FALLBACK_URLS if u and u != STT_URL]
+    last_error = ""
+    async with ClientSession() as session:
+        for url in urls:
+            form = FormData()
+            form.add_field(
+                "file", audio_bytes, filename="audio.webm", content_type=ctype,
+            )
+            try:
+                async with session.post(url, data=form, timeout=230) as resp:
+                    raw = await resp.text()
+                    if resp.status != 200:
+                        last_error = "HTTP %s: %s" % (resp.status, raw[:200])
+                        logger.warning("transcribe %s failed: %s", url, last_error)
+                        continue
+                    try:
+                        result = json.loads(raw)
+                    except Exception:
+                        result = {"text": raw}
+                    text = result.get("text") if isinstance(result, dict) else None
+                    if text:
+                        logger.info(
+                            "transcribed %d bytes via %s", len(audio_bytes), url,
+                        )
+                    return web.json_response({
+                        "text": text or "",
+                        "provider": (result or {}).get("provider") if isinstance(result, dict) else None,
+                    })
+            except Exception as exc:
+                last_error = str(exc)
+                logger.warning("transcribe %s unreachable: %s", url, exc)
 
-    text = result.get("text") if isinstance(result, dict) else None
-    return web.json_response({"text": text or ""})
+    logger.error("all transcription backends failed: %s", last_error)
+    return web.json_response(
+        {"error": "transcription failed", "detail": last_error[:300]}, status=502,
+    )
 
 
 async def api_whoami(request: web.Request) -> web.Response:
@@ -250,10 +327,15 @@ async def serve_index(request: web.Request) -> web.Response:
 # ---------------------------------------------------------------------------
 
 def build_app() -> web.Application:
+    try:
+        store.ensure_schema()
+    except Exception:
+        logger.exception("jobs board: schema check failed (continuing)")
     app = web.Application(middlewares=[auth_middleware])
     app.router.add_get("/health", health)
     app.router.add_get("/api/whoami", api_whoami)
     app.router.add_get("/api/jobs", api_list_jobs)
+    app.router.add_post("/api/jobs", api_create_job)
     app.router.add_get("/api/jobs/{job_id}", api_get_job)
     app.router.add_post("/api/jobs/{job_id}/answer", api_answer)
     app.router.add_post("/api/jobs/{job_id}/continue", api_continue)
