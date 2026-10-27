@@ -31,7 +31,7 @@ import logging
 import os
 import sys
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 sys.path.insert(0, "/data/hermes/plugins")
 sys.path.insert(0, "/opt/hermes")
@@ -77,6 +77,37 @@ def _display_origin(job: Dict[str, Any]) -> str:
     if label:
         return label
     return "%s%s" % (platform, (" " + chat_id) if chat_id else "")
+
+
+def _completed_artifacts(job_id: str) -> List[Dict[str, Any]]:
+    """Return the file list the agent reported via ``job_complete``.
+
+    Reads the most recent ``completed`` task_event's payload -- the only
+    place ``artifacts`` is currently persisted (see ``store.complete_job``).
+    Each entry is re-verified against disk on every call rather than
+    trusted blindly: a file a prior run produced may since have been
+    cleaned up, and this list doubles as the download endpoint's
+    allowlist, so it must reflect what is actually readable right now.
+    """
+    for e in store.list_events(job_id, limit=50):
+        if e["kind"] != "completed":
+            continue
+        try:
+            payload = json.loads(e.get("payload") or "{}")
+        except Exception:
+            payload = {}
+        out: List[Dict[str, Any]] = []
+        for raw_path in payload.get("artifacts") or []:
+            p = str(raw_path)
+            size = None
+            try:
+                if os.path.isfile(p):
+                    size = os.path.getsize(p)
+            except OSError:
+                size = None
+            out.append({"path": p, "name": os.path.basename(p) or p, "size": size})
+        return out
+    return []
 
 
 def _serialize(job: Dict[str, Any]) -> Dict[str, Any]:
@@ -199,7 +230,34 @@ async def api_get_job(request: web.Request) -> web.Response:
         {"kind": e["kind"], "created_at": e["created_at"]}
         for e in reversed(store.list_events(job["id"], limit=50))
     ]
+    data["artifacts"] = _completed_artifacts(job["id"]) if job["status"] == store.ST_DONE else []
     return web.json_response(data)
+
+
+async def api_download_artifact(request: web.Request) -> web.Response:
+    """Stream a file the agent reported producing for this job.
+
+    The only allowlist is "is this path exactly one this job's own
+    ``job_complete`` call reported" -- re-derived fresh from the event log
+    on every request, never trusted from the query string alone. This is
+    what stops the endpoint from becoming an arbitrary-file-read: a path
+    that is not in that job's own artifact list is refused outright,
+    regardless of whether it exists on disk.
+    """
+    job_id = request.match_info["job_id"]
+    job = store.get_job(job_id)
+    if not job:
+        return web.json_response({"error": "not found"}, status=404)
+    requested = request.query.get("path") or ""
+    allowed = {a["path"] for a in _completed_artifacts(job_id)}
+    if not requested or requested not in allowed:
+        return web.json_response({"error": "not a known artifact of this job"}, status=403)
+    if not os.path.isfile(requested):
+        return web.json_response({"error": "file no longer exists on disk"}, status=404)
+    return web.FileResponse(
+        requested,
+        headers={"Content-Disposition": 'attachment; filename="%s"' % os.path.basename(requested)},
+    )
 
 
 async def api_answer(request: web.Request) -> web.Response:
@@ -337,6 +395,7 @@ def build_app() -> web.Application:
     app.router.add_get("/api/jobs", api_list_jobs)
     app.router.add_post("/api/jobs", api_create_job)
     app.router.add_get("/api/jobs/{job_id}", api_get_job)
+    app.router.add_get("/api/jobs/{job_id}/artifact", api_download_artifact)
     app.router.add_post("/api/jobs/{job_id}/answer", api_answer)
     app.router.add_post("/api/jobs/{job_id}/continue", api_continue)
     app.router.add_post("/api/jobs/{job_id}/drop", api_drop)

@@ -32,10 +32,49 @@ function fmtTime(ts) {
   });
 }
 
+function fmtSize(bytes) {
+  if (bytes == null) return "";
+  if (bytes < 1024) return bytes + " B";
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
+  return (bytes / (1024 * 1024)).toFixed(1) + " MB";
+}
+
 function escapeHtml(s) {
   return (s || "").replace(/[&<>"']/g, (c) => ({
     "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
   }[c]));
+}
+
+// Matches a run of http(s):// or www. text with no whitespace/angle-bracket/
+// quote in it, then peels off trailing punctuation that is almost certainly
+// sentence punctuation rather than part of the URL (a closing paren/quote/
+// period right after a link). Operates on the RAW string so an escaped "&"
+// (-> "&amp;") never ends up inside an href; escaping happens per-segment
+// as the string is rebuilt, never on the whole thing up front.
+const URL_RE = /((?:https?:\/\/|www\.)[^\s<>"']+)/gi;
+
+function linkify(raw) {
+  const text = raw || "";
+  let out = "";
+  let last = 0;
+  let m;
+  URL_RE.lastIndex = 0;
+  while ((m = URL_RE.exec(text))) {
+    let url = m[0];
+    let trail = "";
+    while (url.length && /[.,;:!?)\]'"]$/.test(url)) {
+      trail = url.slice(-1) + trail;
+      url = url.slice(0, -1);
+    }
+    if (!url) continue;
+    out += escapeHtml(text.slice(last, m.index));
+    const href = url.startsWith("http") ? url : "https://" + url;
+    out += `<a href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">${escapeHtml(url)}</a>`;
+    out += escapeHtml(trail);
+    last = m.index + m[0].length;
+  }
+  out += escapeHtml(text.slice(last));
+  return out;
 }
 
 function showToast(msg) {
@@ -76,7 +115,7 @@ async function loadJobs() {
     if (activeJobId && !$("#jobModal").classList.contains("hidden")) {
       const j = jobsCache.find((x) => x.id === activeJobId);
       if (j && jobSignature(j) !== sheetSignature && jobModalIsIdle()) {
-        renderJob(j, true);
+        refreshOpenJob();
       }
     }
   } catch (e) {
@@ -176,9 +215,29 @@ function openJob(jobId) {
   const j = jobsCache.find((x) => x.id === jobId);
   if (!j) return;
   activeJobId = jobId;
+  sheetSignature = "";
+  // Render the cheap list-cache version immediately (no blank modal while
+  // the detail call is in flight), then replace it with the full detail
+  // fetch -- the list endpoint deliberately omits events/artifacts to stay
+  // light, so a job only ever shows files/history once this resolves.
   renderJob(j);
   $("#jobModal").classList.remove("hidden");
   updateBodyLock();
+  refreshOpenJob();
+}
+
+async function refreshOpenJob() {
+  if (!activeJobId) return;
+  const jobId = activeJobId;
+  try {
+    const detail = await apiGet(`/api/jobs/${jobId}`);
+    if (activeJobId !== jobId) return; // closed/switched while in flight
+    const idx = jobsCache.findIndex((x) => x.id === jobId);
+    if (idx >= 0) jobsCache[idx] = { ...jobsCache[idx], ...detail };
+    if (jobModalIsIdle()) renderJob(detail);
+  } catch (e) {
+    console.error(e);
+  }
 }
 
 function closeJob() {
@@ -206,14 +265,14 @@ function renderJob(j) {
   </div>`;
 
   html += `<div class="section-label">Instruction</div>
-    <div class="section-body">${escapeHtml(j.instruction || "")}</div>`;
+    <div class="section-body">${linkify(j.instruction || "")}</div>`;
 
   if (j.pending_kind === "clarification") {
     const context = j.question_context
       ? `\n\n${escapeHtml(j.question_context)}`
       : "";
     html += `<div class="section-label">Waiting on you</div>
-      <div class="question-box">${escapeHtml(j.question || "")}${context}</div>
+      <div class="question-box">${linkify(j.question || "")}${context}</div>
       ${j.suggested_options && j.suggested_options.length ? `
         <div class="options-row">
           ${j.suggested_options.map((o) => `<button class="option-chip" data-opt="${escapeHtml(o)}">${escapeHtml(o)}</button>`).join("")}
@@ -244,8 +303,18 @@ function renderJob(j) {
       </div>`;
   } else if (j.status === "done") {
     html += `<div class="section-label">Final reply</div>
-      <div class="reply-box">${escapeHtml(j.result || "No final reply was recorded for this job.")}</div>
-      <div class="action-row">
+      <div class="reply-box">${linkify(j.result || "No final reply was recorded for this job.")}</div>`;
+    const files = j.artifacts || [];
+    if (files.length) {
+      html += `<div class="section-label">Files produced</div>
+        <div class="file-list">${files.map((f) => `
+          <a class="file-chip" href="/api/jobs/${j.id}/artifact?path=${encodeURIComponent(f.path)}" target="_blank" rel="noopener noreferrer" title="${escapeHtml(f.path)}">
+            <span class="file-icon">&#128196;</span>
+            <span class="file-name">${escapeHtml(f.name)}</span>
+            ${f.size != null ? `<span class="file-size">${fmtSize(f.size)}</span>` : `<span class="file-size">missing</span>`}
+          </a>`).join("")}</div>`;
+    }
+    html += `<div class="action-row">
         <button class="btn btn-primary" id="resubmitBtn">Resubmit with changes</button>
       </div>`;
   } else if (j.status === "archived") {
@@ -526,7 +595,7 @@ function init() {
 
   wireMicButtons(document);
   loadJobs();
-  pollTimer = setInterval(loadJobs, 8000);
+  pollTimer = setInterval(loadJobs, 5000);
 
   if ("serviceWorker" in navigator) {
     navigator.serviceWorker.register("sw.js", { updateViaCache: "none" }).catch(() => {});
