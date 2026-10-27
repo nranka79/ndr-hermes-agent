@@ -84,15 +84,37 @@ def _format_contact(name: Optional[str], external_chat_id: str) -> str:
 
 
 def _acting_vault_user_id() -> Optional[str]:
-    """Who is actually chatting with Hermes right now, per the gateway's own session context.
+    """Who is actually chatting with Hermes right now, as the bridge's canonical vault id.
 
     Deliberately not an argument the caller supplies: HERMES_SESSION_USER_ID is set by the
     gateway from the real channel sender (see gateway/session_context.py), is explicitly cleared
     for cron jobs so a scheduled job cannot impersonate a live chat, and is read here directly —
     never taken from the args dict. Auto-send eligibility is keyed on this.
+
+    The gateway's value is the RAW channel id: for a Telegram session that is the numeric
+    Telegram id (``7449813913``), while the bridge's ``account_access`` table is keyed by the
+    canonical vault id (``ndr-7449813913``). Sending the raw id makes every bridge call resolve
+    to no account and return ``no_whatsapp_account``, even though the account is linked.
+    Resolve the alias through the vault, exactly as gws_auth.canonical_uid() does for Google
+    token operations, and fall back to the raw id only when the vault cannot resolve it (or is
+    unreachable) so single-account / legacy behaviour is preserved.
     """
-    uid = get_session_env("HERMES_SESSION_USER_ID", "").strip()
-    return uid or None
+    raw = get_session_env("HERMES_SESSION_USER_ID", "").strip()
+    if not raw:
+        return None
+    try:
+        from tools import gws_vault_client as vault
+
+        canonical = vault.resolve_any(raw)
+        if canonical:
+            return canonical
+    except Exception:
+        logger.warning(
+            "whatsapp: could not canonicalize session user %r; using the raw id",
+            raw,
+            exc_info=True,
+        )
+    return raw
 
 
 # =============================================================================
@@ -825,7 +847,18 @@ def _handle_events_poll(args: Optional[dict], **_kw: Any) -> str:
 def _handle_health(args: Optional[dict], **_kw: Any) -> str:
     body, err = _call("/v1/health", None, method="GET")
     if err:
-        return tool_error(err)
+        # /v1/health runs several aggregate stats queries, and one of them can fail on its own
+        # (e.g. an account-scoped query against a table that has no account_id) while the
+        # account mapping and the read/send paths are perfectly healthy. Do not let that turn
+        # into a false "bridge is down / not linked" answer: prove the link with one cheap read
+        # first, and only report the original error if that read also fails.
+        probe, perr = _call("/v1/chats/list", {"limit": 1})
+        if perr:
+            return tool_error(err)
+        return tool_result(
+            "WhatsApp bridge: linked and reachable; the /v1/health summary is unavailable "
+            f"({err}). Reads and sends are still available."
+        )
     if not body:
         return tool_error("Empty response from the bridge.")
     return tool_result(
