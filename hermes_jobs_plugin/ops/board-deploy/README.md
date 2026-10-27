@@ -1,10 +1,13 @@
-# jobs.ahfl.in — deployment checklist (DRAFT, nothing applied yet)
+# jobs.ahfl.in — deployment checklist (live)
 
-Everything in this directory is a **draft**. Nothing here has touched
-the live box. Built and unit-tested (11/11 checks, against a disposable
-copy of the board — see the plugin's main README for the discipline):
-`board_server.py` + `static/` (the PWA). Not yet built: the actual
-deploy (compose services, nginx vhost, oauth2-proxy).
+Deployed on the box. `jobs.ahfl.in.nginx` is a snapshot of the live
+vhost (certbot manages the TLS block); `jobs.ahfl.in.nginx.draft` is the
+HTTP-only bootstrap config used before the certificate existed.
+`docker-compose.jobs-board.snippet.yml` matches the live `jobs-board` /
+`jobs-oauth2-proxy` services. The canonical compose file remains
+`hermes-apps-stack/docker-compose.prod.yml`.
+
+The steps below are kept as the reproducible deploy/rollback recipe.
 
 ## Prerequisites — yours, not mine
 
@@ -98,11 +101,6 @@ services are additive, and stopping/removing them touches nothing else.
 
 ## Known gaps, stated plainly
 
-- **PWA icons are placeholders** (manifest.json references
-  `icons/icon-192.png` / `icon-512.png`, which don't exist yet — image
-  generation hit a quota wall, retry window ~2.5h). The app works
-  without them; the browser just shows a generic icon instead of a
-  custom one. Low priority, easy to drop in later.
 - **No "admin sees all" distinction in the UI** — every authenticated
   person sees every job. Fine for a 1-2 person allowlist; would need
   real work for a bigger team.

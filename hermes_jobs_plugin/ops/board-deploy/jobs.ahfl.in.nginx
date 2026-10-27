@@ -1,0 +1,51 @@
+# Live nginx vhost for jobs.ahfl.in, synced from the server on 2026-10-27.
+#
+# The 80 -> 443 redirect and the TLS block are certbot-managed and were
+# written in place after the initial HTTP-01 challenge, matching every
+# other *.ahfl.in vhost on this box.
+#
+# Proxies to the oauth2-proxy sidecar (127.0.0.1:4182), NOT directly to
+# jobs-board (127.0.0.1:8900) -- the whole point is that nothing reaches
+# the board without passing through Google OAuth first.
+
+server {
+    server_name jobs.ahfl.in;
+
+    location / {
+        proxy_pass http://127.0.0.1:4182;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        # 340s: STT worst case (~240s, see oauth2-proxy's matching
+        # --upstream-timeout) plus the dictation-cleanup webhook's own
+        # 100s budget, which now runs AFTER a successful transcription
+        # on the same request. A shorter timeout here would 504 a
+        # slow-but-succeeding dictation request.
+        proxy_read_timeout 340s;
+        proxy_send_timeout 60s;
+        client_max_body_size 20m;
+    }
+
+    listen 443 ssl; # managed by Certbot
+    ssl_certificate /etc/letsencrypt/live/jobs.ahfl.in/fullchain.pem; # managed by Certbot
+    ssl_certificate_key /etc/letsencrypt/live/jobs.ahfl.in/privkey.pem; # managed by Certbot
+    include /etc/letsencrypt/options-ssl-nginx.conf; # managed by Certbot
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem; # managed by Certbot
+
+}
+
+
+server {
+    if ($host = jobs.ahfl.in) {
+        return 301 https://$host$request_uri;
+    } # managed by Certbot
+
+
+    listen 80;
+    server_name jobs.ahfl.in;
+    return 404; # managed by Certbot
+
+
+}

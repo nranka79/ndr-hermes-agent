@@ -1,15 +1,11 @@
-# DRAFT -- not yet applied to /opt/hermes/docker-compose.prod.yml.
+# Live jobs-board + jobs-oauth2-proxy blocks, synced from the server on
+# 2026-10-27. The canonical compose file is
+# hermes-apps-stack/docker-compose.prod.yml; this snippet exists so the
+# plugin's deploy notes stay readable on their own.
 #
-# Two NEW, ISOLATED services. Neither touches hermes-hermes-1 or
-# hermes-apps-1 in any way -- same discipline as the rest of this build.
-# Both join the implicit default project network (hermes_default), same
-# as every other service in the file (there is no explicit top-level
-# `networks:` key on hermes/hermes-apps/etc. today -- only content-view
-# declares one, for its own isolation reasons unrelated to this).
-#
-# Paste both blocks into docker-compose.prod.yml under `services:`, then:
-#   docker compose -f docker-compose.prod.yml config   # validate first
-#   docker compose -f docker-compose.prod.yml up -d --no-deps jobs-board jobs-oauth2-proxy
+# Two isolated services. Neither touches hermes-hermes-1 or
+# hermes-apps-1. Both join the implicit default project network
+# (hermes_default), same as every other service in the file.
 #
 # board_server.py and static/ ride along for free: they live under
 # /opt/hermes/hermes-data/plugins/hermes_jobs/, which is the SAME host
@@ -28,10 +24,28 @@
       - /opt/hermes/hermes-data:/data/hermes
     environment:
       BOARD_PORT: "8900"
-      HERMES_STT_URL: "http://hermes-apps:8100/transcribe"
+      # Pin explicitly -- the hermes-hermes:latest image bakes in
+      # HERMES_HOME=/opt/data by default; the hermes service overrides
+      # it to /data/hermes, this one never did, so it silently
+      # auto-created an empty kanban.db in its own container layer.
+      HERMES_HOME: /data/hermes
+      HERMES_KANBAN_DB: /data/hermes/kanban.db
+      # Jobs-page dictation uses the same STT provider chain as
+      # voice.ahfl.in / chat.ahfl.in, but through the AI Model Gateway
+      # (llm-gateway) so it shares the central Groq -> AssemblyAI pools.
+      # Fallbacks keep dictation working if that route is down; all three
+      # are OpenAI-compatible multipart endpoints.
+      HERMES_STT_URL: "http://llm-gateway:8321/v1/audio/transcriptions"
+      HERMES_STT_FALLBACK_URLS: "http://hermes-apps:3000/v1/audio/transcriptions,http://hermes-apps:8100/v1/audio/transcriptions"
+      # Dictation redraft + sheet/AI noun correction (same n8n webhook
+      # voice.ahfl.in's email-reformat button and the WhatsApp voice
+      # workflows use). Optional -- unset/unreachable falls back to the
+      # raw transcript, never blocks dictation.
+      CLEANTEXT_WEBHOOK_URL: ${CLEANTEXT_WEBHOOK_URL}
       # Deliberately NOT API_SERVER_KEY / HERMES_API_BASE -- this service
-      # only reads/writes kanban.db and the free-whisper gateway today.
-      # Add them here if a future "trigger job now" button needs /v1/runs.
+      # only reads/writes kanban.db. Job rows it inserts are claimed and run
+      # by the gateway's existing hermes-jobs runner loop (same path as
+      # Telegram /job), so no direct /v1/runs call is needed here.
 
   jobs-oauth2-proxy:
     image: quay.io/oauth2-proxy/oauth2-proxy:v7.6.0
@@ -75,9 +89,9 @@
       - --reverse-proxy=true
       - --pass-user-headers=true
       - --set-xauthrequest=true
-      # 240s: must exceed the free-whisper gateway's own worst case
-      # (whisper attempt ~90s + internal AssemblyAI fallback ~120s, per
-      # stt_wrapper.sh's own comments) plus margin -- a short timeout
-      # here would 502 a slow-but-succeeding dictation.
-      - --upstream-timeout=240s
+      # 340s: STT worst case (~240s) plus the dictation-cleanup
+      # webhook's own 100s budget, which now runs AFTER a successful
+      # transcription on the same request -- see jobs.ahfl.in nginx
+      # vhost, which matches this value.
+      - --upstream-timeout=340s
       - --upstream=http://jobs-board:8900/
