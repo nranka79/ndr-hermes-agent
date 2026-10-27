@@ -20,6 +20,7 @@ let recordedChunks = [];
 let discardRecording = false;
 let composerMode = "new";
 let composerJob = null;
+let fabOpen = false;
 
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => Array.from(document.querySelectorAll(sel));
@@ -77,6 +78,16 @@ function linkify(raw) {
   return out;
 }
 
+function fileListHtml(jobId, files) {
+  if (!files || !files.length) return "";
+  return `<div class="file-list">${files.map((f) => `
+    <a class="file-chip" href="/api/jobs/${jobId}/artifact?path=${encodeURIComponent(f.path)}" target="_blank" rel="noopener noreferrer" title="${escapeHtml(f.path)}">
+      <span class="file-icon">&#128196;</span>
+      <span class="file-name">${escapeHtml(f.name)}</span>
+      ${f.size != null ? `<span class="file-size">${fmtSize(f.size)}</span>` : `<span class="file-size">missing</span>`}
+    </a>`).join("")}</div>`;
+}
+
 function showToast(msg) {
   const t = $("#toast");
   t.textContent = msg;
@@ -98,6 +109,21 @@ async function apiPost(path, body) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body || {}),
   });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data.error || ("POST " + path + " -> " + r.status));
+  return data;
+}
+
+// Used for every action that can carry an optional file attachment
+// (create/answer/continue). Always multipart -- simpler than branching on
+// whether files are present, and the backend accepts both forms anyway.
+async function apiPostForm(path, fields, files) {
+  const form = new FormData();
+  Object.entries(fields || {}).forEach(([k, v]) => {
+    if (v !== undefined && v !== null) form.append(k, v);
+  });
+  (files || []).forEach((f) => form.append("files", f, f.name));
+  const r = await fetch(path, { method: "POST", credentials: "include", body: form });
   const data = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(data.error || ("POST " + path + " -> " + r.status));
   return data;
@@ -194,7 +220,7 @@ function renderRow(j) {
     </div>
     <div class="job-main">
       <div class="job-title">${escapeHtml(j.title || "Untitled job")}</div>
-      <div class="job-id">${escapeHtml(j.id)}${j.resume_rounds ? ` &middot; ${j.resume_rounds} round(s)` : ""}</div>
+      <div class="job-id">${escapeHtml(j.id)}${j.resume_rounds ? ` &middot; ${j.resume_rounds} round(s)` : ""}${j.parent_job_id ? ` &middot; chained` : ""}</div>
     </div>
     <div class="job-detail">
       <div class="job-detail-text">${escapeHtml(jobSummary(j))}</div>
@@ -218,8 +244,9 @@ function openJob(jobId) {
   sheetSignature = "";
   // Render the cheap list-cache version immediately (no blank modal while
   // the detail call is in flight), then replace it with the full detail
-  // fetch -- the list endpoint deliberately omits events/artifacts to stay
-  // light, so a job only ever shows files/history once this resolves.
+  // fetch -- the list endpoint deliberately omits events/artifacts/input
+  // attachments to stay light, so a job only ever shows those once this
+  // resolves.
   renderJob(j);
   $("#jobModal").classList.remove("hidden");
   updateBodyLock();
@@ -248,6 +275,16 @@ function closeJob() {
   updateBodyLock();
 }
 
+function attachRowHtml(inputId, label) {
+  return `
+      <label class="field-label">${escapeHtml(label || "Attach files (optional)")}</label>
+      <div class="attach-row">
+        <input type="file" id="${inputId}" class="file-input-hidden" multiple>
+        <button type="button" class="btn btn-secondary attach-btn" data-attach-for="${inputId}">&#128206; Attach files</button>
+        <div class="attach-chips" data-attach-chips-for="${inputId}"></div>
+      </div>`;
+}
+
 function renderJob(j) {
   activeJobId = j.id;
   sheetSignature = jobSignature(j);
@@ -256,7 +293,13 @@ function renderJob(j) {
     `<span class="pill status-${j.status}">${escapeHtml(STATUS_LABEL[j.status] || j.status)}</span>`;
   $("#jobModalTitle").textContent = j.title || j.id;
 
-  let html = `<div class="meta-grid">
+  let html = "";
+
+  if (j.parent_job_id) {
+    html += `<div class="chain-banner">Continues job <button type="button" class="link-btn" id="openParentBtn">${escapeHtml(j.parent_job_id)}</button></div>`;
+  }
+
+  html += `<div class="meta-grid">
     ${metaItem("Job ID", j.id)}
     ${metaItem("Origin", j.origin_display || "")}
     ${metaItem("Created", fmtTime(j.created_at))}
@@ -266,6 +309,11 @@ function renderJob(j) {
 
   html += `<div class="section-label">Instruction</div>
     <div class="section-body">${linkify(j.instruction || "")}</div>`;
+
+  if (j.input_attachments && j.input_attachments.length) {
+    html += `<div class="section-label">Files you attached</div>`
+      + fileListHtml(j.id, j.input_attachments);
+  }
 
   if (j.pending_kind === "clarification") {
     const context = j.question_context
@@ -282,6 +330,7 @@ function renderJob(j) {
         <textarea id="answerInput" class="input textarea" placeholder="Type or dictate your answer..."></textarea>
         <button class="mic-btn" data-mic-for="answerInput" title="Dictate" aria-label="Dictate clarification">&#127908;</button>
       </div>
+      ${attachRowHtml("jobFilesInput")}
       <p class="hint">Sending this continues the same job. Drop job ends it and ignores this text.</p>
       <div class="action-row">
         <button class="btn btn-primary" id="answerBtn">Send clarification &amp; continue</button>
@@ -296,6 +345,7 @@ function renderJob(j) {
         <textarea id="answerInput" class="input textarea" placeholder="Anything to add before retrying (optional)..."></textarea>
         <button class="mic-btn" data-mic-for="answerInput" title="Dictate" aria-label="Dictate extra input">&#127908;</button>
       </div>
+      ${attachRowHtml("jobFilesInput")}
       <div class="action-row">
         <button class="btn btn-primary" id="continueBtn">Continue job</button>
         <button class="btn btn-secondary" id="resubmitBtn">Resubmit as new job</button>
@@ -304,18 +354,11 @@ function renderJob(j) {
   } else if (j.status === "done") {
     html += `<div class="section-label">Final reply</div>
       <div class="reply-box">${linkify(j.result || "No final reply was recorded for this job.")}</div>`;
-    const files = j.artifacts || [];
-    if (files.length) {
-      html += `<div class="section-label">Files produced</div>
-        <div class="file-list">${files.map((f) => `
-          <a class="file-chip" href="/api/jobs/${j.id}/artifact?path=${encodeURIComponent(f.path)}" target="_blank" rel="noopener noreferrer" title="${escapeHtml(f.path)}">
-            <span class="file-icon">&#128196;</span>
-            <span class="file-name">${escapeHtml(f.name)}</span>
-            ${f.size != null ? `<span class="file-size">${fmtSize(f.size)}</span>` : `<span class="file-size">missing</span>`}
-          </a>`).join("")}</div>`;
+    if (j.artifacts && j.artifacts.length) {
+      html += `<div class="section-label">Files produced</div>` + fileListHtml(j.id, j.artifacts);
     }
     html += `<div class="action-row">
-        <button class="btn btn-primary" id="resubmitBtn">Resubmit with changes</button>
+        <button class="btn btn-primary" id="nextJobBtn">Next job</button>
       </div>`;
   } else if (j.status === "archived") {
     html += `<div class="section-label">Dropped</div>
@@ -340,12 +383,16 @@ function renderJob(j) {
 
   $("#jobModalBody").innerHTML = html;
   wireMicButtons($("#jobModal"));
+  wireAttachControls($("#jobModal"));
   wireJobActions(j);
 }
 
 function wireJobActions(j) {
   const root = $("#jobModal");
   const answerInput = $("#answerInput");
+
+  const openParentBtn = $("#openParentBtn");
+  if (openParentBtn) openParentBtn.onclick = () => openJob(j.parent_job_id);
 
   root.querySelectorAll(".option-chip").forEach((btn) => {
     btn.onclick = () => {
@@ -361,9 +408,10 @@ function wireJobActions(j) {
     answerBtn.onclick = async () => {
       const text = (answerInput.value || "").trim();
       if (!text) { showToast("Add your clarification first"); return; }
+      const files = Array.from(($("#jobFilesInput") || {}).files || []);
       answerBtn.disabled = true;
       try {
-        await apiPost(`/api/jobs/${j.id}/answer`, { text });
+        await apiPostForm(`/api/jobs/${j.id}/answer`, { text }, files);
         closeJob();
         showToast("Clarification sent — job continuing");
         setLane("working");
@@ -379,11 +427,12 @@ function wireJobActions(j) {
   const continueBtn = $("#continueBtn");
   if (continueBtn) {
     continueBtn.onclick = async () => {
+      const files = Array.from(($("#jobFilesInput") || {}).files || []);
       continueBtn.disabled = true;
       try {
-        await apiPost(`/api/jobs/${j.id}/continue`, {
+        await apiPostForm(`/api/jobs/${j.id}/continue`, {
           extra: (answerInput.value || "").trim(),
-        });
+        }, files);
         closeJob();
         showToast("Job retrying");
         setLane("working");
@@ -398,6 +447,9 @@ function wireJobActions(j) {
 
   const resubmitBtn = $("#resubmitBtn");
   if (resubmitBtn) resubmitBtn.onclick = () => openComposer("resubmit", j);
+
+  const nextJobBtn = $("#nextJobBtn");
+  if (nextJobBtn) nextJobBtn.onclick = () => openComposer("chain", j);
 
   const startAgainBtn = $("#startAgainBtn");
   if (startAgainBtn) startAgainBtn.onclick = () => openComposer("resubmit", j);
@@ -488,23 +540,61 @@ function wireMicButtons(root) {
   });
 }
 
+// File inputs are read directly from the DOM at submit time (FileList is
+// live), so this only needs to wire the "attach" button -> hidden input
+// click, and show a plain filename preview on change. No per-file removal
+// UI -- re-picking replaces the browser's own selection, which is enough
+// for a happy-path attach flow.
+function wireAttachControls(root) {
+  root.querySelectorAll("[data-attach-for]").forEach((btn) => {
+    const input = document.getElementById(btn.dataset.attachFor);
+    if (!input) return;
+    btn.onclick = () => input.click();
+    input.onchange = () => {
+      const chips = root.querySelector(`[data-attach-chips-for="${input.id}"]`);
+      if (!chips) return;
+      const names = Array.from(input.files || []).map((f) => f.name);
+      chips.textContent = names.length ? names.join(", ") : "";
+    };
+  });
+}
+
 function openComposer(mode = "new", job = null) {
   if (!$("#jobModal").classList.contains("hidden")) closeJob();
   composerMode = mode;
   composerJob = job;
   const resubmit = mode === "resubmit" && job;
+  const chain = mode === "chain" && job;
 
-  $("#composerKicker").textContent = resubmit
-    ? `Resubmit ${job.id} as a new job`
+  $("#composerKicker").textContent = chain ? `Next job, continuing ${job.id}`
+    : resubmit ? `Resubmit ${job.id} as a new job`
     : "New job";
-  $("#composerTitle").textContent = resubmit
-    ? "Update the job and resubmit"
+  $("#composerTitle").textContent = chain ? "What should Hermes do next?"
+    : resubmit ? "Update the job and resubmit"
     : "What should Hermes do?";
   $("#composerInstruction").value = resubmit ? (job.instruction || "") : "";
+  $("#composerInstruction").placeholder = chain
+    ? "What's next, given the result below?"
+    : "Describe the job, or tap the mic and dictate...";
   $("#composerFeedback").value = "";
   $("#composerFeedbackWrap").classList.toggle("hidden", !resubmit);
-  $("#composerSubmit").textContent = resubmit ? "Resubmit as new job" : "Create job";
-  $("#composerHint").textContent = resubmit
+
+  $("#composerContextWrap").classList.toggle("hidden", !chain);
+  if (chain) {
+    $("#composerContextInstruction").innerHTML = linkify(job.instruction || "");
+    $("#composerContextResult").innerHTML = linkify(job.result || "(no result recorded)");
+  }
+
+  $("#composerFilesInput").value = "";
+  const chips = document.querySelector('[data-attach-chips-for="composerFilesInput"]');
+  if (chips) chips.textContent = "";
+
+  $("#composerSubmit").textContent = chain ? "Create next job"
+    : resubmit ? "Resubmit as new job"
+    : "Create job";
+  $("#composerHint").textContent = chain
+    ? "Creates a new linked job. The previous job and its history stay untouched."
+    : resubmit
     ? "This creates a fresh job. The original job and its history stay untouched."
     : "Runs in the background. Open the job later to read the final reply.";
 
@@ -526,21 +616,26 @@ async function submitComposer() {
   const feedback = ($("#composerFeedback").value || "").trim();
   const btn = $("#composerSubmit");
   if (!instruction) {
-    showToast("Describe the job first");
+    showToast(composerMode === "chain" ? "Describe what's next first" : "Describe the job first");
     return;
   }
 
   const wasResubmit = composerMode === "resubmit";
+  const wasChain = composerMode === "chain";
   let body = instruction;
   if (wasResubmit && feedback) {
     body += "\n\nAdditional feedback / changes requested:\n" + feedback;
   }
 
+  const fields = { instruction: body };
+  if (wasChain && composerJob) fields.parent_job_id = composerJob.id;
+  const files = Array.from(($("#composerFilesInput") || {}).files || []);
+
   btn.disabled = true;
   try {
-    await apiPost("/api/jobs", { instruction: body });
+    await apiPostForm("/api/jobs", fields, files);
     closeComposer();
-    showToast(wasResubmit ? "New job created from your changes" : "Job queued");
+    showToast(wasChain ? "Next job queued" : wasResubmit ? "New job created from your changes" : "Job queued");
     setLane("working");
     loadJobs();
   } catch (e) {
@@ -552,8 +647,112 @@ async function submitComposer() {
 
 function updateBodyLock() {
   const open = !$("#jobModal").classList.contains("hidden")
-    || !$("#composerModal").classList.contains("hidden");
+    || !$("#composerModal").classList.contains("hidden")
+    || !$("#voiceOverlay").classList.contains("hidden");
   document.body.classList.toggle("modal-open", open);
+}
+
+// ---------------------------------------------------------------------------
+// FAB: "+ New job" speed-dial (form, or voice-only instant submit)
+// ---------------------------------------------------------------------------
+
+function toggleFab(open) {
+  fabOpen = open === undefined ? !fabOpen : open;
+  $("#fabMenu").classList.toggle("hidden", !fabOpen);
+  $("#fabMainBtn").setAttribute("aria-expanded", String(fabOpen));
+  $("#fabMainBtn").classList.toggle("fab-main-open", fabOpen);
+}
+
+// Voice-only job: tap, dictate, stop -- creates the job immediately from
+// the (cleaned-up) transcript with no form and no review step. "New job by
+// form" below is the deliberate, editable alternative for when the words
+// need checking before they go in.
+async function startVoiceOnlyJob() {
+  const overlay = $("#voiceOverlay");
+  const status = $("#voiceOverlayStatus");
+  const stopBtn = $("#voiceStopBtn");
+  const cancelBtn = $("#voiceCancelBtn");
+
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch (e) {
+    showToast("Microphone access denied");
+    return;
+  }
+
+  overlay.classList.remove("hidden");
+  updateBodyLock();
+  status.textContent = "Listening… tap stop when done.";
+  $("#voicePulse").classList.remove("thinking");
+  stopBtn.disabled = false;
+  cancelBtn.disabled = false;
+
+  const chunks = [];
+  let cancelled = false;
+  const recorder = new MediaRecorder(stream);
+  recorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
+  const stopped = new Promise((resolve) => {
+    recorder.onstop = () => {
+      stream.getTracks().forEach((t) => t.stop());
+      resolve();
+    };
+  });
+
+  cancelBtn.onclick = async () => {
+    cancelled = true;
+    cancelBtn.disabled = true;
+    stopBtn.disabled = true;
+    recorder.stop();
+    await stopped;
+    overlay.classList.add("hidden");
+    updateBodyLock();
+  };
+
+  stopBtn.onclick = async () => {
+    stopBtn.disabled = true;
+    cancelBtn.disabled = true;
+    $("#voicePulse").classList.add("thinking");
+    status.textContent = "Transcribing…";
+    recorder.stop();
+    await stopped;
+    if (cancelled) return;
+
+    if (!chunks.length) {
+      overlay.classList.add("hidden");
+      updateBodyLock();
+      showToast("No audio captured");
+      return;
+    }
+    try {
+      const blob = new Blob(chunks, { type: "audio/webm" });
+      const form = new FormData();
+      form.append("audio", blob, "audio.webm");
+      const r = await fetch("/api/transcribe", { method: "POST", credentials: "include", body: form });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data.error || ("transcribe -> " + r.status));
+      const text = (data.text || "").trim();
+      if (!text) {
+        overlay.classList.add("hidden");
+        updateBodyLock();
+        showToast("No speech detected");
+        return;
+      }
+      status.textContent = "Creating job…";
+      await apiPost("/api/jobs", { instruction: text });
+      overlay.classList.add("hidden");
+      updateBodyLock();
+      showToast("Job queued from dictation");
+      setLane("working");
+      loadJobs();
+    } catch (e) {
+      overlay.classList.add("hidden");
+      updateBodyLock();
+      showToast("Failed: " + e.message);
+    }
+  };
+
+  recorder.start();
 }
 
 function init() {
@@ -562,9 +761,12 @@ function init() {
   });
 
   $("#refreshBtn").onclick = loadJobs;
-  $("#newJobBtn").onclick = () => openComposer("new");
   $("#composerCancel").onclick = closeComposer;
   $("#composerSubmit").onclick = submitComposer;
+
+  $("#fabMainBtn").onclick = () => toggleFab();
+  $("#fabFormBtn").onclick = () => { toggleFab(false); openComposer("new"); };
+  $("#fabVoiceBtn").onclick = () => { toggleFab(false); startVoiceOnlyJob(); };
 
   $$("[data-close-modal]").forEach((el) => {
     el.onclick = () => {
@@ -574,6 +776,8 @@ function init() {
       else closeComposer();
     };
   });
+
+  wireAttachControls(document);
 
   ["composerInstruction", "composerFeedback"].forEach((id) => {
     document.getElementById(id).addEventListener("keydown", (e) => {
@@ -586,11 +790,18 @@ function init() {
 
   document.addEventListener("keydown", (e) => {
     if (e.key !== "Escape") return;
+    if (fabOpen) { toggleFab(false); return; }
     if (!$("#composerModal").classList.contains("hidden")) {
       closeComposer();
     } else if (!$("#jobModal").classList.contains("hidden")) {
       closeJob();
     }
+  });
+
+  document.addEventListener("click", (e) => {
+    if (!fabOpen) return;
+    if ($("#fabWrap").contains(e.target)) return;
+    toggleFab(false);
   });
 
   wireMicButtons(document);

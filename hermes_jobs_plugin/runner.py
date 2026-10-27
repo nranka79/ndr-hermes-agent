@@ -91,6 +91,28 @@ def _tmp_dir() -> str:
     return os.environ.get("HERMES_JOBS_TMP", "/data/hermes/tmp/jobs")
 
 
+def _attachments_manifest(job_id: str) -> str:
+    """List files the human uploaded, so the agent reads them instead of
+    guessing their contents from the instruction text alone. Re-fetched on
+    every build_instructions() call (initial run AND every resume), since a
+    human can attach a new file to an answer/continue round after the first
+    run already started.
+    """
+    try:
+        rows = store.list_input_attachments(job_id)
+    except Exception:
+        return ""
+    if not rows:
+        return ""
+    lines = ["\nATTACHED FILES (uploaded by the human -- read them directly at these paths)"]
+    for r in rows:
+        size = r.get("size") or 0
+        lines.append("- %s (%s, %d bytes)" % (
+            r["stored_path"], r.get("filename") or "file", size,
+        ))
+    return "\n".join(lines) + "\n"
+
+
 def build_instructions(job: Dict[str, Any]) -> str:
     origin = job.get("origin_platform") or "cli"
     if job.get("origin_chat_id"):
@@ -103,6 +125,7 @@ def build_instructions(job: Dict[str, Any]) -> str:
         wall_clock_minutes=job.get("wall_clock_minutes") or 30,
         tmp_dir=_tmp_dir(),
     )
+    text += _attachments_manifest(job["id"])
     if job.get("answer"):
         text += "\n" + RESUME_HEADER.format(answer=job["answer"])
     return text

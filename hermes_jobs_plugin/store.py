@@ -62,6 +62,13 @@ _TASK_COLUMNS = [
     # already solves exactly this "notify once, not every drain tick"
     # problem for kanban cards -- same pattern, scoped to our own rows.
     ("last_delivered_event_id", "last_delivered_event_id INTEGER NOT NULL DEFAULT 0"),
+    # Chained jobs (D-none, built 2026-10-27): set when a job was created
+    # via the done-job "Next job" action. The child job's own instruction
+    # is whatever the human typed next; create_job folds the parent's
+    # instruction+result into the child's body as context (see board_server
+    # api_create_job) so this column is for traceability/UI display, not
+    # re-derivation -- the context text is already baked into body.
+    ("parent_job_id", "parent_job_id TEXT"),
 ]
 _ATTACHMENT_COLUMNS = [
     ("role", "role TEXT"),  # 'input' | 'produced'
@@ -144,6 +151,7 @@ def create_job(
     turn_budget: int = 40,
     wall_clock_minutes: int = 30,
     idempotency_key: Optional[str] = None,
+    parent_job_id: Optional[str] = None,
     conn=None,
 ) -> str:
     """Insert a queued job row. ``session_id`` == job id: readable and bindable."""
@@ -171,18 +179,20 @@ def create_job(
                 "  worker_pid, max_runtime_seconds, session_id,"
                 "  api_run_id, resume_rounds, origin_platform, origin_chat_id,"
                 "  origin_thread_id, origin_message_id, turn_budget,"
-                "  wall_clock_minutes"
+                "  wall_clock_minutes, parent_job_id"
                 ") VALUES (?, ?, ?, NULL, ?, 0, ?, ?, 'scratch', ?, ?,"
-                "          NULL, NULL, ?, NULL, 0, ?, ?, ?, ?, ?, ?)",
+                "          NULL, NULL, ?, NULL, 0, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     job_id, auto_title, instruction.strip(), ST_QUEUED, MARKER,
                     now, tenant, idempotency_key, job_id,
                     origin_platform, origin_chat_id, origin_thread_id,
                     origin_message_id, turn_budget, wall_clock_minutes,
+                    parent_job_id,
                 ),
             )
             log_event(conn, job_id, "queued", {
                 "origin": origin_platform, "tenant": tenant,
+                "parent_job_id": parent_job_id,
             })
         return job_id
     finally:
@@ -512,6 +522,79 @@ def set_last_delivered(job_id: str, event_id: int, *, conn=None) -> bool:
                 (event_id, job_id, MARKER, event_id),
             )
         return cur.rowcount == 1
+    finally:
+        if own:
+            conn.close()
+
+
+# ---------------------------------------------------------------------------
+# input attachments
+# ---------------------------------------------------------------------------
+# Files the human uploads when creating, answering, or retrying a job. Stored
+# on kanban's existing per-task attachment infra (task_attachments_dir +
+# add_attachment) so this reuses tested code instead of inventing a second
+# file store; the only addition is the 'role' column (added above) tagging
+# these rows 'input' so they can be told apart from any future produced-file
+# rows (there are none yet -- job_complete's artifacts live in the event log
+# and are resolved by the board server directly from the filesystem; see
+# board_server._completed_artifacts).
+
+def _safe_attachment_filename(name: str) -> str:
+    """Strip any path component and keep this a bare filename."""
+    name = os.path.basename((name or "").strip().replace("\\", "/"))
+    return name or "upload"
+
+
+def record_input_attachment(
+    job_id: str, *, filename: str, data: bytes,
+    content_type: Optional[str] = None, uploaded_by: Optional[str] = None,
+    conn=None,
+) -> int:
+    """Write an uploaded file to disk and record it against job_id.
+
+    Returns the new attachment id. Raises ValueError if the job does not
+    exist (mirrors kb.add_attachment's own check).
+    """
+    own = conn is None
+    conn = conn or connect()
+    try:
+        safe_name = _safe_attachment_filename(filename)
+        dest_dir = kb.task_attachments_dir(job_id)
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        dest_path = dest_dir / safe_name
+        if dest_path.exists():
+            stem, suffix = os.path.splitext(safe_name)
+            dest_path = dest_dir / ("%s-%s%s" % (stem, secrets.token_hex(3), suffix))
+        dest_path.write_bytes(data)
+        attachment_id = kb.add_attachment(
+            conn, job_id,
+            filename=(filename or safe_name).strip() or safe_name,
+            stored_path=str(dest_path),
+            content_type=content_type,
+            size=len(data),
+            uploaded_by=uploaded_by,
+        )
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE task_attachments SET role = 'input' WHERE id = ?",
+                (attachment_id,),
+            )
+        return attachment_id
+    finally:
+        if own:
+            conn.close()
+
+
+def list_input_attachments(job_id: str, *, conn=None) -> List[Dict[str, Any]]:
+    own = conn is None
+    conn = conn or connect()
+    try:
+        return [dict(r) for r in conn.execute(
+            "SELECT id, filename, stored_path, content_type, size, uploaded_by,"
+            "  created_at FROM task_attachments"
+            " WHERE task_id = ? AND role = 'input' ORDER BY created_at ASC, id ASC",
+            (job_id,),
+        )]
     finally:
         if own:
             conn.close()

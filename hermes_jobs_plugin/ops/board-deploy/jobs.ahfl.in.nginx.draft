@@ -30,11 +30,10 @@ server {
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
-        # 240s: matches oauth2-proxy's --upstream-timeout and the
-        # free-whisper gateway's own documented worst case (whisper
-        # ~90s + AssemblyAI fallback ~120s). A shorter timeout here
-        # would 504 a slow-but-succeeding dictation request.
-        proxy_read_timeout 240s;
+        # 340s: STT worst case (~240s) plus the dictation-cleanup webhook's
+        # own 100s budget, which now runs AFTER a successful transcription
+        # on the same request -- matches oauth2-proxy's --upstream-timeout.
+        proxy_read_timeout 340s;
         proxy_send_timeout 60s;
         client_max_body_size 20m;
     }

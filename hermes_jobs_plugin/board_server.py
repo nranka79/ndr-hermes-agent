@@ -31,7 +31,7 @@ import logging
 import os
 import sys
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 sys.path.insert(0, "/data/hermes/plugins")
 sys.path.insert(0, "/opt/hermes")
@@ -60,6 +60,14 @@ STT_FALLBACK_URLS = [
 ]
 AUTH_HEADER = "X-Forwarded-Email"
 
+# Same dictation-redraft + sheet/AI noun-correction pipeline voice.ahfl.in's
+# "email" reformat button and the WhatsApp voice-note workflows use (n8n
+# workflow "Thought2CleanText": LLM redraft -> markdown strip -> Hermes Noun
+# Corrector against the shared contacts/projects/entities sheets). Optional:
+# if unset or unreachable, /api/transcribe falls back to the raw STT text
+# rather than blocking dictation on it.
+CLEANTEXT_WEBHOOK_URL = os.environ.get("CLEANTEXT_WEBHOOK_URL", "")
+
 # Cosmetic display labels only (see module docstring) -- never used for
 # access control. Edit freely; an unknown id just falls back to raw text.
 _DISPLAY_NAMES = {
@@ -77,6 +85,32 @@ def _display_origin(job: Dict[str, Any]) -> str:
     if label:
         return label
     return "%s%s" % (platform, (" " + chat_id) if chat_id else "")
+
+
+async def _cleanup_dictation(session: ClientSession, raw_text: str) -> str:
+    """Redraft + noun-correct a raw STT transcript via the shared n8n webhook.
+
+    Best-effort: any failure (unset URL, timeout, bad response) returns the
+    raw text unchanged rather than failing the whole dictation flow -- a
+    slightly rough transcript is fine, no transcript at all is not.
+    """
+    if not CLEANTEXT_WEBHOOK_URL or not raw_text.strip():
+        return raw_text
+    try:
+        async with session.post(
+            CLEANTEXT_WEBHOOK_URL,
+            json={"transcription": raw_text},
+            timeout=100,
+        ) as resp:
+            if resp.status != 200:
+                logger.warning("cleantext webhook HTTP %s", resp.status)
+                return raw_text
+            data = await resp.json(content_type=None)
+            cleaned = (data or {}).get("text")
+            return cleaned if isinstance(cleaned, str) and cleaned.strip() else raw_text
+    except Exception as exc:
+        logger.warning("cleantext webhook failed, using raw transcript: %s", exc)
+        return raw_text
 
 
 def _completed_artifacts(job_id: str) -> List[Dict[str, Any]]:
@@ -136,6 +170,7 @@ def _serialize(job: Dict[str, Any]) -> Dict[str, Any]:
         "origin_platform": job.get("origin_platform"),
         "origin_display": _display_origin(job),
         "session_id": job.get("session_id"),
+        "parent_job_id": job.get("parent_job_id"),
     }
 
 
@@ -186,6 +221,65 @@ async def api_list_jobs(request: web.Request) -> web.Response:
     return web.json_response({"jobs": jobs, "counts": counts})
 
 
+MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024
+MAX_ATTACHMENTS_PER_REQUEST = 10
+
+
+async def _parse_body_and_files(request: web.Request):
+    """Accept either application/json or multipart/form-data.
+
+    Multipart lets the same POST carry files alongside the text fields a
+    plain JSON body would send (instruction/text/extra/title/parent_job_id),
+    so the browser never needs two round trips to attach a file to an
+    action. Returns (fields, files); files is a list of
+    (filename, bytes, content_type), always [] for a JSON body.
+    """
+    files = []
+    if (request.content_type or "").startswith("multipart/"):
+        fields = {}
+        reader = await request.multipart()
+        while True:
+            part = await reader.next()
+            if part is None:
+                break
+            if part.filename:
+                data = await part.read(decode=False)
+                if data:
+                    files.append((
+                        part.filename, data,
+                        part.headers.get("Content-Type") or "application/octet-stream",
+                    ))
+            else:
+                raw = await part.read(decode=False)
+                fields[part.name] = raw.decode("utf-8", errors="replace")
+        return fields, files
+    body = await request.json() if request.can_read_body else {}
+    return body, files
+
+
+def _store_uploaded_files(job_id, files, uploaded_by):
+    stored = 0
+    for filename, data, content_type in files:
+        if stored >= MAX_ATTACHMENTS_PER_REQUEST:
+            logger.warning("job %s: too many files in one request, dropping the rest", job_id)
+            break
+        if len(data) > MAX_ATTACHMENT_BYTES:
+            logger.warning(
+                "job %s: attachment %r too large (%d bytes), skipped",
+                job_id, filename, len(data),
+            )
+            continue
+        try:
+            store.record_input_attachment(
+                job_id, filename=filename, data=data,
+                content_type=content_type, uploaded_by=uploaded_by,
+            )
+            stored += 1
+        except Exception:
+            logger.exception("job %s: failed to store attachment %r", job_id, filename)
+    return stored
+
+
 async def api_create_job(request: web.Request) -> web.Response:
     """Create a queued job from the board (typed or dictated instruction).
 
@@ -194,29 +288,58 @@ async def api_create_job(request: web.Request) -> web.Response:
     creation and execution keep one code path. Origin is ``web`` with no chat
     id, which means delivery.py deliberately skips chat notifications and the
     result is read from this board.
+
+    parent_job_id (optional) makes this a chained "Next job": the new
+    job's own instruction is whatever the human asked for next, and the
+    parent's instruction + result are folded in as context so the agent
+    does not need the human to repeat what was already established.
     """
-    body = await request.json()
-    instruction = (body.get("instruction") or "").strip()
-    title = (body.get("title") or "").strip() or None
+    fields, files = await _parse_body_and_files(request)
+    instruction = (fields.get("instruction") or "").strip()
+    title = (fields.get("title") or "").strip() or None
+    parent_job_id = (fields.get("parent_job_id") or "").strip() or None
     if not instruction:
         return web.json_response({"error": "instruction is required"}, status=400)
+
+    parent = store.get_job(parent_job_id) if parent_job_id else None
+    if parent_job_id and not parent:
+        return web.json_response({"error": "parent job not found"}, status=404)
+
+    body_text = instruction
+    if parent:
+        body_text = (
+            "%s\n\n--- Context: continuing job %s ---\n"
+            "Previous instruction:\n%s\n\n"
+            "Previous result:\n%s\n"
+        ) % (
+            instruction, parent["id"],
+            parent.get("body") or "", parent.get("result") or "(no result recorded)",
+        )
+
     who = _who(request)
     try:
         job_id = store.create_job(
-            instruction=instruction,
+            instruction=body_text,
             title=title,
             tenant=who,
             origin_platform="web",
             origin_chat_id="",
             origin_thread_id="",
             origin_message_id="",
+            parent_job_id=parent["id"] if parent else None,
         )
     except ValueError as exc:
         return web.json_response({"error": str(exc)}, status=400)
+
+    _store_uploaded_files(job_id, files, who)
+
     job = store.get_job(job_id)
     data = _serialize(job or {"id": job_id})
     data["lane"] = LANES.get(data.get("status"), "working")
-    logger.info("job %s created from board by %s", job_id, who)
+    logger.info(
+        "job %s created from board by %s%s", job_id, who,
+        (" (chained from %s)" % parent["id"]) if parent else "",
+    )
     return web.json_response({"ok": True, "job": data}, status=201)
 
 
@@ -231,18 +354,27 @@ async def api_get_job(request: web.Request) -> web.Response:
         for e in reversed(store.list_events(job["id"], limit=50))
     ]
     data["artifacts"] = _completed_artifacts(job["id"]) if job["status"] == store.ST_DONE else []
+    data["input_attachments"] = [
+        {
+            "path": a["stored_path"], "name": a["filename"], "size": a.get("size"),
+            "uploaded_by": a.get("uploaded_by"), "created_at": a.get("created_at"),
+        }
+        for a in store.list_input_attachments(job["id"])
+    ]
+    data["parent_job_id"] = job.get("parent_job_id")
     return web.json_response(data)
 
 
 async def api_download_artifact(request: web.Request) -> web.Response:
-    """Stream a file the agent reported producing for this job.
+    """Stream a file this job either produced or had uploaded to it.
 
     The only allowlist is "is this path exactly one this job's own
-    ``job_complete`` call reported" -- re-derived fresh from the event log
-    on every request, never trusted from the query string alone. This is
-    what stops the endpoint from becoming an arbitrary-file-read: a path
-    that is not in that job's own artifact list is refused outright,
-    regardless of whether it exists on disk.
+    job_complete artifacts OR its own input attachments list" --
+    re-derived fresh from the event log / attachments table on every
+    request, never trusted from the query string alone. This is what stops
+    the endpoint from becoming an arbitrary-file-read: a path that is not
+    in that job's own file list is refused outright, regardless of whether
+    it exists on disk.
     """
     job_id = request.match_info["job_id"]
     job = store.get_job(job_id)
@@ -250,8 +382,9 @@ async def api_download_artifact(request: web.Request) -> web.Response:
         return web.json_response({"error": "not found"}, status=404)
     requested = request.query.get("path") or ""
     allowed = {a["path"] for a in _completed_artifacts(job_id)}
+    allowed |= {a["stored_path"] for a in store.list_input_attachments(job_id)}
     if not requested or requested not in allowed:
-        return web.json_response({"error": "not a known artifact of this job"}, status=403)
+        return web.json_response({"error": "not a known file for this job"}, status=403)
     if not os.path.isfile(requested):
         return web.json_response({"error": "file no longer exists on disk"}, status=404)
     return web.FileResponse(
@@ -262,8 +395,8 @@ async def api_download_artifact(request: web.Request) -> web.Response:
 
 async def api_answer(request: web.Request) -> web.Response:
     job_id = request.match_info["job_id"]
-    body = await request.json()
-    text = (body.get("text") or "").strip()
+    fields, files = await _parse_body_and_files(request)
+    text = (fields.get("text") or "").strip()
     if not text:
         return web.json_response({"error": "text is required"}, status=400)
     ok = store.answer_job(job_id, text)
@@ -274,14 +407,15 @@ async def api_answer(request: web.Request) -> web.Response:
              "status": (job or {}).get("status")},
             status=409,
         )
+    _store_uploaded_files(job_id, files, _who(request))
     logger.info("job %s answered by %s", job_id, _who(request))
     return web.json_response({"ok": True})
 
 
 async def api_continue(request: web.Request) -> web.Response:
     job_id = request.match_info["job_id"]
-    body = await request.json() if request.can_read_body else {}
-    extra = (body.get("extra") or "").strip()
+    fields, files = await _parse_body_and_files(request)
+    extra = (fields.get("extra") or "").strip()
     ok = store.continue_job(job_id, extra_input=extra)
     if not ok:
         job = store.get_job(job_id)
@@ -290,6 +424,7 @@ async def api_continue(request: web.Request) -> web.Response:
              "status": (job or {}).get("status")},
             status=409,
         )
+    _store_uploaded_files(job_id, files, _who(request))
     logger.info("job %s continued by %s", job_id, _who(request))
     return web.json_response({"ok": True})
 
@@ -351,6 +486,7 @@ async def api_transcribe(request: web.Request) -> web.Response:
                         logger.info(
                             "transcribed %d bytes via %s", len(audio_bytes), url,
                         )
+                        text = await _cleanup_dictation(session, text)
                     return web.json_response({
                         "text": text or "",
                         "provider": (result or {}).get("provider") if isinstance(result, dict) else None,

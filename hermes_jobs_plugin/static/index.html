@@ -9,13 +9,12 @@
 <link rel="apple-touch-icon" href="icons/icon-192.png">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<link rel="stylesheet" href="style.css?v=20261027d">
+<link rel="stylesheet" href="style.css?v=20261027e">
 </head>
 <body>
 <header class="topbar">
   <h1>Hermes Jobs</h1>
   <div class="topbar-actions">
-    <button id="newJobBtn" class="new-job-btn" aria-label="Create a new job" title="Create a new job">+ New job</button>
     <button id="refreshBtn" class="icon-btn" aria-label="Refresh" title="Refresh">&#x21bb;</button>
   </div>
 </header>
@@ -66,6 +65,13 @@
       <button class="icon-btn modal-close" data-close-modal aria-label="Close">&times;</button>
     </header>
     <div class="modal-body">
+      <div id="composerContextWrap" class="hidden">
+        <div class="section-label">Previous instruction</div>
+        <div class="section-body" id="composerContextInstruction"></div>
+        <div class="section-label">Previous result</div>
+        <div class="reply-box" id="composerContextResult"></div>
+      </div>
+
       <label class="field-label" for="composerInstruction">Job instruction</label>
       <div class="compose-row">
         <textarea id="composerInstruction" class="input textarea composer-textarea" placeholder="Describe the job, or tap the mic and dictate..."></textarea>
@@ -80,6 +86,13 @@
         </div>
       </div>
 
+      <label class="field-label">Attach files (optional)</label>
+      <div class="attach-row">
+        <input type="file" id="composerFilesInput" class="file-input-hidden" multiple>
+        <button type="button" class="btn btn-secondary attach-btn" data-attach-for="composerFilesInput">&#128206; Attach files</button>
+        <div class="attach-chips" data-attach-chips-for="composerFilesInput"></div>
+      </div>
+
       <p class="hint" id="composerHint">Runs in the background. Open the job later to read the final reply.</p>
 
       <div class="modal-actions">
@@ -90,8 +103,27 @@
   </div>
 </div>
 
+<div id="fabWrap" class="fab-wrap">
+  <div id="fabMenu" class="fab-menu hidden">
+    <button class="fab-option" id="fabVoiceBtn"><span class="fab-option-icon">&#127908;</span>New job by voice</button>
+    <button class="fab-option" id="fabFormBtn"><span class="fab-option-icon">&#9998;</span>New job (form)</button>
+  </div>
+  <button class="fab-main" id="fabMainBtn" aria-label="New job" aria-expanded="false">+</button>
+</div>
+
+<div id="voiceOverlay" class="voice-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="voiceOverlayStatus">
+  <div class="voice-overlay-inner">
+    <div class="voice-pulse" id="voicePulse"></div>
+    <p id="voiceOverlayStatus">Listening&hellip; tap stop when done.</p>
+    <div class="voice-overlay-actions">
+      <button class="btn btn-primary" id="voiceStopBtn">Stop &amp; create job</button>
+      <button class="btn btn-secondary" id="voiceCancelBtn">Cancel</button>
+    </div>
+  </div>
+</div>
+
 <div id="toast" class="toast hidden"></div>
 
-<script src="app.js?v=20261027d"></script>
+<script src="app.js?v=20261027e"></script>
 </body>
 </html>
