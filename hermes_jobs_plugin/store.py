@@ -499,6 +499,55 @@ _LIST_COLUMNS = """
 """
 
 MAX_PAGE_LIMIT = 200
+MAX_QUERY_LENGTH = 200
+
+# Backslash, written as a normal (non-raw) Python escape.
+LIKE_ESCAPE = "\\"
+
+
+def _escape_like(term: str) -> str:
+    """Neutralise LIKE wildcards in user input.
+
+    Without this, searching for "job_abc" would have "_" match any
+    character, and a lone "%" would match everything.
+    """
+    out = term.replace(LIKE_ESCAPE, LIKE_ESCAPE + LIKE_ESCAPE)
+    return out.replace("%", LIKE_ESCAPE + "%").replace("_", LIKE_ESCAPE + "_")
+
+
+# Columns a free-text search looks at. id is included so pasting a job id
+# finds it directly.
+_SEARCH_COLUMNS = ("title", "body", "result", "question", "last_failure_error", "id")
+
+
+def _filter_sql(
+    *, statuses=None, q=None, created_from=None, created_to=None,
+):
+    """Build the WHERE tail shared by the page query AND the counts query.
+
+    Both must apply byte-identical filters or the lane badges would
+    disagree with the list they label, so the predicate is built once
+    here rather than written twice.
+    """
+    sql = ""
+    args: list = []
+    if statuses:
+        sql += " AND status IN (%s)" % ",".join("?" for _ in statuses)
+        args.extend(statuses)
+    if q:
+        needle = "%" + _escape_like(q[:MAX_QUERY_LENGTH]) + "%"
+        clauses = " OR ".join(
+            "%s LIKE ? ESCAPE '%s'" % (col, LIKE_ESCAPE) for col in _SEARCH_COLUMNS
+        )
+        sql += " AND (%s)" % clauses
+        args.extend([needle] * len(_SEARCH_COLUMNS))
+    if created_from is not None:
+        sql += " AND created_at >= ?"
+        args.append(int(created_from))
+    if created_to is not None:
+        sql += " AND created_at < ?"
+        args.append(int(created_to))
+    return sql, args
 
 
 def encode_cursor(row: Dict[str, Any]) -> str:
@@ -519,8 +568,9 @@ def decode_cursor(cursor: str):
 
 
 def list_jobs_page(
-    *, statuses: Optional[List[str]] = None, limit: int = 50,
-    cursor: Optional[str] = None, conn=None,
+    *, statuses: Optional[List[str]] = None, q: Optional[str] = None,
+    created_from: Optional[int] = None, created_to: Optional[int] = None,
+    limit: int = 50, cursor: Optional[str] = None, conn=None,
 ):
     """One keyset-paginated page of jobs, newest first.
 
@@ -538,9 +588,12 @@ def list_jobs_page(
         limit = max(1, min(int(limit or 50), MAX_PAGE_LIMIT))
         sql = "SELECT %s FROM tasks WHERE created_by = ?" % _LIST_COLUMNS
         args: list = [MARKER]
-        if statuses:
-            sql += " AND status IN (%s)" % ",".join("?" for _ in statuses)
-            args.extend(statuses)
+        filt_sql, filt_args = _filter_sql(
+            statuses=statuses, q=q,
+            created_from=created_from, created_to=created_to,
+        )
+        sql += filt_sql
+        args.extend(filt_args)
         if cursor:
             ts, job_id = decode_cursor(cursor)
             sql += " AND (created_at < ? OR (created_at = ? AND id < ?))"
@@ -560,19 +613,28 @@ def list_jobs_page(
             conn.close()
 
 
-def count_jobs_by_status(*, conn=None) -> Dict[str, int]:
-    """Totals per status across ALL jobs, not just the loaded page.
+def count_jobs_by_status(
+    *, q: Optional[str] = None, created_from: Optional[int] = None,
+    created_to: Optional[int] = None, conn=None,
+) -> Dict[str, int]:
+    """Totals per status across ALL matching jobs, not just the loaded page.
 
     The lane badges have to count everything or they would just report
-    how far the user has scrolled.
+    how far the user has scrolled. Deliberately takes the search/date
+    filters but NOT a status filter: each lane's badge has to stay
+    correct while the user is looking at a different lane.
     """
     own = conn is None
     conn = conn or connect()
     try:
+        filt_sql, filt_args = _filter_sql(
+            q=q, created_from=created_from, created_to=created_to,
+        )
         return {
             r[0]: r[1] for r in conn.execute(
-                "SELECT status, COUNT(*) FROM tasks WHERE created_by = ? "
-                "GROUP BY status", (MARKER,),
+                "SELECT status, COUNT(*) FROM tasks WHERE created_by = ?"
+                + filt_sql + " GROUP BY status",
+                [MARKER] + filt_args,
             )
         }
     finally:

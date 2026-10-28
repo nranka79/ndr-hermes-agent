@@ -9,7 +9,7 @@
 <link rel="apple-touch-icon" href="icons/icon-192.png">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<link rel="stylesheet" href="style.css?v=20261028a">
+<link rel="stylesheet" href="style.css?v=20261028b">
 </head>
 <body>
 <header class="topbar">
@@ -28,6 +28,26 @@
   <button class="tab" data-lane="done">Done <span class="badge" id="badge-done">0</span></button>
   <button class="tab" data-lane="dropped">Dropped <span class="badge" id="badge-dropped">0</span></button>
 </nav>
+
+<div class="filterbar">
+  <div class="search-wrap">
+    <span class="search-icon">&#128269;</span>
+    <input id="searchInput" class="search-input" type="search" inputmode="search"
+           placeholder="Search all jobs..." autocomplete="off" aria-label="Search jobs">
+    <button id="searchClear" class="search-clear hidden" aria-label="Clear search">&times;</button>
+  </div>
+  <div class="day-chips" id="dayChips">
+    <button class="day-chip active" data-day="all">All</button>
+    <button class="day-chip" data-day="today">Today</button>
+    <button class="day-chip" data-day="yesterday">Yesterday</button>
+    <button class="day-chip" data-day="7d">7 days</button>
+    <input type="date" id="datePick" class="date-input" aria-label="Pick a day">
+  </div>
+  <div class="filter-summary hidden" id="filterSummary">
+    <span id="filterSummaryText"></span>
+    <button id="clearFilters" class="link-btn">Clear</button>
+  </div>
+</div>
 
 <main class="jobs-wrap">
   <div class="jobs-head" id="jobsHead">
@@ -128,6 +148,6 @@
 
 <div id="toast" class="toast hidden"></div>
 
-<script src="app.js?v=20261028a"></script>
+<script src="app.js?v=20261028b"></script>
 </body>
 </html>

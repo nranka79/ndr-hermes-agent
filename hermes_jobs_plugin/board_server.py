@@ -272,15 +272,38 @@ async def api_list_jobs(request: web.Request) -> web.Response:
     except ValueError:
         return web.json_response({"error": "limit must be an integer"}, status=400)
 
+    q = (request.query.get("q") or "").strip() or None
+
+    # Date bounds arrive as epoch seconds computed by the BROWSER from
+    # local midnight. The server never derives a calendar day itself: it
+    # has no idea what timezone the user is in, and bucketing by UTC date
+    # would file an early-morning IST job under the previous day.
+    def _epoch(name):
+        raw = request.query.get(name)
+        if raw in (None, ""):
+            return None
+        return int(raw)
+
+    try:
+        created_from = _epoch("from")
+        created_to = _epoch("to")
+    except ValueError:
+        return web.json_response(
+            {"error": "from/to must be epoch seconds"}, status=400,
+        )
+
     cursor = request.query.get("cursor") or None
     try:
         rows, next_cursor = store.list_jobs_page(
-            statuses=statuses, limit=limit, cursor=cursor,
+            statuses=statuses, q=q, created_from=created_from,
+            created_to=created_to, limit=limit, cursor=cursor,
         )
     except ValueError as exc:
         return web.json_response({"error": str(exc)}, status=400)
 
-    by_status = store.count_jobs_by_status()
+    by_status = store.count_jobs_by_status(
+        q=q, created_from=created_from, created_to=created_to,
+    )
     counts: Dict[str, int] = {}
     for status, n in by_status.items():
         counts[LANES.get(status, "other")] = counts.get(LANES.get(status, "other"), 0) + n

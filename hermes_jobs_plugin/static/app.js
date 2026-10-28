@@ -25,6 +25,12 @@ function freshLaneState() {
 }
 ALL_LANES.forEach((l) => { laneState[l] = freshLaneState(); });
 
+// Search + date filter, shared across lanes: searching for something and
+// then flipping tabs should keep the search applied, with each lane's
+// badge showing how many of ITS jobs match.
+const filterState = { q: "", from: null, to: null, day: "all" };
+let searchDebounce = null;
+
 let activeJobId = null;
 let sheetSignature = "";
 let pollTimer = null;
@@ -173,6 +179,18 @@ function upsertJob(incoming) {
   jobsById.set(incoming.id, merged);
 }
 
+function filterParams() {
+  const p = new URLSearchParams();
+  if (filterState.q) p.set("q", filterState.q);
+  if (filterState.from != null) p.set("from", String(filterState.from));
+  if (filterState.to != null) p.set("to", String(filterState.to));
+  return p;
+}
+
+function filterIsActive() {
+  return !!filterState.q || filterState.day !== "all";
+}
+
 async function loadLane(lane, opts = {}) {
   const st = laneState[lane];
   if (st.loading) return;
@@ -180,7 +198,9 @@ async function loadLane(lane, opts = {}) {
   st.loading = true;
   updateSentinel();
   try {
-    const qs = new URLSearchParams({ lane, limit: String(PAGE_SIZE) });
+    const qs = filterParams();
+    qs.set("lane", lane);
+    qs.set("limit", String(PAGE_SIZE));
     const cursor = opts.reset ? null : st.cursor;
     if (cursor) qs.set("cursor", cursor);
 
@@ -229,7 +249,10 @@ async function pollTick() {
     await loadLane(currentLane, { reset: true });
   } else {
     try {
-      const data = await apiGet("/api/jobs?lane=" + currentLane + "&limit=1");
+      const qs = filterParams();
+      qs.set("lane", currentLane);
+      qs.set("limit", "1");
+      const data = await apiGet("/api/jobs?" + qs.toString());
       applyCounts(data.counts);
       markUpdated();
     } catch (e) {
@@ -264,6 +287,89 @@ async function manualRefresh() {
     icon.classList.remove("spinning");
     btn.disabled = false;
   }
+}
+
+function localMidnight(dateObj) {
+  const x = new Date(dateObj);
+  x.setHours(0, 0, 0, 0);
+  return Math.floor(x.getTime() / 1000);
+}
+
+// Day boundaries are computed HERE, in the browser, and sent to the
+// server as plain epoch seconds. The server never works out what a
+// "day" is -- it does not know the viewer's timezone, and bucketing by
+// UTC date would file an early-morning job under the day before.
+function setDayFilter(key, dateStr) {
+  const today = localMidnight(new Date());
+  filterState.day = key;
+
+  if (key === "today") {
+    filterState.from = today;
+    filterState.to = today + 86400;
+  } else if (key === "yesterday") {
+    filterState.from = today - 86400;
+    filterState.to = today;
+  } else if (key === "7d") {
+    filterState.from = today - 6 * 86400;
+    filterState.to = today + 86400;
+  } else if (key === "date" && dateStr) {
+    // "YYYY-MM-DD" parsed by hand: new Date("2026-10-28") is treated as
+    // UTC midnight by spec, which lands on the wrong local day for any
+    // timezone east or west of UTC.
+    const [y, m, d] = dateStr.split("-").map(Number);
+    const from = localMidnight(new Date(y, m - 1, d));
+    filterState.from = from;
+    filterState.to = from + 86400;
+  } else {
+    filterState.day = "all";
+    filterState.from = null;
+    filterState.to = null;
+  }
+
+  $$(".day-chip").forEach((c) => c.classList.toggle("active", c.dataset.day === filterState.day));
+  const picker = $("#datePick");
+  picker.classList.toggle("active", filterState.day === "date");
+  if (filterState.day !== "date") picker.value = "";
+
+  applyFilters();
+}
+
+function dayFilterLabel() {
+  if (filterState.day === "today") return "today";
+  if (filterState.day === "yesterday") return "yesterday";
+  if (filterState.day === "7d") return "last 7 days";
+  if (filterState.day === "date" && filterState.from != null) {
+    return new Date(filterState.from * 1000).toLocaleDateString(undefined, {
+      day: "numeric", month: "short", year: "numeric",
+    });
+  }
+  return "";
+}
+
+function updateFilterSummary() {
+  const bits = [];
+  if (filterState.q) bits.push('matching "' + filterState.q + '"');
+  const day = dayFilterLabel();
+  if (day) bits.push(day);
+  const active = bits.length > 0;
+  $("#filterSummary").classList.toggle("hidden", !active);
+  $("#filterSummaryText").textContent = active ? "Showing jobs " + bits.join(" \u00b7 ") : "";
+}
+
+// Any filter change invalidates every cached page: the cursor space
+// changes, so old pages cannot be extended.
+function applyFilters() {
+  invalidateLanes();
+  updateFilterSummary();
+  renderList();
+  loadLane(currentLane, { reset: true });
+}
+
+function clearFilters() {
+  filterState.q = "";
+  $("#searchInput").value = "";
+  $("#searchClear").classList.add("hidden");
+  setDayFilter("all");
 }
 
 function setLane(lane) {
@@ -304,6 +410,8 @@ function renderList() {
     p.className = "empty";
     p.textContent = !st.loaded
       ? "Loading\u2026"
+      : filterIsActive()
+      ? "No jobs in this tab match these filters."
       : currentLane === "needs_you"
       ? "Nothing needs you right now."
       : "No jobs here.";
@@ -311,8 +419,40 @@ function renderList() {
     updateSentinel();
     return;
   }
-  for (const j of items) list.appendChild(renderRow(j));
+
+  // Day headers are inserted client-side over the whole loaded list, so
+  // a day spanning a page boundary gets one header, not two.
+  let lastDay = null;
+  for (const j of items) {
+    const key = dayKeyOf(j.created_at);
+    if (key !== lastDay) {
+      lastDay = key;
+      const h = document.createElement("div");
+      h.className = "day-header";
+      h.textContent = dayLabelOf(j.created_at);
+      list.appendChild(h);
+    }
+    list.appendChild(renderRow(j));
+  }
   updateSentinel();
+}
+
+function dayKeyOf(ts) {
+  const d = new Date((ts || 0) * 1000);
+  return d.getFullYear() + "-" + d.getMonth() + "-" + d.getDate();
+}
+
+function dayLabelOf(ts) {
+  const d = new Date((ts || 0) * 1000);
+  d.setHours(0, 0, 0, 0);
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const diff = Math.round((today.getTime() - d.getTime()) / 86400000);
+  if (diff === 0) return "Today";
+  if (diff === 1) return "Yesterday";
+  const opts = { weekday: "short", day: "numeric", month: "short" };
+  if (d.getFullYear() !== today.getFullYear()) opts.year = "numeric";
+  return d.toLocaleDateString(undefined, opts);
 }
 
 // Footer under the list: drives infinite scroll and says whether more
@@ -896,6 +1036,46 @@ function init() {
   });
 
   $("#refreshBtn").onclick = manualRefresh;
+
+  // Search is debounced so a fast typist fires one query, not twelve.
+  // It runs server-side across every job, not just the loaded pages.
+  const searchInput = $("#searchInput");
+  searchInput.addEventListener("input", () => {
+    $("#searchClear").classList.toggle("hidden", !searchInput.value);
+    clearTimeout(searchDebounce);
+    searchDebounce = setTimeout(() => {
+      const next = searchInput.value.trim();
+      if (next === filterState.q) return;
+      filterState.q = next;
+      applyFilters();
+    }, 300);
+  });
+  searchInput.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape") return;
+    e.stopPropagation();
+    if (searchInput.value) {
+      searchInput.value = "";
+      $("#searchClear").classList.add("hidden");
+      filterState.q = "";
+      applyFilters();
+    }
+  });
+  $("#searchClear").onclick = () => {
+    searchInput.value = "";
+    $("#searchClear").classList.add("hidden");
+    filterState.q = "";
+    applyFilters();
+    searchInput.focus();
+  };
+
+  $$(".day-chip").forEach((chip) => {
+    chip.onclick = () => setDayFilter(chip.dataset.day);
+  });
+  $("#datePick").onchange = (e) => {
+    if (e.target.value) setDayFilter("date", e.target.value);
+    else setDayFilter("all");
+  };
+  $("#clearFilters").onclick = clearFilters;
   $("#composerCancel").onclick = closeComposer;
   $("#composerSubmit").onclick = submitComposer;
 
