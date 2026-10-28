@@ -641,3 +641,11 @@ body.modal-open { overflow: hidden; }
   width: 100%;
 }
 .voice-overlay-actions .btn { flex: 1; }
+
+.scroll-sentinel {
+  text-align: center;
+  padding: 16px 8px calc(28px + var(--safe-bottom));
+  font-size: 12px;
+  color: var(--text-dim);
+  min-height: 20px;
+}

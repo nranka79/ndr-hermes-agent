@@ -9,8 +9,22 @@ const STATUS_LABEL = {
   archived: "Dropped",
 };
 
+const ALL_LANES = ["needs_you", "working", "done", "dropped"];
+const PAGE_SIZE = 50;
+
 let currentLane = "needs_you";
-let jobsCache = [];
+// id -> job object. Holds both slim list rows and (once a job has been
+// opened) the full detail object; see upsertJob for the merge rule.
+const jobsById = new Map();
+// Per-lane pagination state. ids are kept in server order (newest first)
+// and only ever appended to, so scrolling never reshuffles what is
+// already on screen.
+const laneState = {};
+function freshLaneState() {
+  return { ids: [], cursor: null, done: false, loading: false, loaded: false };
+}
+ALL_LANES.forEach((l) => { laneState[l] = freshLaneState(); });
+
 let activeJobId = null;
 let sheetSignature = "";
 let pollTimer = null;
@@ -138,32 +152,101 @@ function markUpdated() {
   });
 }
 
-async function loadJobs() {
+function applyCounts(counts) {
+  for (const lane of ALL_LANES) {
+    const el = $("#badge-" + lane);
+    if (el) el.textContent = (counts && counts[lane]) || 0;
+  }
+}
+
+// A slim list row must never overwrite a full detail object already
+// fetched for the same job -- otherwise reopening a job would blank its
+// instruction/result until the detail call came back again.
+function upsertJob(incoming) {
+  const existing = jobsById.get(incoming.id);
+  if (!existing) {
+    jobsById.set(incoming.id, incoming);
+    return;
+  }
+  const merged = { ...existing, ...incoming };
+  if (existing.slim === false && incoming.slim) merged.slim = false;
+  jobsById.set(incoming.id, merged);
+}
+
+async function loadLane(lane, opts = {}) {
+  const st = laneState[lane];
+  if (st.loading) return;
+  if (!opts.reset && st.done && st.loaded) return;
+  st.loading = true;
+  updateSentinel();
   try {
-    const data = await apiGet("/api/jobs");
-    jobsCache = data.jobs || [];
-    for (const lane of ["needs_you", "working", "done", "dropped"]) {
-      const el = $("#badge-" + lane);
-      if (el) el.textContent = data.counts[lane] || 0;
+    const qs = new URLSearchParams({ lane, limit: String(PAGE_SIZE) });
+    const cursor = opts.reset ? null : st.cursor;
+    if (cursor) qs.set("cursor", cursor);
+
+    const data = await apiGet("/api/jobs?" + qs.toString());
+    const incoming = data.jobs || [];
+    incoming.forEach(upsertJob);
+
+    if (opts.reset) {
+      st.ids = incoming.map((j) => j.id);
+    } else {
+      const seen = new Set(st.ids);
+      st.ids = st.ids.concat(incoming.map((j) => j.id).filter((id) => !seen.has(id)));
     }
-    renderList();
-    if (activeJobId && !$("#jobModal").classList.contains("hidden")) {
-      const j = jobsCache.find((x) => x.id === activeJobId);
-      if (j && jobSignature(j) !== sheetSignature && jobModalIsIdle()) {
-        refreshOpenJob();
-      }
-    }
+    st.cursor = data.next_cursor || null;
+    st.done = !data.next_cursor;
+    st.loaded = true;
+
+    applyCounts(data.counts);
+    if (lane === currentLane) renderList();
     markUpdated();
   } catch (e) {
     console.error(e);
     showToast("Could not load jobs");
+  } finally {
+    st.loading = false;
+    updateSentinel();
   }
 }
 
-// Wraps loadJobs() with visible feedback for an explicit tap on the
+// Throw away every page so each lane refetches on next view. Used after
+// any action that can move a job between lanes (answer, continue, drop,
+// create) -- the alternative is guessing which lanes changed.
+function invalidateLanes() {
+  ALL_LANES.forEach((l) => { laneState[l] = freshLaneState(); });
+}
+
+async function pollTick() {
+  // Only re-fetch page 1 when the user is near the top. Deep-scrolled,
+  // resetting to page 1 would yank rows out from under them, and a job
+  // that moved lanes further down the list is not visible from page 1
+  // anyway -- so counts stay live and the list reconciles on manual
+  // refresh or a lane switch.
+  const atTop = window.scrollY < 80;
+  const st = laneState[currentLane];
+  if (atTop && !st.loading) {
+    await loadLane(currentLane, { reset: true });
+  } else {
+    try {
+      const data = await apiGet("/api/jobs?lane=" + currentLane + "&limit=1");
+      applyCounts(data.counts);
+      markUpdated();
+    } catch (e) {
+      console.error(e);
+    }
+  }
+  // The open modal refreshes itself rather than inferring state from the
+  // list -- it needs full detail (events/artifacts) the list never carries.
+  if (activeJobId && !$("#jobModal").classList.contains("hidden") && jobModalIsIdle()) {
+    refreshOpenJob();
+  }
+}
+
+// Wraps the lane reload with visible feedback for an explicit tap on the
 // refresh button -- spins the icon, disables the button so a second tap
 // can't pile up a duplicate request, and toasts a one-line confirmation.
-// The silent 5s background poll still calls loadJobs() directly and only
+// The silent 5s background poll (pollTick) refreshes quietly and only
 // shows through the "Updated HH:MM:SS" label (markUpdated), which both
 // paths share -- no visible refresh ever happens without that label
 // moving.
@@ -174,7 +257,8 @@ async function manualRefresh() {
   btn.disabled = true;
   icon.classList.add("spinning");
   try {
-    await loadJobs();
+    invalidateLanes();
+    await loadLane(currentLane, { reset: true });
     showToast("Jobs updated");
   } finally {
     icon.classList.remove("spinning");
@@ -186,13 +270,8 @@ function setLane(lane) {
   currentLane = lane;
   $$(".tab").forEach((t) => t.classList.toggle("active", t.dataset.lane === lane));
   renderList();
-}
-
-function jobSummary(j) {
-  if (j.pending_kind === "clarification") return j.question || "Waiting on your answer.";
-  if (j.pending_kind === "failure") return j.last_failure_error || "The run failed.";
-  if (j.status === "done") return j.result || "No final reply recorded.";
-  return j.instruction || "";
+  window.scrollTo({ top: 0 });
+  if (!laneState[lane].loaded) loadLane(lane, { reset: true });
 }
 
 function jobSignature(j) {
@@ -213,9 +292,8 @@ function jobModalIsIdle() {
 
 function renderList() {
   const list = $("#list");
-  const items = jobsCache
-    .filter((j) => j.lane === currentLane)
-    .sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
+  const st = laneState[currentLane];
+  const items = st.ids.map((id) => jobsById.get(id)).filter(Boolean);
 
   list.className = "jobs-list" + (items.length === 0 ? " solo" : "");
   $("#jobsHead").classList.toggle("hidden", items.length === 0);
@@ -224,13 +302,34 @@ function renderList() {
   if (items.length === 0) {
     const p = document.createElement("p");
     p.className = "empty";
-    p.textContent = currentLane === "needs_you"
+    p.textContent = !st.loaded
+      ? "Loading\u2026"
+      : currentLane === "needs_you"
       ? "Nothing needs you right now."
       : "No jobs here.";
     list.appendChild(p);
+    updateSentinel();
     return;
   }
   for (const j of items) list.appendChild(renderRow(j));
+  updateSentinel();
+}
+
+// Footer under the list: drives infinite scroll and says whether more
+// pages exist.
+function updateSentinel() {
+  const el = $("#scrollSentinel");
+  if (!el) return;
+  const st = laneState[currentLane];
+  if (st.loading) {
+    el.textContent = "Loading more\u2026";
+  } else if (st.loaded && !st.done) {
+    el.textContent = "Scroll for more";
+  } else if (st.loaded && st.ids.length) {
+    el.textContent = "All " + st.ids.length + " shown";
+  } else {
+    el.textContent = "";
+  }
 }
 
 function renderRow(j) {
@@ -255,7 +354,7 @@ function renderRow(j) {
       <div class="job-id">${escapeHtml(j.id)}${j.resume_rounds ? ` &middot; ${j.resume_rounds} round(s)` : ""}${j.parent_job_id ? ` &middot; chained` : ""}</div>
     </div>
     <div class="job-detail">
-      <div class="job-detail-text">${escapeHtml(jobSummary(j))}</div>
+      <div class="job-detail-text">${escapeHtml(j.snippet || "")}</div>
     </div>
     <div class="job-origin">${escapeHtml(j.origin_display || "")}</div>
     <div class="job-time">${fmtTime(j.created_at)}</div>
@@ -270,7 +369,7 @@ function metaItem(k, v) {
 }
 
 function openJob(jobId) {
-  const j = jobsCache.find((x) => x.id === jobId);
+  const j = jobsById.get(jobId);
   if (!j) return;
   activeJobId = jobId;
   sheetSignature = "";
@@ -291,9 +390,11 @@ async function refreshOpenJob() {
   try {
     const detail = await apiGet(`/api/jobs/${jobId}`);
     if (activeJobId !== jobId) return; // closed/switched while in flight
-    const idx = jobsCache.findIndex((x) => x.id === jobId);
-    if (idx >= 0) jobsCache[idx] = { ...jobsCache[idx], ...detail };
-    if (jobModalIsIdle()) renderJob(detail);
+    detail.slim = false;
+    upsertJob(detail);
+    if (jobModalIsIdle() && jobSignature(detail) !== sheetSignature) {
+      renderJob(jobsById.get(jobId));
+    }
   } catch (e) {
     console.error(e);
   }
@@ -339,8 +440,9 @@ function renderJob(j) {
     ${metaItem("Rounds", j.resume_rounds ? String(j.resume_rounds) : "")}
   </div>`;
 
+  const pending = j.slim ? "Loading\u2026" : "";
   html += `<div class="section-label">Instruction</div>
-    <div class="section-body">${linkify(j.instruction || "")}</div>`;
+    <div class="section-body">${linkify(j.instruction || pending)}</div>`;
 
   if (j.input_attachments && j.input_attachments.length) {
     html += `<div class="section-label">Files you attached</div>`
@@ -352,7 +454,7 @@ function renderJob(j) {
       ? `\n\n${escapeHtml(j.question_context)}`
       : "";
     html += `<div class="section-label">Waiting on you</div>
-      <div class="question-box">${linkify(j.question || "")}${context}</div>
+      <div class="question-box">${linkify(j.question || pending)}${context}</div>
       ${j.suggested_options && j.suggested_options.length ? `
         <div class="options-row">
           ${j.suggested_options.map((o) => `<button class="option-chip" data-opt="${escapeHtml(o)}">${escapeHtml(o)}</button>`).join("")}
@@ -371,7 +473,7 @@ function renderJob(j) {
       </div>`;
   } else if (j.pending_kind === "failure") {
     html += `<div class="section-label">What went wrong</div>
-      <div class="section-body">${escapeHtml(j.last_failure_error || "")}</div>
+      <div class="section-body">${escapeHtml(j.last_failure_error || pending)}</div>
       <label class="field-label" for="answerInput">Optional extra input before retrying</label>
       <div class="compose-row">
         <textarea id="answerInput" class="input textarea" placeholder="Anything to add before retrying (optional)..."></textarea>
@@ -385,7 +487,7 @@ function renderJob(j) {
       </div>`;
   } else if (j.status === "done") {
     html += `<div class="section-label">Final reply</div>
-      <div class="reply-box">${linkify(j.result || "No final reply was recorded for this job.")}</div>`;
+      <div class="reply-box">${linkify(j.result || pending || "No final reply was recorded for this job.")}</div>`;
     if (j.artifacts && j.artifacts.length) {
       html += `<div class="section-label">Files produced</div>` + fileListHtml(j.id, j.artifacts);
     }
@@ -446,8 +548,8 @@ function wireJobActions(j) {
         await apiPostForm(`/api/jobs/${j.id}/answer`, { text }, files);
         closeJob();
         showToast("Clarification sent — job continuing");
+        invalidateLanes();
         setLane("working");
-        loadJobs();
       } catch (e) {
         showToast("Failed: " + e.message);
       } finally {
@@ -467,8 +569,8 @@ function wireJobActions(j) {
         }, files);
         closeJob();
         showToast("Job retrying");
+        invalidateLanes();
         setLane("working");
-        loadJobs();
       } catch (e) {
         showToast("Failed: " + e.message);
       } finally {
@@ -495,7 +597,8 @@ function wireJobActions(j) {
         await apiPost(`/api/jobs/${j.id}/drop`, { reason: "dropped from board" });
         closeJob();
         showToast("Job dropped");
-        loadJobs();
+        invalidateLanes();
+        loadLane(currentLane, { reset: true });
       } catch (e) {
         showToast("Failed: " + e.message);
       } finally {
@@ -668,8 +771,8 @@ async function submitComposer() {
     await apiPostForm("/api/jobs", fields, files);
     closeComposer();
     showToast(wasChain ? "Next job queued" : wasResubmit ? "New job created from your changes" : "Job queued");
+    invalidateLanes();
     setLane("working");
-    loadJobs();
   } catch (e) {
     showToast("Failed: " + e.message);
   } finally {
@@ -775,8 +878,8 @@ async function startVoiceOnlyJob() {
       overlay.classList.add("hidden");
       updateBodyLock();
       showToast("Job queued from dictation");
+      invalidateLanes();
       setLane("working");
-      loadJobs();
     } catch (e) {
       overlay.classList.add("hidden");
       updateBodyLock();
@@ -837,8 +940,17 @@ function init() {
   });
 
   wireMicButtons(document);
-  loadJobs();
-  pollTimer = setInterval(loadJobs, 5000);
+  loadLane(currentLane, { reset: true });
+  pollTimer = setInterval(pollTick, 5000);
+
+  // Infinite scroll: the sentinel sits under the list, so it only comes
+  // into view once the user has reached the bottom of the loaded pages.
+  const sentinel = $("#scrollSentinel");
+  if (sentinel && "IntersectionObserver" in window) {
+    new IntersectionObserver((entries) => {
+      if (entries.some((e) => e.isIntersecting)) loadLane(currentLane);
+    }, { rootMargin: "400px" }).observe(sentinel);
+  }
 
   if ("serviceWorker" in navigator) {
     navigator.serviceWorker.register("sw.js", { updateViaCache: "none" }).catch(() => {});

@@ -210,15 +210,87 @@ LANES = {
 }
 
 
+# lane -> the statuses it contains (inverse of LANES above).
+LANE_STATUSES: Dict[str, List[str]] = {}
+for _status, _lane in LANES.items():
+    LANE_STATUSES.setdefault(_lane, []).append(_status)
+
+DEFAULT_PAGE_LIMIT = 50
+
+
+def _snippet(row: Dict[str, Any]) -> str:
+    """One line of preview text, mirroring what the row used to show.
+
+    Same precedence the frontend's jobSummary() applied client-side, moved
+    server-side so the list no longer has to ship the full question /
+    result / instruction text just to render three clamped lines.
+    """
+    if row.get("pending_kind") == store.PENDING_CLARIFICATION:
+        return row.get("snip_question") or "Waiting on your answer."
+    if row.get("pending_kind") == store.PENDING_FAILURE:
+        return row.get("snip_failure") or "The run failed."
+    if row.get("status") == store.ST_DONE:
+        return row.get("snip_result") or "No final reply recorded."
+    return row.get("snip_body") or ""
+
+
+def _serialize_slim(row: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "id": row["id"],
+        "title": row.get("title") or "",
+        "status": row.get("status"),
+        "lane": LANES.get(row.get("status"), "other"),
+        "pending_kind": row.get("pending_kind"),
+        "snippet": _snippet(row),
+        "created_at": row.get("created_at"),
+        "completed_at": row.get("completed_at"),
+        "dropped_at": row.get("dropped_at"),
+        "resume_rounds": row.get("resume_rounds") or 0,
+        "parent_job_id": row.get("parent_job_id"),
+        "origin_platform": row.get("origin_platform"),
+        "origin_display": _display_origin(row),
+        # Tells the UI this object is a list row, not a full job -- the
+        # detail modal must wait for /api/jobs/{id} before it can render
+        # instruction/result/question bodies.
+        "slim": True,
+    }
+
+
 async def api_list_jobs(request: web.Request) -> web.Response:
-    rows = store.list_jobs(limit=500)
-    jobs = [_serialize(r) for r in rows]
-    for j in jobs:
-        j["lane"] = LANES.get(j["status"], "other")
+    """One page of jobs for a lane, newest first, plus global lane counts.
+
+    Paginated because the old "return every job in full" response was
+    278 KB at 59 jobs and the board re-fetches it every 5 seconds.
+    """
+    lane = (request.query.get("lane") or "").strip()
+    statuses = LANE_STATUSES.get(lane) if lane else None
+    if lane and statuses is None:
+        return web.json_response({"error": "unknown lane %r" % lane}, status=400)
+
+    try:
+        limit = int(request.query.get("limit") or DEFAULT_PAGE_LIMIT)
+    except ValueError:
+        return web.json_response({"error": "limit must be an integer"}, status=400)
+
+    cursor = request.query.get("cursor") or None
+    try:
+        rows, next_cursor = store.list_jobs_page(
+            statuses=statuses, limit=limit, cursor=cursor,
+        )
+    except ValueError as exc:
+        return web.json_response({"error": str(exc)}, status=400)
+
+    by_status = store.count_jobs_by_status()
     counts: Dict[str, int] = {}
-    for j in jobs:
-        counts[j["lane"]] = counts.get(j["lane"], 0) + 1
-    return web.json_response({"jobs": jobs, "counts": counts})
+    for status, n in by_status.items():
+        counts[LANES.get(status, "other")] = counts.get(LANES.get(status, "other"), 0) + n
+
+    return web.json_response({
+        "jobs": [_serialize_slim(r) for r in rows],
+        "next_cursor": next_cursor,
+        "counts": counts,
+        "total": sum(by_status.values()),
+    })
 
 
 MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024

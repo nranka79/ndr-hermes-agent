@@ -105,6 +105,28 @@ def ensure_schema(conn=None) -> Dict[str, List[str]]:
                         continue
                     conn.execute("ALTER TABLE %s ADD COLUMN %s" % (table, ddl))
                     added[table].append(name)
+            # The board's list query is WHERE created_by = 'hermes_jobs'
+            # ORDER BY created_at DESC, which full-scans + sorts without
+            # this. Unlike an FTS trigger, an index is behaviourally
+            # transparent to kanban's own code -- it costs a little write
+            # amplification and changes nothing else -- so it is safe to
+            # add to the shared table.
+            # Covers the exact keyset ORDER BY (created_at DESC, id DESC);
+            # without the trailing id SQLite falls back to a temp b-tree
+            # for the tiebreaker. Superseded name is dropped so this
+            # self-migrates on the next boot.
+            #
+            # Known limit: a lane query adds `status IN (...)`, which this
+            # index filters inline while walking in date order. Ideal when
+            # the lane holds most rows (done), but a near-empty lane scans
+            # the whole index. Fine to tens of thousands of rows; revisit
+            # with a (created_by, status, created_at DESC) index if lane
+            # queries ever get slow.
+            conn.execute("DROP INDEX IF EXISTS idx_hermes_jobs_created")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_hermes_jobs_page "
+                "ON tasks(created_by, created_at DESC, id DESC)"
+            )
     finally:
         if own:
             conn.close()
@@ -457,6 +479,102 @@ def list_jobs(
         sql += " ORDER BY created_at DESC LIMIT ?"
         args.append(limit)
         return [dict(r) for r in conn.execute(sql, args)]
+    finally:
+        if own:
+            conn.close()
+
+
+# Columns the board's LIST view needs. Deliberately excludes the big text
+# blobs (body/result/question/answer in full) -- those are only ever read
+# through get_job()/api_get_job for ONE job at a time. The list used to
+# return everything for every job, which at 59 jobs was already 278 KB per
+# poll every 5s; a snippet is all a row can display anyway.
+_LIST_COLUMNS = """
+    id, title, status, created_at, completed_at, dropped_at, pending_kind,
+    resume_rounds, parent_job_id, origin_platform, origin_chat_id, tenant,
+    substr(COALESCE(question, ''), 1, 240)           AS snip_question,
+    substr(COALESCE(last_failure_error, ''), 1, 240) AS snip_failure,
+    substr(COALESCE(result, ''), 1, 240)             AS snip_result,
+    substr(COALESCE(body, ''), 1, 240)               AS snip_body
+"""
+
+MAX_PAGE_LIMIT = 200
+
+
+def encode_cursor(row: Dict[str, Any]) -> str:
+    return "%d:%s" % (int(row.get("created_at") or 0), row["id"])
+
+
+def decode_cursor(cursor: str):
+    """Return (created_at, id). Raises ValueError on anything malformed.
+
+    Deliberately strict rather than silently falling back to page 1: a
+    bad cursor that quietly returns the first page again would make the
+    UI's infinite scroll loop forever on the same rows.
+    """
+    ts, _, job_id = (cursor or "").partition(":")
+    if not ts or not job_id:
+        raise ValueError("malformed cursor")
+    return int(ts), job_id
+
+
+def list_jobs_page(
+    *, statuses: Optional[List[str]] = None, limit: int = 50,
+    cursor: Optional[str] = None, conn=None,
+):
+    """One keyset-paginated page of jobs, newest first.
+
+    Keyset (``created_at``, ``id``) rather than OFFSET: jobs are created
+    continuously here, and OFFSET silently skips or repeats rows when a
+    new job lands while the user is paging. ``id`` is the tiebreaker --
+    ``created_at`` is epoch SECONDS, so a burst of jobs can share one.
+
+    Returns ``(rows, next_cursor)``; ``next_cursor`` is None on the last
+    page.
+    """
+    own = conn is None
+    conn = conn or connect()
+    try:
+        limit = max(1, min(int(limit or 50), MAX_PAGE_LIMIT))
+        sql = "SELECT %s FROM tasks WHERE created_by = ?" % _LIST_COLUMNS
+        args: list = [MARKER]
+        if statuses:
+            sql += " AND status IN (%s)" % ",".join("?" for _ in statuses)
+            args.extend(statuses)
+        if cursor:
+            ts, job_id = decode_cursor(cursor)
+            sql += " AND (created_at < ? OR (created_at = ? AND id < ?))"
+            args.extend([ts, ts, job_id])
+        # +1 row tells us whether another page exists without a COUNT.
+        sql += " ORDER BY created_at DESC, id DESC LIMIT ?"
+        args.append(limit + 1)
+
+        rows = [dict(r) for r in conn.execute(sql, args)]
+        next_cursor = None
+        if len(rows) > limit:
+            rows = rows[:limit]
+            next_cursor = encode_cursor(rows[-1])
+        return rows, next_cursor
+    finally:
+        if own:
+            conn.close()
+
+
+def count_jobs_by_status(*, conn=None) -> Dict[str, int]:
+    """Totals per status across ALL jobs, not just the loaded page.
+
+    The lane badges have to count everything or they would just report
+    how far the user has scrolled.
+    """
+    own = conn is None
+    conn = conn or connect()
+    try:
+        return {
+            r[0]: r[1] for r in conn.execute(
+                "SELECT status, COUNT(*) FROM tasks WHERE created_by = ? "
+                "GROUP BY status", (MARKER,),
+            )
+        }
     finally:
         if own:
             conn.close()
