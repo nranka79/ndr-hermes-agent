@@ -420,39 +420,14 @@ function renderList() {
     return;
   }
 
-  // Day headers are inserted client-side over the whole loaded list, so
-  // a day spanning a page boundary gets one header, not two.
-  let lastDay = null;
-  for (const j of items) {
-    const key = dayKeyOf(j.created_at);
-    if (key !== lastDay) {
-      lastDay = key;
-      const h = document.createElement("div");
-      h.className = "day-header";
-      h.textContent = dayLabelOf(j.created_at);
-      list.appendChild(h);
-    }
-    list.appendChild(renderRow(j));
-  }
+  // No client-side day-group headers -- the All/Today/Yesterday/7-days
+  // chips + date picker in the filter bar already cover "jobs for a
+  // particular day" without a second, buggier mechanism for the same
+  // thing (the sticky header's hardcoded top offset didn't account for
+  // the filter bar's real height, so it overlapped/hid the row right
+  // under it -- simplest fix was removing the redundant feature).
+  for (const j of items) list.appendChild(renderRow(j));
   updateSentinel();
-}
-
-function dayKeyOf(ts) {
-  const d = new Date((ts || 0) * 1000);
-  return d.getFullYear() + "-" + d.getMonth() + "-" + d.getDate();
-}
-
-function dayLabelOf(ts) {
-  const d = new Date((ts || 0) * 1000);
-  d.setHours(0, 0, 0, 0);
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const diff = Math.round((today.getTime() - d.getTime()) / 86400000);
-  if (diff === 0) return "Today";
-  if (diff === 1) return "Yesterday";
-  const opts = { weekday: "short", day: "numeric", month: "short" };
-  if (d.getFullYear() !== today.getFullYear()) opts.year = "numeric";
-  return d.toLocaleDateString(undefined, opts);
 }
 
 // Footer under the list: drives infinite scroll and says whether more

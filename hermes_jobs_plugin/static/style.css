@@ -752,25 +752,6 @@ body.modal-open { overflow: hidden; }
   padding: 0 2px;
 }
 
-/* ---------------------------------------------------------------------- */
-/* Day group headers in the list                                           */
-/* ---------------------------------------------------------------------- */
-.day-header {
-  position: sticky;
-  top: calc(var(--topbar-h) + var(--safe-top) + 44px);
-  z-index: 5;
-  padding: 9px 14px;
-  background: var(--surface-3);
-  border-bottom: 1px solid var(--border);
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--text-dim);
-}
-.day-header:first-child { border-top: none; }
-
 @media (max-width: 640px) {
   .filterbar { padding: 8px 10px 4px; }
-  .day-header { top: 0; }
 }

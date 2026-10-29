@@ -3,7 +3,7 @@
 // on a control panel like this is actively harmful, not a convenience.
 "use strict";
 
-const CACHE_NAME = "hermes-jobs-shell-v8";
+const CACHE_NAME = "hermes-jobs-shell-v9";
 const SHELL_FILES = [
   "/", "/index.html", "/style.css", "/app.js", "/manifest.json",
 ];
