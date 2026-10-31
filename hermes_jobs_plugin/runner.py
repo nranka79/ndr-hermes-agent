@@ -49,16 +49,38 @@ session in real time. Complete the instruction below using your tools, then repo
 RULES
 1. Self-sufficiency first. Gather data, read files, search, compute, create
    documents, prepare deliverables. Do NOT stop to ask permission for obvious steps.
+   This does NOT cover identity/target ambiguity -- see rule 2a, which always wins.
 2. If -- and only if -- you need information, a decision, or a document that ONLY a
    human can provide, call job_clarify, then STOP. Before calling it, write any
    intermediate data you have gathered to a file under {tmp_dir} so the resumed run
    can re-read it instead of trusting a summary.
+2a. MANDATORY ENTITY-RESOLUTION RULE -- no discretion here. The instruction may name
+    a file, project, contact/person, or other entity. Before acting on one:
+    - If your search/lookup returns more than one plausible match (multiple files
+      with similar names, multiple contacts with the same or similar name, multiple
+      projects/threads it could mean), you must NOT pick one yourself -- not the
+      most recent, not the "most likely," not a best guess.
+    - If a name/reference is ambiguous, partial, or could plausibly map to more than
+      one real entity, that is a human decision, not an "obvious step" under rule 1.
+    - In EITHER case, call job_clarify immediately: list every candidate you found in
+      `context`, put the candidates in `suggested_options` so the human can pick, and
+      STOP. Do this BEFORE producing any deliverable that depends on the guess.
+    - Only skip this when resolution is unambiguous (e.g. exactly one match, or the
+      instruction already gives an unambiguous unique identifier such as an exact
+      file path, email address, or ID).
 3. On completion call job_complete with a self-contained summary and the absolute
    path of every file you produced. Your final message is what reaches the human.
-4. Never send email: Gmail is DRAFT-ONLY. Never send WhatsApp messages: DRAFT-ONLY.
-   The delivery layer handles dispatch after a human reviews it.
+4. Never send email: Gmail is DRAFT-ONLY. The delivery layer handles dispatch
+   after a human reviews it.
+   WhatsApp: send messages with wa_send_message. The bridge decides: it sends
+   straight away when the chat (person, group or business) is on the user's
+   auto-send list, and otherwise refuses with not_on_auto_send_list. That
+   refusal is normal -- save the same message with wa_draft_reply for the human
+   to review, and say in your summary which messages were sent and which were
+   drafted. Never call wa_send_confirmed yourself.
 5. Never fabricate. If a tool fails or data is unavailable, say so plainly in the
    summary. A partial job reported honestly is correct; a confident guess is not.
+   Silently resolving an ambiguous entity and proceeding counts as fabrication.
 6. This job came from {origin}. Compose deliverables for that surface.
 7. Budget: about {turn_budget} turns and {wall_clock_minutes} minutes. If you near
    it, call job_complete with partial results rather than stopping silently.
@@ -205,14 +227,16 @@ def _api_get(path: str) -> Dict[str, Any]:
         return json.load(resp)
 
 
-def _api_post(path: str, body: Dict[str, Any]) -> Dict[str, Any]:
+def _api_post(path: str, body: Dict[str, Any], extra_headers: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+    headers = {
+        "Authorization": "Bearer " + _api_key(),
+        "Content-Type": "application/json",
+    }
+    headers.update(extra_headers or {})
     req = urllib.request.Request(
         API_BASE + path,
         data=json.dumps(body).encode(),
-        headers={
-            "Authorization": "Bearer " + _api_key(),
-            "Content-Type": "application/json",
-        },
+        headers=headers,
         method="POST",
     )
     try:
@@ -221,6 +245,48 @@ def _api_post(path: str, body: Dict[str, Any]) -> Dict[str, Any]:
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode(errors="replace")[:300]
         raise RuntimeError("POST %s -> HTTP %d: %s" % (path, exc.code, detail))
+
+
+# ---------------------------------------------------------------------------
+# identity
+# ---------------------------------------------------------------------------
+
+# The header /v1/runs reads to bind a run to a vault user
+# (gateway/platforms/identity_resolver.py HEADER_USER_EMAIL).
+RUN_IDENTITY_HEADER = "X-OpenWebUI-User-Email"
+
+
+def owner_email(job: Dict[str, Any]) -> str:
+    """The email of the person who created this job, for binding its run to them.
+
+    BUG FIX (2026-10-27): runs were started with no identity header, so every
+    job ran ANONYMOUS (HERMES_SESSION_USER_ID unset). wa_send_message then
+    refused ("No session user context"), the agent fell back to
+    wa_draft_reply, and messages to chats on NDR's auto-send list sat as
+    drafts in wa.ahfl.in instead of going out. Any other per-user tool (Google
+    tokens, contacts) was equally blind inside a job.
+
+    ``tenant`` is the board email for board jobs and the platform user id
+    (e.g. Telegram 7449813913) for chat jobs; the latter is resolved to the
+    vault record's email. '' when it cannot be resolved -- the run then stays
+    anonymous exactly as before, never guessed.
+    """
+    tenant = str(job.get("tenant") or "").strip()
+    if not tenant:
+        return ""
+    if "@" in tenant:
+        return tenant.lower()
+    try:
+        from tools._user_registry import find_user_by_identity
+        from gateway.platforms.identity_resolver import _first_alias
+
+        kind = "telegram" if tenant.isdigit() else "slug"
+        _, record = find_user_by_identity(kind, tenant)
+        email = _first_alias(record, "email") if record else ""
+        return email.strip().lower()
+    except Exception as exc:
+        logger.warning("job %s: cannot resolve owner %r to an email: %s", job.get("id"), tenant, exc)
+        return ""
 
 
 # ---------------------------------------------------------------------------
@@ -255,7 +321,10 @@ def start_run(job: Dict[str, Any]) -> str:
     if restore:
         payload["restore_history"] = True
 
-    resp = _api_post("/v1/runs", payload)
+    email = owner_email(job)
+    if not email:
+        logger.warning("job %s: owner %r has no email -- run is anonymous", job["id"], job.get("tenant"))
+    resp = _api_post("/v1/runs", payload, {RUN_IDENTITY_HEADER: email} if email else None)
     run_id = resp.get("run_id") or ""
     if not run_id:
         raise RuntimeError("run endpoint returned no run_id: %r" % resp)

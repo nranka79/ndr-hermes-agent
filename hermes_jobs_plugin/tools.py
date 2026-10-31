@@ -162,15 +162,22 @@ def strip_job_tools_middleware(**payload):
 JOB_CLARIFY_SCHEMA = {
     "name": "job_clarify",
     "description": (
-        "Park this job and ask the human ONE question. Use this only when you "
-        "need information, a decision, or a document that ONLY a human can "
-        "provide -- never to ask permission for an obvious step, and never "
-        "instead of trying. Calling this ends your run cleanly: the job moves "
-        "to 'needs you' on the board, the human is notified once, and your "
-        "full context (including every tool result) is restored when they "
-        "answer. After calling it, STOP -- do not guess, do not continue on "
-        "invented assumptions. Before calling it, persist any intermediate "
-        "data you have gathered to a file so the resumed run can re-read it."
+        "Park this job and ask the human ONE question. Use this when you need "
+        "information, a decision, or a document that ONLY a human can provide "
+        "-- never to ask permission for an obvious step, and never instead of "
+        "trying. MANDATORY, no judgement call: if the instruction names a file, "
+        "project, contact/person, or other entity and your lookup finds more "
+        "than one plausible match, OR the reference is ambiguous/partial with "
+        "no unique identifier (exact path, email, ID) to pin it down -- you "
+        "must call this tool with every candidate listed, instead of picking "
+        "the 'most likely' one yourself. Guessing an entity match is treated "
+        "as fabrication, not a time-saver. Calling this ends your run cleanly: "
+        "the job moves to 'needs you' on the board, the human is notified "
+        "once, and your full context (including every tool result) is "
+        "restored when they answer. After calling it, STOP -- do not guess, "
+        "do not continue on invented assumptions. Before calling it, persist "
+        "any intermediate data you have gathered to a file so the resumed run "
+        "can re-read it."
     ),
     "parameters": {
         "type": "object",
@@ -186,7 +193,8 @@ JOB_CLARIFY_SCHEMA = {
                 "type": "string",
                 "description": (
                     "What you have already established, and why this decision "
-                    "is blocking. Shown verbatim on the job board."
+                    "is blocking. Shown verbatim on the job board. For entity "
+                    "ambiguity, list every candidate match you found here."
                 ),
             },
             "suggested_options": {
@@ -194,7 +202,9 @@ JOB_CLARIFY_SCHEMA = {
                 "items": {"type": "string"},
                 "description": (
                     "Concrete choices, when the answer is a pick rather than "
-                    "free text. Rendered as buttons on the board."
+                    "free text. Rendered as buttons on the board. For entity "
+                    "ambiguity, put each candidate match here so the human "
+                    "can pick one."
                 ),
             },
             "requested_artifact": {
