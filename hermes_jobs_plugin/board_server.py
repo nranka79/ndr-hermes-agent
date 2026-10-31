@@ -393,6 +393,7 @@ async def api_create_job(request: web.Request) -> web.Response:
     instruction = (fields.get("instruction") or "").strip()
     title = (fields.get("title") or "").strip() or None
     parent_job_id = (fields.get("parent_job_id") or "").strip() or None
+    idempotency_key = (fields.get("idempotency_key") or "").strip() or None
     if not instruction:
         return web.json_response({"error": "instruction is required"}, status=400)
 
@@ -422,6 +423,7 @@ async def api_create_job(request: web.Request) -> web.Response:
             origin_thread_id="",
             origin_message_id="",
             parent_job_id=parent["id"] if parent else None,
+            idempotency_key=idempotency_key,
         )
     except ValueError as exc:
         return web.json_response({"error": str(exc)}, status=400)
@@ -536,64 +538,186 @@ async def api_drop(request: web.Request) -> web.Response:
     return web.json_response({"ok": True})
 
 
-async def api_transcribe(request: web.Request) -> web.Response:
-    """Proxy an audio blob to the shared STT chain and return text.
+MAX_AUDIO_BYTES = 25 * 1024 * 1024
 
-    Primary: the AI Model Gateway's OpenAI-compatible
-    ``/v1/audio/transcriptions`` (same Groq-whisper -> AssemblyAI pools that
-    voice.ahfl.in and chat.ahfl.in dictation use). Fallbacks: the voice-app
-    STT bridge, then the free-whisper gateway's OpenAI-compatible endpoint.
-    The legacy ``/transcribe`` route is not used: it expects a raw audio body,
-    while this PWA sends multipart.
+
+async def _read_audio_field(request: web.Request):
+    """Pull the 'audio' (or legacy 'file') multipart field out of a request.
+
+    Shared by every endpoint that accepts a recorded clip. Returns
+    (audio_bytes, content_type, error_response) -- exactly one of the
+    first two or the third is meaningful; check error_response first.
     """
     reader = await request.multipart()
     field = await reader.next()
     if field is None or field.name not in ("audio", "file"):
-        return web.json_response({"error": "expected multipart field 'audio'"}, status=400)
+        return None, None, web.json_response(
+            {"error": "expected multipart field 'audio'"}, status=400,
+        )
     audio_bytes = await field.read(decode=False)
     if not audio_bytes:
-        return web.json_response({"error": "empty audio upload"}, status=400)
-    if len(audio_bytes) > 25 * 1024 * 1024:
-        return web.json_response({"error": "audio too large"}, status=413)
-
+        return None, None, web.json_response({"error": "empty audio upload"}, status=400)
+    if len(audio_bytes) > MAX_AUDIO_BYTES:
+        return None, None, web.json_response({"error": "audio too large"}, status=413)
     ctype = field.headers.get("Content-Type") or "audio/webm"
+    return audio_bytes, ctype, None
+
+
+async def _transcribe_bytes(session: ClientSession, audio_bytes: bytes, content_type: str):
+    """Run audio through the STT fallback chain. Returns (text, provider, error).
+
+    Primary: the AI Model Gateway's OpenAI-compatible
+    /v1/audio/transcriptions (same Groq-whisper -> AssemblyAI pools that
+    voice.ahfl.in and chat.ahfl.in dictation use). Fallbacks: the voice-app
+    STT bridge, then the free-whisper gateway's OpenAI-compatible endpoint.
+    On total failure, text is None and error explains why -- the caller
+    decides what HTTP status that becomes.
+    """
     urls = [STT_URL] + [u for u in STT_FALLBACK_URLS if u and u != STT_URL]
     last_error = ""
-    async with ClientSession() as session:
-        for url in urls:
-            form = FormData()
-            form.add_field(
-                "file", audio_bytes, filename="audio.webm", content_type=ctype,
-            )
-            try:
-                async with session.post(url, data=form, timeout=230) as resp:
-                    raw = await resp.text()
-                    if resp.status != 200:
-                        last_error = "HTTP %s: %s" % (resp.status, raw[:200])
-                        logger.warning("transcribe %s failed: %s", url, last_error)
-                        continue
-                    try:
-                        result = json.loads(raw)
-                    except Exception:
-                        result = {"text": raw}
-                    text = result.get("text") if isinstance(result, dict) else None
-                    if text:
-                        logger.info(
-                            "transcribed %d bytes via %s", len(audio_bytes), url,
-                        )
-                        text = await _cleanup_dictation(session, text)
-                    return web.json_response({
-                        "text": text or "",
-                        "provider": (result or {}).get("provider") if isinstance(result, dict) else None,
-                    })
-            except Exception as exc:
-                last_error = str(exc)
-                logger.warning("transcribe %s unreachable: %s", url, exc)
-
+    for url in urls:
+        form = FormData()
+        form.add_field("file", audio_bytes, filename="audio.webm", content_type=content_type)
+        try:
+            async with session.post(url, data=form, timeout=230) as resp:
+                raw = await resp.text()
+                if resp.status != 200:
+                    last_error = "HTTP %s: %s" % (resp.status, raw[:200])
+                    logger.warning("transcribe %s failed: %s", url, last_error)
+                    continue
+                try:
+                    result = json.loads(raw)
+                except Exception:
+                    result = {"text": raw}
+                text = result.get("text") if isinstance(result, dict) else None
+                if text:
+                    logger.info("transcribed %d bytes via %s", len(audio_bytes), url)
+                provider = (result or {}).get("provider") if isinstance(result, dict) else None
+                return text or "", provider, None
+        except Exception as exc:
+            last_error = str(exc)
+            logger.warning("transcribe %s unreachable: %s", url, exc)
     logger.error("all transcription backends failed: %s", last_error)
-    return web.json_response(
-        {"error": "transcription failed", "detail": last_error[:300]}, status=502,
+    return None, None, last_error
+
+
+async def api_transcribe(request: web.Request) -> web.Response:
+    """Proxy an audio blob to the shared STT chain and return text.
+
+    The legacy /transcribe route is not used: it expects a raw audio
+    body, while this PWA sends multipart.
+    """
+    audio_bytes, ctype, err = await _read_audio_field(request)
+    if err:
+        return err
+    async with ClientSession() as session:
+        text, provider, error = await _transcribe_bytes(session, audio_bytes, ctype)
+        if text is None:
+            return web.json_response(
+                {"error": "transcription failed", "detail": (error or "")[:300]}, status=502,
+            )
+        if text:
+            text = await _cleanup_dictation(session, text)
+        return web.json_response({"text": text, "provider": provider})
+
+
+# Whisper-family models are known to hallucinate short stock phrases on
+# silence or pure noise -- an artifact of training data that included a
+# lot of YouTube captions. Reproduced live: a silent clip returned the
+# raw transcript "Thank you." (not empty, so the normal empty-text check
+# never caught it), which the cleanup webhook then correctly recognised
+# as nothing to redraft and replied with ITS OWN commentary -- which this
+# endpoint was about to save as the job's instruction verbatim, because
+# nothing here has a human reviewing the text before it becomes a job
+# (unlike the textarea dictation flow, where a person sees "Thank you."
+# in the box and just doesn't submit it). Two checks close that gap:
+# the raw transcript against a short denylist of known hallucinations
+# before paying for a cleanup call at all, and the cleanup webhook's own
+# output against a few of its characteristic "nothing to redraft" phrases
+# as a backstop for hallucinations not on the first list.
+_SILENCE_HALLUCINATIONS = {
+    "thank you", "thanks for watching", "please subscribe",
+    "subscribe to my channel", "like and subscribe", "bye", "goodbye",
+    "you", "i'm sorry", "okay", "um", "uh", "hmm", "bye bye",
+}
+_CLEANUP_NOTHING_MARKERS = (
+    "no dictation", "nothing to redraft", "no content to redraft",
+    "no speech", "empty transcript", "no transcription provided",
+    "no audio content",
+)
+
+
+def _looks_like_silence(raw_text: str) -> bool:
+    normalized = raw_text.strip().lower().rstrip(".!? ")
+    if not normalized:
+        return True
+    return len(normalized.split()) <= 4 and normalized in _SILENCE_HALLUCINATIONS
+
+
+def _cleanup_signals_nothing(cleaned_text: str) -> bool:
+    lowered = cleaned_text.strip().lower()
+    return len(cleaned_text) < 120 and any(m in lowered for m in _CLEANUP_NOTHING_MARKERS)
+
+
+async def api_create_job_from_dictation(request: web.Request) -> web.Response:
+    """Transcribe, clean up, and create a job in ONE request.
+
+    This is what the board's "New job by voice" FAB posts to -- the whole
+    point is that the client enqueues the audio and moves on immediately,
+    so the entire STT -> cleanup -> create_job chain has to happen
+    server-side in a single call rather than as a client-orchestrated
+    sequence the UI would otherwise have to wait on step by step.
+
+    idempotency_key (query string -- the body here is multipart audio, not
+    JSON) is the client's queue-item id. If a retry fires after an earlier
+    attempt actually succeeded server-side but the client never saw the
+    response (tab backgrounded/killed mid-request), this returns the SAME
+    job instead of creating a duplicate -- create_job() already refuses a
+    second insert for a key that exists on a non-archived row.
+    """
+    audio_bytes, ctype, err = await _read_audio_field(request)
+    if err:
+        return err
+    idempotency_key = (request.query.get("idempotency_key") or "").strip() or None
+
+    who = _who(request)
+    async with ClientSession() as session:
+        text, provider, error = await _transcribe_bytes(session, audio_bytes, ctype)
+        if text is None:
+            return web.json_response(
+                {"error": "transcription failed", "detail": (error or "")[:300]}, status=502,
+            )
+        if not text.strip() or _looks_like_silence(text):
+            return web.json_response(
+                {"error": "no speech detected", "raw_transcript": text}, status=422,
+            )
+        instruction = await _cleanup_dictation(session, text)
+        if _cleanup_signals_nothing(instruction):
+            return web.json_response(
+                {"error": "no speech detected", "raw_transcript": text}, status=422,
+            )
+
+    try:
+        job_id = store.create_job(
+            instruction=instruction,
+            tenant=who,
+            origin_platform="web",
+            origin_chat_id="",
+            origin_thread_id="",
+            origin_message_id="",
+            idempotency_key=idempotency_key,
+        )
+    except ValueError as exc:
+        return web.json_response({"error": str(exc)}, status=400)
+
+    job = store.get_job(job_id)
+    data = _serialize(job or {"id": job_id})
+    data["lane"] = LANES.get(data.get("status"), "working")
+    logger.info(
+        "job %s created from voice-only dictation by %s (idempotency_key=%s)",
+        job_id, who, idempotency_key,
     )
+    return web.json_response({"ok": True, "job": data, "transcript": instruction}, status=201)
 
 
 async def api_whoami(request: web.Request) -> web.Response:
@@ -625,6 +749,7 @@ def build_app() -> web.Application:
     app.router.add_get("/api/whoami", api_whoami)
     app.router.add_get("/api/jobs", api_list_jobs)
     app.router.add_post("/api/jobs", api_create_job)
+    app.router.add_post("/api/jobs/from-dictation", api_create_job_from_dictation)
     app.router.add_get("/api/jobs/{job_id}", api_get_job)
     app.router.add_get("/api/jobs/{job_id}/artifact", api_download_artifact)
     app.router.add_post("/api/jobs/{job_id}/answer", api_answer)

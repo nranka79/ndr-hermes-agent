@@ -755,3 +755,55 @@ body.modal-open { overflow: hidden; }
 @media (max-width: 640px) {
   .filterbar { padding: 8px 10px 4px; }
 }
+
+/* ---------------------------------------------------------------------- */
+/* Dictation queue badge + panel                                           */
+/* ---------------------------------------------------------------------- */
+.fab-main-wrap { position: relative; }
+
+.dictation-badge {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  min-width: 22px;
+  height: 22px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--warn);
+  color: #1a1200;
+  border: 2px solid var(--bg);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 18px;
+  text-align: center;
+  cursor: pointer;
+  z-index: 61;
+}
+.dictation-badge.dictation-badge-failed { background: var(--danger); color: #fff; }
+
+.dict-item {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 11px 13px;
+  margin-bottom: 10px;
+}
+.dict-item:last-child { margin-bottom: 0; }
+.dict-item-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.dict-item-time { font-size: 11px; color: var(--text-dim); }
+.dict-error {
+  margin-top: 8px;
+  font-size: 13px;
+  border-color: #3a1f1f;
+  background: #221212;
+}
+.dict-open-job {
+  display: inline-block;
+  margin-top: 8px;
+  font-size: 13px;
+}

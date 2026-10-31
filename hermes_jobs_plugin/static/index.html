@@ -9,7 +9,7 @@
 <link rel="apple-touch-icon" href="icons/icon-192.png">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<link rel="stylesheet" href="style.css?v=20261029a">
+<link rel="stylesheet" href="style.css?v=20261029b">
 </head>
 <body>
 <header class="topbar">
@@ -132,7 +132,24 @@
     <button class="fab-option" id="fabVoiceBtn"><span class="fab-option-icon">&#127908;</span>New job by voice</button>
     <button class="fab-option" id="fabFormBtn"><span class="fab-option-icon">&#9998;</span>New job (form)</button>
   </div>
-  <button class="fab-main" id="fabMainBtn" aria-label="New job" aria-expanded="false">+</button>
+  <div class="fab-main-wrap">
+    <button class="fab-main" id="fabMainBtn" aria-label="New job" aria-expanded="false">+</button>
+    <button id="dictationQueueBadge" class="dictation-badge hidden" aria-label="Dictation queue" title="Dictation queue">0</button>
+  </div>
+</div>
+
+<div id="dictationQueueModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="dictationQueueTitle">
+  <div class="modal-backdrop" data-close-modal></div>
+  <div class="modal-card modal-card-narrow" role="document">
+    <header class="modal-head">
+      <div class="modal-heading">
+        <div class="modal-kicker">Dictation queue</div>
+        <h2 id="dictationQueueTitle">Voice jobs in progress</h2>
+      </div>
+      <button class="icon-btn modal-close" data-close-modal aria-label="Close">&times;</button>
+    </header>
+    <div class="modal-body" id="dictationQueueBody"></div>
+  </div>
 </div>
 
 <div id="voiceOverlay" class="voice-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="voiceOverlayStatus">
@@ -148,6 +165,6 @@
 
 <div id="toast" class="toast hidden"></div>
 
-<script src="app.js?v=20261029a"></script>
+<script src="app.js?v=20261029b"></script>
 </body>
 </html>

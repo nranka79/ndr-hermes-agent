@@ -898,8 +898,241 @@ async function submitComposer() {
 function updateBodyLock() {
   const open = !$("#jobModal").classList.contains("hidden")
     || !$("#composerModal").classList.contains("hidden")
-    || !$("#voiceOverlay").classList.contains("hidden");
+    || !$("#voiceOverlay").classList.contains("hidden")
+    || !$("#dictationQueueModal").classList.contains("hidden");
   document.body.classList.toggle("modal-open", open);
+}
+
+// ---------------------------------------------------------------------------
+// Dictation queue: durable (IndexedDB) so a recorded clip survives a
+// reload/backgrounded-tab kill, and processed in the background so
+// "New job by voice" never makes the next recording wait on a network
+// round trip. See runDictationItem for the actual upload.
+// ---------------------------------------------------------------------------
+
+const DICT_DB_NAME = "hermes-jobs-dictation";
+const DICT_DB_VERSION = 1;
+const DICT_STORE = "queue";
+const DICTATION_CONCURRENCY = 2;
+
+let dictDbPromise = null;
+function dictDb() {
+  if (dictDbPromise) return dictDbPromise;
+  dictDbPromise = new Promise((resolve, reject) => {
+    if (!("indexedDB" in window)) { reject(new Error("IndexedDB unavailable")); return; }
+    const req = indexedDB.open(DICT_DB_NAME, DICT_DB_VERSION);
+    req.onupgradeneeded = () => {
+      if (!req.result.objectStoreNames.contains(DICT_STORE)) {
+        req.result.createObjectStore(DICT_STORE, { keyPath: "id" });
+      }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+  return dictDbPromise;
+}
+
+function dictPut(item) {
+  return dictDb().then((db) => new Promise((resolve, reject) => {
+    const tx = db.transaction(DICT_STORE, "readwrite");
+    tx.objectStore(DICT_STORE).put(item);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  }));
+}
+
+function dictDelete(id) {
+  return dictDb().then((db) => new Promise((resolve, reject) => {
+    const tx = db.transaction(DICT_STORE, "readwrite");
+    tx.objectStore(DICT_STORE).delete(id);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  }));
+}
+
+function dictGetAll() {
+  return dictDb().then((db) => new Promise((resolve, reject) => {
+    const tx = db.transaction(DICT_STORE, "readonly");
+    const req = tx.objectStore(DICT_STORE).getAll();
+    req.onsuccess = () => resolve(req.result || []);
+    req.onerror = () => reject(req.error);
+  }));
+}
+
+// id -> {id, createdAt, status, error, jobId, blob}. status is one of
+// queued | uploading | done | failed. "done" items are deleted from
+// IndexedDB the moment the job exists (nothing left worth persisting)
+// but kept in this map briefly so the panel can show a confirmation.
+const dictationQueue = new Map();
+let dictationRunning = 0;
+
+function updateDictationBadge() {
+  const badge = $("#dictationQueueBadge");
+  if (!badge) return;
+  const items = Array.from(dictationQueue.values());
+  badge.textContent = String(items.length);
+  badge.classList.toggle("hidden", items.length === 0);
+  badge.classList.toggle("dictation-badge-failed", items.some((i) => i.status === "failed"));
+}
+
+const DICT_STATUS_META = {
+  queued: { label: "Queued", pill: "status-ready" },
+  uploading: { label: "Processing\u2026", pill: "status-running" },
+  done: { label: "Done", pill: "status-done" },
+  failed: { label: "Failed", pill: "status-review" },
+};
+
+function dictationItemHtml(item) {
+  const meta = DICT_STATUS_META[item.status] || { label: item.status, pill: "" };
+  let extra = "";
+  if (item.status === "done" && item.jobId) {
+    extra = `<button class="link-btn dict-open-job" data-open-job="${item.jobId}">Open job &rsaquo;</button>`;
+  } else if (item.status === "failed") {
+    extra = `<div class="section-body dict-error">${escapeHtml(item.error || "Unknown error")}</div>
+      <div class="action-row">
+        <button class="btn btn-primary" data-retry-dict="${item.id}">Retry</button>
+        <button class="btn btn-secondary" data-discard-dict="${item.id}">Discard</button>
+      </div>`;
+  }
+  return `<div class="dict-item">
+    <div class="dict-item-head">
+      <span class="pill ${meta.pill}">${meta.label}</span>
+      <span class="dict-item-time">${fmtTime(Math.floor((item.createdAt || 0) / 1000))}</span>
+    </div>
+    ${extra}
+  </div>`;
+}
+
+function renderDictationQueue() {
+  updateDictationBadge();
+  const modal = $("#dictationQueueModal");
+  if (modal.classList.contains("hidden")) return;
+  const body = $("#dictationQueueBody");
+  const items = Array.from(dictationQueue.values()).sort((a, b) => b.createdAt - a.createdAt);
+  if (!items.length) {
+    body.innerHTML = `<p class="empty">No dictated jobs in the queue.</p>`;
+    return;
+  }
+  body.innerHTML = items.map(dictationItemHtml).join("");
+  body.querySelectorAll("[data-retry-dict]").forEach((btn) => {
+    btn.onclick = () => retryDictationItem(btn.dataset.retryDict);
+  });
+  body.querySelectorAll("[data-discard-dict]").forEach((btn) => {
+    btn.onclick = () => discardDictationItem(btn.dataset.discardDict);
+  });
+  body.querySelectorAll("[data-open-job]").forEach((btn) => {
+    btn.onclick = () => { closeDictationQueue(); openJob(btn.dataset.openJob); };
+  });
+}
+
+function openDictationQueue() {
+  toggleFab(false);
+  $("#dictationQueueModal").classList.remove("hidden");
+  updateBodyLock();
+  renderDictationQueue();
+}
+
+function closeDictationQueue() {
+  $("#dictationQueueModal").classList.add("hidden");
+  updateBodyLock();
+}
+
+function newDictationId() {
+  if (window.crypto && crypto.randomUUID) return crypto.randomUUID();
+  return "dict-" + Date.now() + "-" + Math.random().toString(36).slice(2);
+}
+
+// Writes the blob to IndexedDB FIRST, then returns -- the caller (Stop
+// button) releases the UI the instant this resolves, which is the whole
+// point: the next recording can start before this one has even begun
+// uploading.
+function enqueueDictation(blob) {
+  const item = {
+    id: newDictationId(), createdAt: Date.now(), status: "queued",
+    error: null, jobId: null, blob,
+  };
+  dictationQueue.set(item.id, item);
+  dictPut(item).catch((e) => console.error("dictation queue: persist failed", e));
+  renderDictationQueue();
+  pumpDictationQueue();
+}
+
+function pumpDictationQueue() {
+  while (dictationRunning < DICTATION_CONCURRENCY) {
+    const next = Array.from(dictationQueue.values())
+      .filter((i) => i.status === "queued")
+      .sort((a, b) => a.createdAt - b.createdAt)[0];
+    if (!next) break;
+    next.status = "uploading";
+    dictPut(next).catch(() => {});
+    dictationRunning++;
+    renderDictationQueue();
+    runDictationItem(next).finally(() => {
+      dictationRunning--;
+      pumpDictationQueue();
+    });
+  }
+}
+
+async function runDictationItem(item) {
+  try {
+    const form = new FormData();
+    form.append("audio", item.blob, "audio.webm");
+    const r = await fetch(
+      "/api/jobs/from-dictation?idempotency_key=" + encodeURIComponent(item.id),
+      { method: "POST", credentials: "include", body: form },
+    );
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(data.error || ("from-dictation -> " + r.status));
+    item.status = "done";
+    item.jobId = data.job.id;
+    item.error = null;
+    await dictDelete(item.id).catch(() => {});
+    renderDictationQueue();
+    invalidateLanes();
+    if (currentLane === "working") loadLane("working", { reset: true });
+    showToast("Voice job created");
+    setTimeout(() => {
+      dictationQueue.delete(item.id);
+      renderDictationQueue();
+    }, 4000);
+  } catch (e) {
+    item.status = "failed";
+    item.error = e.message || String(e);
+    dictPut(item).catch(() => {});
+    renderDictationQueue();
+    showToast("A dictated job failed \u2014 check the queue");
+  }
+}
+
+function retryDictationItem(id) {
+  const item = dictationQueue.get(id);
+  if (!item) return;
+  item.status = "queued";
+  item.error = null;
+  dictPut(item).catch(() => {});
+  renderDictationQueue();
+  pumpDictationQueue();
+}
+
+function discardDictationItem(id) {
+  dictationQueue.delete(id);
+  dictDelete(id).catch(() => {});
+  renderDictationQueue();
+}
+
+async function restoreDictationQueue() {
+  try {
+    const rows = await dictGetAll();
+    for (const item of rows) {
+      if (item.status === "uploading") item.status = "queued";
+      dictationQueue.set(item.id, item);
+    }
+    renderDictationQueue();
+    pumpDictationQueue();
+  } catch (e) {
+    console.warn("dictation queue: restore failed (IndexedDB unavailable?)", e);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -959,47 +1192,26 @@ async function startVoiceOnlyJob() {
     updateBodyLock();
   };
 
+  // Stop hands the clip to the durable queue and releases the UI
+  // IMMEDIATELY -- nothing here waits on a network round trip, so the
+  // next recording can start before this one has even begun uploading.
+  // Transcription, cleanup, and job creation all happen in the
+  // background (runDictationItem); failures surface in the queue panel
+  // with a Retry button that resubmits this SAME blob, no re-dictating.
   stopBtn.onclick = async () => {
     stopBtn.disabled = true;
     cancelBtn.disabled = true;
-    $("#voicePulse").classList.add("thinking");
-    status.textContent = "Transcribing…";
     recorder.stop();
     await stopped;
+    overlay.classList.add("hidden");
+    updateBodyLock();
     if (cancelled) return;
-
     if (!chunks.length) {
-      overlay.classList.add("hidden");
-      updateBodyLock();
       showToast("No audio captured");
       return;
     }
-    try {
-      const blob = new Blob(chunks, { type: "audio/webm" });
-      const form = new FormData();
-      form.append("audio", blob, "audio.webm");
-      const r = await fetch("/api/transcribe", { method: "POST", credentials: "include", body: form });
-      const data = await r.json().catch(() => ({}));
-      if (!r.ok) throw new Error(data.error || ("transcribe -> " + r.status));
-      const text = (data.text || "").trim();
-      if (!text) {
-        overlay.classList.add("hidden");
-        updateBodyLock();
-        showToast("No speech detected");
-        return;
-      }
-      status.textContent = "Creating job…";
-      await apiPost("/api/jobs", { instruction: text });
-      overlay.classList.add("hidden");
-      updateBodyLock();
-      showToast("Job queued from dictation");
-      invalidateLanes();
-      setLane("working");
-    } catch (e) {
-      overlay.classList.add("hidden");
-      updateBodyLock();
-      showToast("Failed: " + e.message);
-    }
+    enqueueDictation(new Blob(chunks, { type: "audio/webm" }));
+    showToast("Added to queue \u2014 processing in background");
   };
 
   recorder.start();
@@ -1063,9 +1275,15 @@ function init() {
       const modal = el.closest(".modal");
       if (!modal) return;
       if (modal.id === "jobModal") closeJob();
+      else if (modal.id === "dictationQueueModal") closeDictationQueue();
       else closeComposer();
     };
   });
+
+  $("#dictationQueueBadge").onclick = (e) => {
+    e.stopPropagation();
+    openDictationQueue();
+  };
 
   wireAttachControls(document);
 
@@ -1081,7 +1299,9 @@ function init() {
   document.addEventListener("keydown", (e) => {
     if (e.key !== "Escape") return;
     if (fabOpen) { toggleFab(false); return; }
-    if (!$("#composerModal").classList.contains("hidden")) {
+    if (!$("#dictationQueueModal").classList.contains("hidden")) {
+      closeDictationQueue();
+    } else if (!$("#composerModal").classList.contains("hidden")) {
       closeComposer();
     } else if (!$("#jobModal").classList.contains("hidden")) {
       closeJob();
@@ -1096,6 +1316,7 @@ function init() {
 
   wireMicButtons(document);
   loadLane(currentLane, { reset: true });
+  restoreDictationQueue();
   pollTimer = setInterval(pollTick, 5000);
 
   // Infinite scroll: the sentinel sits under the list, so it only comes
