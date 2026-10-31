@@ -1,7 +1,8 @@
 # Live jobs-board + jobs-oauth2-proxy blocks, synced from the server on
-# 2026-10-27. The canonical compose file is
-# hermes-apps-stack/docker-compose.prod.yml; this snippet exists so the
-# plugin's deploy notes stay readable on their own.
+# 2026-11-01 (added jobs-board's own log volume -- see inline comment).
+# The canonical compose file is hermes-apps-stack/docker-compose.prod.yml;
+# this snippet exists so the plugin's deploy notes stay readable on their
+# own.
 #
 # Two isolated services. Neither touches hermes-hermes-1 or
 # hermes-apps-1. Both join the implicit default project network
@@ -22,6 +23,20 @@
       - "127.0.0.1:8900:8900"
     volumes:
       - /opt/hermes/hermes-data:/data/hermes
+      # This image's s6 scaffolding starts regardless of `command` and
+      # tries to run a "gateway-default" log service at
+      # $HERMES_HOME/logs/gateways/default -- with HERMES_HOME shared
+      # above, that collided with hermes-hermes-1's OWN gateway-default
+      # log service writing to the SAME bind-mounted host path (two
+      # containers' s6-log fighting over one lock file: "unable to lock
+      # ... Resource busy", spamming both containers' logs). This board
+      # service is not the real gateway and has nothing worth keeping in
+      # that log stream, so it gets its own private, non-shared directory
+      # instead of silently stepping on hermes-hermes-1's real app logs
+      # (gateway.log/errors.log/agent.log also live under the same
+      # shared /data/hermes/logs, so this was two containers' app-level
+      # logging interleaved into one file, not just a lock collision).
+      - /opt/hermes/hermes-jobs-board-logs:/data/hermes/logs
     environment:
       BOARD_PORT: "8900"
       # Pin explicitly -- the hermes-hermes:latest image bakes in
