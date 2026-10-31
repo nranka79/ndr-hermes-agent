@@ -144,6 +144,14 @@ def _completed_artifacts(job_id: str) -> List[Dict[str, Any]]:
     return []
 
 
+def _parse_tags(raw: Any) -> List[str]:
+    try:
+        tags = json.loads(raw or "[]")
+    except Exception:
+        return []
+    return tags if isinstance(tags, list) else []
+
+
 def _serialize(job: Dict[str, Any]) -> Dict[str, Any]:
     try:
         options = json.loads(job.get("suggested_options") or "[]")
@@ -154,6 +162,7 @@ def _serialize(job: Dict[str, Any]) -> Dict[str, Any]:
         "title": job.get("title") or "",
         "instruction": job.get("body") or "",
         "status": job.get("status"),
+        "tags": _parse_tags(job.get("tags")),
         "pending_kind": job.get("pending_kind"),
         "question": job.get("question"),
         "question_context": job.get("question_context"),
@@ -242,6 +251,7 @@ def _serialize_slim(row: Dict[str, Any]) -> Dict[str, Any]:
         "lane": LANES.get(row.get("status"), "other"),
         "pending_kind": row.get("pending_kind"),
         "snippet": _snippet(row),
+        "tags": _parse_tags(row.get("tags")),
         "created_at": row.get("created_at"),
         "completed_at": row.get("completed_at"),
         "dropped_at": row.get("dropped_at"),

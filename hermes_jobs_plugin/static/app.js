@@ -384,6 +384,7 @@ function jobSignature(j) {
   return [
     j.status, j.pending_kind, j.result, j.question, j.question_context,
     j.last_failure_error, j.completed_at, j.dropped_at, j.resume_rounds,
+    (j.tags || []).join(","),
   ].join("|");
 }
 
@@ -467,6 +468,7 @@ function renderRow(j) {
     <div class="job-main">
       <div class="job-title">${escapeHtml(j.title || "Untitled job")}</div>
       <div class="job-id">${escapeHtml(j.id)}${j.resume_rounds ? ` &middot; ${j.resume_rounds} round(s)` : ""}${j.parent_job_id ? ` &middot; chained` : ""}</div>
+      ${tagChipsHtml(j.tags)}
     </div>
     <div class="job-detail">
       <div class="job-detail-text">${escapeHtml(j.snippet || "")}</div>
@@ -476,6 +478,23 @@ function renderRow(j) {
     <div class="job-actions"><span class="row-open">Open &rsaquo;</span></div>
   `;
   return row;
+}
+
+// Tags are stored as flat "type:Label" strings (see hermes_jobs_plugin/
+// tagging.py) -- "contacts:Raghu Iyer", "projects:Ranka Amber",
+// "work:follow_up". Only the label is shown; the type just picks the
+// chip style (work: gets the accent chip, everything else is neutral --
+// the label itself already says what kind of thing it is).
+function tagChipsHtml(tags) {
+  if (!Array.isArray(tags) || !tags.length) return "";
+  const chips = tags.map((t) => {
+    const sep = t.indexOf(":");
+    const type = sep === -1 ? "" : t.slice(0, sep);
+    const label = sep === -1 ? t : t.slice(sep + 1);
+    const cls = type === "work" ? "tag-chip tag-chip-work" : "tag-chip";
+    return `<span class="${cls}">${escapeHtml(label)}</span>`;
+  }).join("");
+  return `<div class="job-tags">${chips}</div>`;
 }
 
 function metaItem(k, v) {
@@ -554,6 +573,10 @@ function renderJob(j) {
     ${metaItem("Completed", j.completed_at ? fmtTime(j.completed_at) : "")}
     ${metaItem("Rounds", j.resume_rounds ? String(j.resume_rounds) : "")}
   </div>`;
+
+  if (j.tags && j.tags.length) {
+    html += `<div class="section-label">Tags</div>${tagChipsHtml(j.tags)}`;
+  }
 
   const pending = j.slim ? "Loading\u2026" : "";
   html += `<div class="section-label">Instruction</div>

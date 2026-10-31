@@ -28,6 +28,7 @@ import urllib.request
 from typing import Any, Dict, List, Optional, Tuple
 
 from . import store
+from . import tagging
 
 logger = logging.getLogger(__name__)
 
@@ -373,6 +374,27 @@ def await_run(job_id: str, run_id: str, wall_clock_minutes: int) -> Tuple[str, s
         time.sleep(POLL_SECONDS)
 
 
+def _tag_best_effort(job: Dict[str, Any], extra_text: str = "") -> None:
+    """Compute + merge tags, swallowing every failure.
+
+    Called twice per job (see tagging.py module docstring): once right
+    after claim, from the instruction alone, so the Working lane shows
+    tags within one poll cycle of creation without board_server needing
+    Google-Sheets access; again at the end of run_one() with whatever
+    extra text the final state produced (result / question+context /
+    failure error), so a job that only reveals its real subject in the
+    agent's reply still ends up tagged. Must never be able to break job
+    execution -- a tagging bug is a missing chip, not a failed job.
+    """
+    try:
+        tags = tagging.compute_tags(job.get("body") or "", extra_text)
+        if tags:
+            store.add_job_tags(job["id"], tags)
+            logger.info("job %s: tagged %r", job.get("id"), tags)
+    except Exception as exc:
+        logger.warning("job %s: tagging failed, skipping: %s", job.get("id"), exc)
+
+
 def run_one(job: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
     """Claim (or take a given) job, run it, classify the outcome.
 
@@ -386,7 +408,10 @@ def run_one(job: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
         run_id = start_run(job)
     except Exception as exc:
         store.park_failure(job_id, error="could not start run: %s" % exc)
+        _tag_best_effort(job, "could not start run: %s" % exc)
         return {"job_id": job_id, "outcome": "failed", "error": str(exc)}
+
+    _tag_best_effort(job)  # instruction-only pass, as soon as claimed
 
     status, text = await_run(
         job_id, run_id, int(job.get("wall_clock_minutes") or 30),
@@ -398,37 +423,45 @@ def run_one(job: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
         row = store.get_job(job_id) or {}
         state = row.get("status")
         if state == store.ST_DONE:
+            _tag_best_effort(job, row.get("result") or "")
             return {"job_id": job_id, "outcome": "completed",
                     "summary": row.get("result")}
         if state == store.ST_DROPPED:
+            _tag_best_effort(job, row.get("drop_reason") or "")
             return {"job_id": job_id, "outcome": "dropped",
                     "reason": row.get("drop_reason")}
         if state == store.ST_WAIT_FAILURE:
+            _tag_best_effort(job, row.get("last_failure_error") or "")
             return {"job_id": job_id, "outcome": "failed",
                     "error": row.get("last_failure_error")}
+        _tag_best_effort(job, "%s\n%s" % (
+            row.get("question") or "", row.get("question_context") or "",
+        ))
         return {"job_id": job_id, "outcome": "parked", "status": state,
                 "question": row.get("question")}
 
     row = store.get_job(job_id)
     if row and row["status"] == store.ST_DONE:
+        _tag_best_effort(job, row.get("result") or "")
         return {"job_id": job_id, "outcome": "completed", "summary": row["result"]}
 
     if status == "completed":
         # The run ended cleanly but the agent never called job_complete.
         # Kanban treats this as a protocol violation rather than success, and
         # so do we -- a silent finish is not a result. Park for a human.
-        store.park_failure(
-            job_id,
-            error="run ended without calling job_complete or job_clarify. "
-                  "Final message: " + (text or "")[:600],
-        )
+        error_text = ("run ended without calling job_complete or job_clarify. "
+                      "Final message: " + (text or "")[:600])
+        store.park_failure(job_id, error=error_text)
+        _tag_best_effort(job, error_text)
         return {"job_id": job_id, "outcome": "no_terminal_call", "text": text[:400]}
 
     if status == "budget_exceeded":
         store.park_failure(job_id, error="wall-clock budget exceeded; run stopped")
+        _tag_best_effort(job, text or "")
         return {"job_id": job_id, "outcome": "budget_exceeded"}
 
     store.park_failure(job_id, error="run ended with status=%s" % status)
+    _tag_best_effort(job, text or "")
     return {"job_id": job_id, "outcome": "failed", "status": status}
 
 

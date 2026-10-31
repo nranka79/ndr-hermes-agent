@@ -185,6 +185,27 @@ body.modal-open { overflow: hidden; }
   color: var(--text-dim);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
+.job-tags {
+  margin-top: 6px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.tag-chip {
+  display: inline-block;
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 999px;
+  white-space: nowrap;
+  background: var(--surface-3);
+  color: var(--text-dim);
+}
+/* Entity tags (contacts/projects/entities/land_proposals/topics) share one
+   neutral style -- the label itself already says what it is. work: tags
+   get the accent colour so the coarse work-type bucket reads as a
+   distinct kind of information at a glance, not just another name. */
+.tag-chip-work { background: #203049; color: #8fb8ff; }
 .job-detail-text {
   font-size: 13px;
   line-height: 1.4;

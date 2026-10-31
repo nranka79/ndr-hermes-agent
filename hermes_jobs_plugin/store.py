@@ -69,6 +69,13 @@ _TASK_COLUMNS = [
     # api_create_job) so this column is for traceability/UI display, not
     # re-derivation -- the context text is already baked into body.
     ("parent_job_id", "parent_job_id TEXT"),
+    # Tag cloud (2026-10-31): flat JSON array of "type:Label" strings, e.g.
+    # ["contacts:Raghu Iyer", "projects:Ranka Amber", "work:follow_up"].
+    # See tagging.py -- entity tags are exact matches against the shared
+    # registry only (never a guess), work: tags are a fixed keyword-rule
+    # taxonomy. Written additively via add_job_tags(): a later call only
+    # ever unions in new tags, never removes ones already shown.
+    ("tags", "tags TEXT"),
 ]
 _ATTACHMENT_COLUMNS = [
     ("role", "role TEXT"),  # 'input' | 'produced'
@@ -443,6 +450,83 @@ def drop_job(job_id: str, *, by: str = "ndr", reason: str = "", conn=None) -> bo
             conn.close()
 
 
+MAX_STORED_TAGS = 20
+
+
+def add_job_tags(job_id: str, new_tags: List[str], *, conn=None) -> bool:
+    """Union *new_tags* into the job's stored tag list. Never removes a
+    tag a previous call already recorded -- a job in review/blocked may
+    get re-tagged from richer text (a question, a result, a failure) on
+    every state change, and an earlier correct tag disappearing on a
+    later, narrower call would look like a bug, not a refinement.
+
+    Order is preserved (first-seen wins) so the UI shows entity tags
+    before work-type tags consistently across re-tagging calls, since
+    tagging.compute_tags() always emits entities before work: tags.
+    """
+    if not new_tags:
+        return True
+    own = conn is None
+    conn = conn or connect()
+    try:
+        with kb.write_txn(conn):
+            row = conn.execute(
+                "SELECT tags FROM tasks WHERE id = ? AND created_by = ?",
+                (job_id, MARKER),
+            ).fetchone()
+            if row is None:
+                return False
+            try:
+                existing = json.loads(row[0] or "[]")
+            except Exception:
+                existing = []
+            if not isinstance(existing, list):
+                existing = []
+            merged = list(existing)
+            seen = set(existing)
+            for t in new_tags:
+                if t and t not in seen:
+                    merged.append(t)
+                    seen.add(t)
+            merged = merged[:MAX_STORED_TAGS]
+            if merged == existing:
+                return True  # nothing new; skip the write
+            conn.execute(
+                "UPDATE tasks SET tags = ? WHERE id = ? AND created_by = ?",
+                (json.dumps(merged), job_id, MARKER),
+            )
+        return True
+    finally:
+        if own:
+            conn.close()
+
+
+def replace_job_tags(job_id: str, tags: List[str], *, conn=None) -> bool:
+    """Overwrite the job's tag list outright -- unlike add_job_tags, this
+    CAN remove a previously-stored tag.
+
+    Exists for one reason: add_job_tags is deliberately merge-only (see
+    its own docstring) so the normal per-job claim/refine flow never
+    looks like it lost a tag mid-run. That same guarantee makes it unable
+    to clean up noise once a bad tag has already been written -- cleanup
+    (e.g. ops/backfill_tags.py re-running after a denylist update) needs
+    the stale value gone, not unioned with the new, better one. Never
+    call this from the live per-job tagging path in runner.py.
+    """
+    own = conn is None
+    conn = conn or connect()
+    try:
+        with kb.write_txn(conn):
+            cur = conn.execute(
+                "UPDATE tasks SET tags = ? WHERE id = ? AND created_by = ?",
+                (json.dumps(tags[:MAX_STORED_TAGS]), job_id, MARKER),
+            )
+            return cur.rowcount == 1
+    finally:
+        if own:
+            conn.close()
+
+
 # ---------------------------------------------------------------------------
 # reads
 # ---------------------------------------------------------------------------
@@ -492,6 +576,7 @@ def list_jobs(
 _LIST_COLUMNS = """
     id, title, status, created_at, completed_at, dropped_at, pending_kind,
     resume_rounds, parent_job_id, origin_platform, origin_chat_id, tenant,
+    tags,
     substr(COALESCE(question, ''), 1, 240)           AS snip_question,
     substr(COALESCE(last_failure_error, ''), 1, 240) AS snip_failure,
     substr(COALESCE(result, ''), 1, 240)             AS snip_result,
@@ -517,7 +602,7 @@ def _escape_like(term: str) -> str:
 
 # Columns a free-text search looks at. id is included so pasting a job id
 # finds it directly.
-_SEARCH_COLUMNS = ("title", "body", "result", "question", "last_failure_error", "id")
+_SEARCH_COLUMNS = ("title", "body", "result", "question", "last_failure_error", "id", "tags")
 
 
 def _filter_sql(
