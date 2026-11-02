@@ -15,12 +15,15 @@ from .tokens import router as tokens_router
 from .vocab import router as vocab_router
 from .health import router as health_router
 from .quota import router as quota_router
+from .usage import router as usage_router
 from .appstore_admin import router as appstore_router
 from .tunnel_proxy import router as tunnel_router
 from .key_admin import router as keys_router
 from .dwd import router as dwd_router
 from .device_auth import router as device_auth_router
 from .gateway_keys import router as gateway_keys_router
+from .jobs_admin import router as jobs_admin_router
+from .gbrain_health import router as gbrain_health_router
 from .jinja_env import env
 from .openwebui import ensure_chat_defaults_in_background
 from .vault_client import VaultClient, MANAGED_APPS
@@ -33,7 +36,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
         # /auth/device/* are the device-code API endpoints polled by CLI/
         # plugin clients -- no browser session involved, the device_code /
         # refresh_token itself is the credential.
-        public_paths = {"/auth/login", "/auth/callback", "/health", "/static", "/quota/api", "/auth/device"}
+        public_paths = {"/auth/login", "/auth/callback", "/health", "/static", "/quota/api", "/auth/device", "/usage/identity"}
         if any(request.url.path.startswith(p) for p in public_paths):
             return await call_next(request)
 
@@ -88,12 +91,15 @@ def create_app() -> FastAPI:
     app.include_router(vocab_router, prefix="/vocab")
     app.include_router(health_router, prefix="/health")
     app.include_router(quota_router)
+    app.include_router(usage_router)
     app.include_router(appstore_router)
     app.include_router(tunnel_router)
     app.include_router(keys_router)
     app.include_router(dwd_router)
     app.include_router(device_auth_router)
     app.include_router(gateway_keys_router)
+    app.include_router(jobs_admin_router)
+    app.include_router(gbrain_health_router)
 
     static_dir = Path(__file__).parent / "static"
 

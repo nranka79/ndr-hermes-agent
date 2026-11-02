@@ -87,7 +87,8 @@ def _display_origin(job: Dict[str, Any]) -> str:
     return "%s%s" % (platform, (" " + chat_id) if chat_id else "")
 
 
-async def _cleanup_dictation(session: ClientSession, raw_text: str) -> str:
+async def _cleanup_dictation(session: ClientSession, raw_text: str,
+                             user_email: str = "", user_label: str = "") -> str:
     """Redraft + noun-correct a raw STT transcript via the shared n8n webhook.
 
     Best-effort: any failure (unset URL, timeout, bad response) returns the
@@ -99,7 +100,11 @@ async def _cleanup_dictation(session: ClientSession, raw_text: str) -> str:
     try:
         async with session.post(
             CLEANTEXT_WEBHOOK_URL,
-            json={"transcription": raw_text},
+            json={
+                "transcription": raw_text,
+                "user_email": user_email or "unknown",
+                "user_label": user_label or user_email or "unknown",
+            },
             timeout=100,
         ) as resp:
             if resp.status != 200:
@@ -573,7 +578,8 @@ async def _read_audio_field(request: web.Request):
     return audio_bytes, ctype, None
 
 
-async def _transcribe_bytes(session: ClientSession, audio_bytes: bytes, content_type: str):
+async def _transcribe_bytes(session: ClientSession, audio_bytes: bytes, content_type: str,
+                            identity: dict | None = None):
     """Run audio through the STT fallback chain. Returns (text, provider, error).
 
     Primary: the AI Model Gateway's OpenAI-compatible
@@ -588,8 +594,14 @@ async def _transcribe_bytes(session: ClientSession, audio_bytes: bytes, content_
     for url in urls:
         form = FormData()
         form.add_field("file", audio_bytes, filename="audio.webm", content_type=content_type)
+        headers = {
+            "X-Hermes-Client": "jobs-board",
+            "X-Hermes-Platform": "jobs",
+            "X-Hermes-Job-Type": "jobs",
+        }
+        headers.update(identity or {})
         try:
-            async with session.post(url, data=form, timeout=230) as resp:
+            async with session.post(url, data=form, headers=headers, timeout=230) as resp:
                 raw = await resp.text()
                 if resp.status != 200:
                     last_error = "HTTP %s: %s" % (resp.status, raw[:200])
@@ -620,14 +632,18 @@ async def api_transcribe(request: web.Request) -> web.Response:
     audio_bytes, ctype, err = await _read_audio_field(request)
     if err:
         return err
+    who = _who(request)
     async with ClientSession() as session:
-        text, provider, error = await _transcribe_bytes(session, audio_bytes, ctype)
+        text, provider, error = await _transcribe_bytes(
+            session, audio_bytes, ctype,
+            {"X-Hermes-User-Id": who, "X-Hermes-User-Label": who},
+        )
         if text is None:
             return web.json_response(
                 {"error": "transcription failed", "detail": (error or "")[:300]}, status=502,
             )
         if text:
-            text = await _cleanup_dictation(session, text)
+            text = await _cleanup_dictation(session, text, who, who)
         return web.json_response({"text": text, "provider": provider})
 
 
@@ -692,7 +708,10 @@ async def api_create_job_from_dictation(request: web.Request) -> web.Response:
 
     who = _who(request)
     async with ClientSession() as session:
-        text, provider, error = await _transcribe_bytes(session, audio_bytes, ctype)
+        text, provider, error = await _transcribe_bytes(
+            session, audio_bytes, ctype,
+            {"X-Hermes-User-Id": who, "X-Hermes-User-Label": who},
+        )
         if text is None:
             return web.json_response(
                 {"error": "transcription failed", "detail": (error or "")[:300]}, status=502,
@@ -701,7 +720,7 @@ async def api_create_job_from_dictation(request: web.Request) -> web.Response:
             return web.json_response(
                 {"error": "no speech detected", "raw_transcript": text}, status=422,
             )
-        instruction = await _cleanup_dictation(session, text)
+        instruction = await _cleanup_dictation(session, text, who, who)
         if _cleanup_signals_nothing(instruction):
             return web.json_response(
                 {"error": "no speech detected", "raw_transcript": text}, status=422,
