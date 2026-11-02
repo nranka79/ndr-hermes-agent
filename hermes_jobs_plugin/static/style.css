@@ -558,10 +558,39 @@ body.modal-open { overflow: hidden; }
 }
 .attach-btn { flex: 0 0 auto; padding: 9px 13px; font-size: 13px; }
 .attach-chips {
-  font-size: 12px;
-  color: var(--text-dim);
-  overflow-wrap: anywhere;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  width: 100%;
 }
+.attach-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--surface-3);
+  border-radius: 999px;
+  padding: 4px 4px 4px 10px;
+}
+.attach-chip-name { overflow-wrap: anywhere; }
+.attach-chip-remove {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.attach-chip-remove:hover { background: var(--danger); color: #fff; }
 
 /* ---------------------------------------------------------------------- */
 /* FAB speed-dial: "+ New job"                                             */

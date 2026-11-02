@@ -507,6 +507,7 @@ function openJob(jobId) {
   if (!j) return;
   activeJobId = jobId;
   sheetSignature = "";
+  clearPendingFiles("jobFilesInput");
   // Render the cheap list-cache version immediately (no blank modal while
   // the detail call is in flight), then replace it with the full detail
   // fetch -- the list endpoint deliberately omits events/artifacts/input
@@ -680,7 +681,7 @@ function wireJobActions(j) {
     answerBtn.onclick = async () => {
       const text = (answerInput.value || "").trim();
       if (!text) { showToast("Add your clarification first"); return; }
-      const files = Array.from(($("#jobFilesInput") || {}).files || []);
+      const files = getPendingFiles("jobFilesInput");
       answerBtn.disabled = true;
       try {
         await apiPostForm(`/api/jobs/${j.id}/answer`, { text }, files);
@@ -699,7 +700,7 @@ function wireJobActions(j) {
   const continueBtn = $("#continueBtn");
   if (continueBtn) {
     continueBtn.onclick = async () => {
-      const files = Array.from(($("#jobFilesInput") || {}).files || []);
+      const files = getPendingFiles("jobFilesInput");
       continueBtn.disabled = true;
       try {
         await apiPostForm(`/api/jobs/${j.id}/continue`, {
@@ -813,22 +814,72 @@ function wireMicButtons(root) {
   });
 }
 
-// File inputs are read directly from the DOM at submit time (FileList is
-// live), so this only needs to wire the "attach" button -> hidden input
-// click, and show a plain filename preview on change. No per-file removal
-// UI -- re-picking replaces the browser's own selection, which is enough
-// for a happy-path attach flow.
+// A native <input type="file"> only ever holds the files picked in its
+// MOST RECENT dialog session -- clicking "Attach files" a second time to
+// add one more file silently replaces the first selection, not adds to
+// it. That is the exact bug reported live: attach two files across two
+// clicks, submit, only the last one survives. Fixed by keeping our own
+// running list per input id, keyed by id (not by element) since the job
+// detail modal rebuilds its #jobFilesInput element on every re-render.
+const pendingAttachments = new Map(); // inputId -> File[]
+
+function getPendingFiles(inputId) {
+  return pendingAttachments.get(inputId) || [];
+}
+
+function clearPendingFiles(inputId) {
+  pendingAttachments.delete(inputId);
+  renderAttachChips(inputId);
+}
+
+function renderAttachChips(inputId) {
+  const chips = document.querySelector(`[data-attach-chips-for="${inputId}"]`);
+  if (!chips) return;
+  const files = getPendingFiles(inputId);
+  if (!files.length) {
+    chips.innerHTML = "";
+    return;
+  }
+  chips.innerHTML = files.map((f, i) => `
+    <span class="attach-chip">
+      <span class="attach-chip-name">${escapeHtml(f.name)}</span>
+      <button type="button" class="attach-chip-remove" data-remove-idx="${i}" aria-label="Remove ${escapeHtml(f.name)}">&times;</button>
+    </span>`).join("");
+  chips.querySelectorAll("[data-remove-idx]").forEach((btn) => {
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      const idx = parseInt(btn.dataset.removeIdx, 10);
+      const list = getPendingFiles(inputId).slice();
+      list.splice(idx, 1);
+      pendingAttachments.set(inputId, list);
+      renderAttachChips(inputId);
+    };
+  });
+}
+
 function wireAttachControls(root) {
   root.querySelectorAll("[data-attach-for]").forEach((btn) => {
     const input = document.getElementById(btn.dataset.attachFor);
     if (!input) return;
+    const inputId = input.id;
     btn.onclick = () => input.click();
     input.onchange = () => {
-      const chips = root.querySelector(`[data-attach-chips-for="${input.id}"]`);
-      if (!chips) return;
-      const names = Array.from(input.files || []).map((f) => f.name);
-      chips.textContent = names.length ? names.join(", ") : "";
+      const picked = Array.from(input.files || []);
+      if (picked.length) {
+        const merged = getPendingFiles(inputId).slice();
+        for (const f of picked) {
+          // Same name+size picked twice (user re-opened the dialog and
+          // selected the same file again) -- skip, don't double-attach.
+          if (!merged.some((e) => e.name === f.name && e.size === f.size)) {
+            merged.push(f);
+          }
+        }
+        pendingAttachments.set(inputId, merged);
+      }
+      input.value = ""; // reset so picking the same file again still fires change
+      renderAttachChips(inputId);
     };
+    renderAttachChips(inputId); // show files already pending across a re-render
   });
 }
 
@@ -859,8 +910,7 @@ function openComposer(mode = "new", job = null) {
   }
 
   $("#composerFilesInput").value = "";
-  const chips = document.querySelector('[data-attach-chips-for="composerFilesInput"]');
-  if (chips) chips.textContent = "";
+  clearPendingFiles("composerFilesInput");
 
   $("#composerSubmit").textContent = chain ? "Create next job"
     : resubmit ? "Resubmit as new job"
@@ -902,7 +952,7 @@ async function submitComposer() {
 
   const fields = { instruction: body };
   if (wasChain && composerJob) fields.parent_job_id = composerJob.id;
-  const files = Array.from(($("#composerFilesInput") || {}).files || []);
+  const files = getPendingFiles("composerFilesInput");
 
   btn.disabled = true;
   try {
