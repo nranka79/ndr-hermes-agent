@@ -164,6 +164,33 @@ def _row_to_dict(row) -> Optional[Dict[str, Any]]:
     return dict(row) if row is not None else None
 
 
+def _tenant_sql(tenants: Optional[List[str]]) -> tuple[str, list]:
+    """Build an optional owner filter for ``tasks.tenant``.
+
+    ``tenants=None`` means "no owner filter" and is used only for a verified
+    vault admin. A concrete list is matched case-insensitively because web jobs
+    store email addresses, which are case-insensitive in practice. An empty list
+    means "match nothing" and is an important fail-closed case: an identity with
+    no aliases must never fall through to seeing every job.
+
+    The returned SQL starts with ``AND`` so callers can append it to an existing
+    ``WHERE created_by = ?`` predicate without branching on whitespace.
+    """
+    if tenants is None:
+        return "", []
+
+    values = sorted({
+        str(value).strip().lower()
+        for value in tenants
+        if str(value or "").strip()
+    })
+    if not values:
+        return " AND 1 = 0", []
+
+    placeholders = ",".join("?" for _ in values)
+    return " AND lower(tenant) IN (%s)" % placeholders, values
+
+
 # ---------------------------------------------------------------------------
 # lifecycle
 # ---------------------------------------------------------------------------
@@ -183,7 +210,14 @@ def create_job(
     parent_job_id: Optional[str] = None,
     conn=None,
 ) -> str:
-    """Insert a queued job row. ``session_id`` == job id: readable and bindable."""
+    """Insert a queued job row. ``session_id`` == job id: readable and bindable.
+
+    ``tenant`` is the owner key: the signed-in email for board-created jobs or
+    the platform user id for chat-created jobs. When ``idempotency_key`` is
+    supplied, the duplicate lookup is deliberately scoped to the same tenant --
+    two users must never be able to collide on a key and receive each other's
+    job id back from the board API.
+    """
     if not instruction or not instruction.strip():
         raise ValueError("instruction is required")
     own = conn is None
@@ -196,8 +230,8 @@ def create_job(
             if idempotency_key:
                 dup = conn.execute(
                     "SELECT id FROM tasks WHERE idempotency_key = ? "
-                    "AND status != 'archived' LIMIT 1",
-                    (idempotency_key,),
+                    "AND status != 'archived' AND tenant IS ? LIMIT 1",
+                    (idempotency_key, tenant),
                 ).fetchone()
                 if dup:
                     return dup[0]
@@ -380,18 +414,29 @@ def complete_job(
             conn.close()
 
 
-def answer_job(job_id: str, answer: str, *, conn=None) -> bool:
-    """Human answered a clarification -> requeue. Rounds counted, never capped."""
+def answer_job(
+    job_id: str, answer: str, *, tenants: Optional[List[str]] = None, conn=None,
+) -> bool:
+    """Human answered a clarification -> requeue. Rounds counted, never capped.
+
+    ``tenants`` optionally restricts the UPDATE to jobs owned by those tenant
+    keys. The board passes the caller's aliases for non-admins so an
+    unauthorized id cannot be mutated even if an application-level check were
+    bypassed. Admins pass ``None`` (no owner restriction).
+    """
     own = conn is None
     conn = conn or connect()
     try:
+        tenant_sql, tenant_args = _tenant_sql(tenants)
         with kb.write_txn(conn):
             cur = conn.execute(
                 "UPDATE tasks SET status = ?, answer = ?, pending_kind = NULL,"
                 "  resume_rounds = resume_rounds + 1,"
                 "  claim_lock = NULL, claim_expires = NULL"
-                " WHERE id = ? AND created_by = ? AND status = ?",
-                (ST_QUEUED, answer, job_id, MARKER, ST_WAIT_QUESTION),
+                " WHERE id = ? AND created_by = ? AND status = ?"
+                + tenant_sql,
+                (ST_QUEUED, answer, job_id, MARKER, ST_WAIT_QUESTION)
+                + tuple(tenant_args),
             )
             ok = cur.rowcount == 1
             if ok:
@@ -402,19 +447,28 @@ def answer_job(job_id: str, answer: str, *, conn=None) -> bool:
             conn.close()
 
 
-def continue_job(job_id: str, *, extra_input: str = "", conn=None) -> bool:
-    """Human retries a failed job, optionally with extra input. No round count."""
+def continue_job(
+    job_id: str, *, extra_input: str = "", tenants: Optional[List[str]] = None,
+    conn=None,
+) -> bool:
+    """Human retries a failed job, optionally with extra input. No round count.
+
+    ``tenants`` applies the same owner restriction as ``answer_job``: a
+    non-admin can only requeue one of their own jobs; an admin passes ``None``.
+    """
     own = conn is None
     conn = conn or connect()
     try:
+        tenant_sql, tenant_args = _tenant_sql(tenants)
         with kb.write_txn(conn):
             cur = conn.execute(
                 "UPDATE tasks SET status = ?, pending_kind = NULL,"
                 "  answer = CASE WHEN ? != '' THEN ? ELSE answer END,"
                 "  claim_lock = NULL, claim_expires = NULL"
-                " WHERE id = ? AND created_by = ? AND status = ?",
+                " WHERE id = ? AND created_by = ? AND status = ?"
+                + tenant_sql,
                 (ST_QUEUED, extra_input, extra_input, job_id, MARKER,
-                 ST_WAIT_FAILURE),
+                 ST_WAIT_FAILURE) + tuple(tenant_args),
             )
             ok = cur.rowcount == 1
             if ok:
@@ -427,19 +481,31 @@ def continue_job(job_id: str, *, extra_input: str = "", conn=None) -> bool:
             conn.close()
 
 
-def drop_job(job_id: str, *, by: str = "ndr", reason: str = "", conn=None) -> bool:
-    """Terminal. A dropped job is never claimed, retried or revived."""
+def drop_job(
+    job_id: str, *, by: str = "ndr", reason: str = "",
+    tenants: Optional[List[str]] = None, conn=None,
+) -> bool:
+    """Terminal. A dropped job is never claimed, retried or revived.
+
+    ``tenants`` is the owner guard used by the web board for non-admins. It is
+    appended to the UPDATE itself, so an unauthorized request cannot drop a job
+    even if the handler's pre-check is ever removed. Admins pass ``None`` and
+    can drop any job, matching the requested All-jobs admin control.
+    """
     own = conn is None
     conn = conn or connect()
     try:
         now = int(time.time())
+        tenant_sql, tenant_args = _tenant_sql(tenants)
         with kb.write_txn(conn):
             cur = conn.execute(
                 "UPDATE tasks SET status = ?, dropped_at = ?, dropped_by = ?,"
                 "  drop_reason = ?, pending_kind = NULL, claim_lock = NULL,"
                 "  claim_expires = NULL"
-                " WHERE id = ? AND created_by = ? AND status != ?",
-                (ST_DROPPED, now, by, reason, job_id, MARKER, ST_DROPPED),
+                " WHERE id = ? AND created_by = ? AND status != ?"
+                + tenant_sql,
+                (ST_DROPPED, now, by, reason, job_id, MARKER, ST_DROPPED)
+                + tuple(tenant_args),
             )
             ok = cur.rowcount == 1
             if ok:
@@ -450,10 +516,17 @@ def drop_job(job_id: str, *, by: str = "ndr", reason: str = "", conn=None) -> bo
             conn.close()
 
 
-MAX_STORED_TAGS = 20
+# Manual tag editing made the old 20-tag ceiling too easy to hit: a single
+# contact-heavy job can auto-tag 20 nouns before the human adds their own. The
+# editor now allows a comfortable working set; the API still returns an
+# explicit error instead of silently dropping an add at the cap.
+MAX_STORED_TAGS = 50
 
 
-def add_job_tags(job_id: str, new_tags: List[str], *, conn=None) -> bool:
+def add_job_tags(
+    job_id: str, new_tags: List[str], *, tenants: Optional[List[str]] = None,
+    conn=None,
+) -> bool:
     """Union *new_tags* into the job's stored tag list. Never removes a
     tag a previous call already recorded -- a job in review/blocked may
     get re-tagged from richer text (a question, a result, a failure) on
@@ -463,16 +536,22 @@ def add_job_tags(job_id: str, new_tags: List[str], *, conn=None) -> bool:
     Order is preserved (first-seen wins) so the UI shows entity tags
     before work-type tags consistently across re-tagging calls, since
     tagging.compute_tags() always emits entities before work: tags.
+
+    ``tenants`` is the board's owner guard. Non-admins pass their alias list
+    so a tag write can only land on their own job; admins pass ``None`` and may
+    edit any job's tags from the All jobs view.
     """
     if not new_tags:
         return True
     own = conn is None
     conn = conn or connect()
     try:
+        tenant_sql, tenant_args = _tenant_sql(tenants)
         with kb.write_txn(conn):
             row = conn.execute(
-                "SELECT tags FROM tasks WHERE id = ? AND created_by = ?",
-                (job_id, MARKER),
+                "SELECT tags FROM tasks WHERE id = ? AND created_by = ?"
+                + tenant_sql,
+                (job_id, MARKER) + tuple(tenant_args),
             ).fetchone()
             if row is None:
                 return False
@@ -492,8 +571,56 @@ def add_job_tags(job_id: str, new_tags: List[str], *, conn=None) -> bool:
             if merged == existing:
                 return True  # nothing new; skip the write
             conn.execute(
-                "UPDATE tasks SET tags = ? WHERE id = ? AND created_by = ?",
-                (json.dumps(merged), job_id, MARKER),
+                "UPDATE tasks SET tags = ? WHERE id = ? AND created_by = ?"
+                + tenant_sql,
+                (json.dumps(merged), job_id, MARKER) + tuple(tenant_args),
+            )
+        return True
+    finally:
+        if own:
+            conn.close()
+
+
+def remove_job_tag(
+    job_id: str, tag: str, *, tenants: Optional[List[str]] = None,
+    conn=None,
+) -> bool:
+    """Remove one exact tag from a job's stored list.
+
+    Unlike ``add_job_tags`` (merge-only) and ``replace_job_tags`` (whole-list
+    overwrite), this is the narrow operation the board's tag editor needs:
+    one click removes exactly one chip and leaves every other tag untouched.
+    The read and write happen in one transaction so a concurrent re-tag cannot
+    silently resurrect the removed value. Missing tags are treated as success
+    (idempotent), while a missing job returns False.
+    """
+    if not tag:
+        return False
+    own = conn is None
+    conn = conn or connect()
+    try:
+        tenant_sql, tenant_args = _tenant_sql(tenants)
+        with kb.write_txn(conn):
+            row = conn.execute(
+                "SELECT tags FROM tasks WHERE id = ? AND created_by = ?"
+                + tenant_sql,
+                (job_id, MARKER) + tuple(tenant_args),
+            ).fetchone()
+            if row is None:
+                return False
+            try:
+                existing = json.loads(row[0] or "[]")
+            except Exception:
+                existing = []
+            if not isinstance(existing, list):
+                existing = []
+            remaining = [t for t in existing if t != tag]
+            if remaining == existing:
+                return True  # already absent; nothing to write
+            conn.execute(
+                "UPDATE tasks SET tags = ? WHERE id = ? AND created_by = ?"
+                + tenant_sql,
+                (json.dumps(remaining), job_id, MARKER) + tuple(tenant_args),
             )
         return True
     finally:
@@ -531,13 +658,23 @@ def replace_job_tags(job_id: str, tags: List[str], *, conn=None) -> bool:
 # reads
 # ---------------------------------------------------------------------------
 
-def get_job(job_id: str, *, conn=None) -> Optional[Dict[str, Any]]:
+def get_job(
+    job_id: str, *, tenants: Optional[List[str]] = None, conn=None,
+) -> Optional[Dict[str, Any]]:
+    """Read one job by id, optionally restricted to the caller's tenant keys.
+
+    ``tenants=None`` is the admin/no-filter path. Passing a concrete list means
+    a non-owner receives ``None`` even when the id exists, so detail and
+    artifact handlers can reject it without ever serializing another person's
+    job. Empty list = match nothing.
+    """
     own = conn is None
     conn = conn or connect()
     try:
+        tenant_sql, tenant_args = _tenant_sql(tenants)
         row = conn.execute(
-            "SELECT * FROM tasks WHERE id = ? AND created_by = ?",
-            (job_id, MARKER),
+            "SELECT * FROM tasks WHERE id = ? AND created_by = ?" + tenant_sql,
+            (job_id, MARKER) + tuple(tenant_args),
         ).fetchone()
         return _row_to_dict(row)
     finally:
@@ -547,8 +684,15 @@ def get_job(job_id: str, *, conn=None) -> Optional[Dict[str, Any]]:
 
 def list_jobs(
     *, status: Optional[str] = None, tenant: Optional[str] = None,
-    limit: int = 100, conn=None,
+    tenants: Optional[List[str]] = None, limit: int = 100, conn=None,
 ) -> List[Dict[str, Any]]:
+    """List jobs with optional exact-tenant or multi-tenant owner filtering.
+
+    ``tenant`` is the original single-owner filter used by the Telegram CLI.
+    ``tenants`` is the web board's alias-aware filter: a signed-in person can
+    own jobs under several emails and a Telegram id. ``tenants=None`` means no
+    filter; ``tenants=[]`` matches nothing (fail closed).
+    """
     own = conn is None
     conn = conn or connect()
     try:
@@ -560,9 +704,38 @@ def list_jobs(
         if tenant:
             sql += " AND tenant = ?"
             args.append(tenant)
+        tenant_sql, tenant_args = _tenant_sql(tenants)
+        sql += tenant_sql
+        args.extend(tenant_args)
         sql += " ORDER BY created_at DESC LIMIT ?"
         args.append(limit)
         return [dict(r) for r in conn.execute(sql, args)]
+    finally:
+        if own:
+            conn.close()
+
+
+def list_owners(*, conn=None) -> List[Dict[str, Any]]:
+    """Return every distinct job owner and their total job count.
+
+    This powers the admin-only owner chips in the All jobs view. It is
+    deliberately unfiltered by tenant because only a verified vault admin can
+    call the endpoint that uses it. ``MAX(origin_platform)`` gives the display
+    helper enough context to label a Telegram owner without needing a second
+    query per chip.
+    """
+    own = conn is None
+    conn = conn or connect()
+    try:
+        return [dict(r) for r in conn.execute(
+            "SELECT tenant, MAX(origin_platform) AS origin_platform,"
+            "       COUNT(*) AS count"
+            "  FROM tasks"
+            " WHERE created_by = ? AND tenant IS NOT NULL AND tenant != ''"
+            " GROUP BY tenant"
+            " ORDER BY count DESC, tenant ASC",
+            (MARKER,),
+        )]
     finally:
         if own:
             conn.close()
@@ -607,15 +780,20 @@ _SEARCH_COLUMNS = ("title", "body", "result", "question", "last_failure_error", 
 
 def _filter_sql(
     *, statuses=None, q=None, created_from=None, created_to=None,
+    tenants=None,
 ):
     """Build the WHERE tail shared by the page query AND the counts query.
 
     Both must apply byte-identical filters or the lane badges would
     disagree with the list they label, so the predicate is built once
-    here rather than written twice.
+    here rather than written twice. ``tenants`` is the owner scope: concrete
+    aliases for a normal user, ``None`` only for a verified vault admin.
     """
     sql = ""
     args: list = []
+    tenant_sql, tenant_args = _tenant_sql(tenants)
+    sql += tenant_sql
+    args.extend(tenant_args)
     if statuses:
         sql += " AND status IN (%s)" % ",".join("?" for _ in statuses)
         args.extend(statuses)
@@ -655,7 +833,8 @@ def decode_cursor(cursor: str):
 def list_jobs_page(
     *, statuses: Optional[List[str]] = None, q: Optional[str] = None,
     created_from: Optional[int] = None, created_to: Optional[int] = None,
-    limit: int = 50, cursor: Optional[str] = None, conn=None,
+    tenants: Optional[List[str]] = None, limit: int = 50,
+    cursor: Optional[str] = None, conn=None,
 ):
     """One keyset-paginated page of jobs, newest first.
 
@@ -663,6 +842,11 @@ def list_jobs_page(
     continuously here, and OFFSET silently skips or repeats rows when a
     new job lands while the user is paging. ``id`` is the tiebreaker --
     ``created_at`` is epoch SECONDS, so a burst of jobs can share one.
+
+    ``tenants`` is the owner scope shared with ``count_jobs_by_status``. The
+    board passes the caller's alias set for every non-admin and ``None`` only
+    after a vault role-admin check, so the database itself never returns
+    another user's row on the normal path.
 
     Returns ``(rows, next_cursor)``; ``next_cursor`` is None on the last
     page.
@@ -676,6 +860,7 @@ def list_jobs_page(
         filt_sql, filt_args = _filter_sql(
             statuses=statuses, q=q,
             created_from=created_from, created_to=created_to,
+            tenants=tenants,
         )
         sql += filt_sql
         args.extend(filt_args)
@@ -700,20 +885,24 @@ def list_jobs_page(
 
 def count_jobs_by_status(
     *, q: Optional[str] = None, created_from: Optional[int] = None,
-    created_to: Optional[int] = None, conn=None,
+    created_to: Optional[int] = None, tenants: Optional[List[str]] = None,
+    conn=None,
 ) -> Dict[str, int]:
     """Totals per status across ALL matching jobs, not just the loaded page.
 
     The lane badges have to count everything or they would just report
     how far the user has scrolled. Deliberately takes the search/date
     filters but NOT a status filter: each lane's badge has to stay
-    correct while the user is looking at a different lane.
+    correct while the user is looking at a different lane. ``tenants`` must
+    be the exact same owner scope used by ``list_jobs_page`` or the badges
+    would count jobs the list refuses to show.
     """
     own = conn is None
     conn = conn or connect()
     try:
         filt_sql, filt_args = _filter_sql(
             q=q, created_from=created_from, created_to=created_to,
+            tenants=tenants,
         )
         return {
             r[0]: r[1] for r in conn.execute(

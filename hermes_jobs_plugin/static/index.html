@@ -9,7 +9,7 @@
 <link rel="apple-touch-icon" href="icons/icon-192.png">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<link rel="stylesheet" href="style.css?v=20261102a">
+<link rel="stylesheet" href="style.css?v=20261105c">
 </head>
 <body>
 <header class="topbar">
@@ -30,6 +30,21 @@
 </nav>
 
 <div class="filterbar">
+  <!-- Admin-only visibility switch. Hidden by default and revealed by app.js
+       only when /api/whoami reports is_admin=true. Everyone starts on My jobs,
+       including admins, per the confirmed product decision. -->
+  <div class="day-chips scope-chips hidden" id="scopeBar" role="group" aria-label="Job visibility">
+    <button id="scopeMine" class="day-chip active" type="button">My jobs</button>
+    <button id="scopeAll" class="day-chip" type="button">All jobs</button>
+  </div>
+  <!-- Owner chips are populated only in the admin All jobs view. The row
+       scrolls horizontally by touch on phones; the arrow buttons scroll it on
+       desktop. "All users" is the no-filter chip. -->
+  <div class="owner-filter hidden" id="ownerFilterBar">
+    <button class="owner-scroll-btn" id="ownerScrollLeft" type="button" aria-label="Scroll owners left">&#8249;</button>
+    <div class="owner-chips" id="ownerChips" role="group" aria-label="Filter jobs by owner"></div>
+    <button class="owner-scroll-btn" id="ownerScrollRight" type="button" aria-label="Scroll owners right">&#8250;</button>
+  </div>
   <div class="search-wrap">
     <span class="search-icon">&#128269;</span>
     <input id="searchInput" class="search-input" type="search" inputmode="search"
@@ -54,7 +69,8 @@
     <div>Status</div>
     <div>Job</div>
     <div>Detail</div>
-    <div>Origin</div>
+    <div id="ownerHead" class="owner-col">Created by</div>
+    <div id="originHead">Origin</div>
     <div>Created</div>
     <div></div>
   </div>
@@ -165,6 +181,6 @@
 
 <div id="toast" class="toast hidden"></div>
 
-<script src="app.js?v=20261102a"></script>
+<script src="app.js?v=20261105c"></script>
 </body>
 </html>

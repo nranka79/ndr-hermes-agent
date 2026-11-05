@@ -1,3 +1,13 @@
+﻿/*
+ * jobs.ahfl.in board shell.
+ *
+ * The backend is the security boundary: every /api/jobs* route filters by the
+ * signed-in person's vault aliases and rejects another user's job with 403.
+ * This file only keeps the UI consistent with that rule. Everyone defaults to
+ * "My jobs"; the extra "All jobs" control is rendered only when /api/whoami
+ * reports is_admin=true. Toggling it resets every cached lane so a user can
+ * never see an old row from the other scope while the new scope is loading.
+ */
 "use strict";
 
 const STATUS_LABEL = {
@@ -31,6 +41,19 @@ ALL_LANES.forEach((l) => { laneState[l] = freshLaneState(); });
 const filterState = { q: "", from: null, to: null, day: "all" };
 let searchDebounce = null;
 
+// Filled from /api/whoami during init. The flags are presentation-only; the
+// server repeats every authorization check, so a tampered browser cannot gain
+// access by flipping these values.
+let me = { email: "", is_admin: false };
+// False = "My jobs" (default for everyone). Only an admin can set this true.
+let scopeAll = false;
+// Raw tasks.tenant of the selected owner chip inside All jobs. Empty string
+// means "All users". It is deliberately not persisted: a fresh login always
+// starts on the normal owner-scoped board.
+let ownerFilter = "";
+// Cached owner-chip data from /api/jobs/owners, used only by the admin view.
+let owners = [];
+
 let activeJobId = null;
 let sheetSignature = "";
 let pollTimer = null;
@@ -40,6 +63,14 @@ let recordedChunks = [];
 let discardRecording = false;
 let composerMode = "new";
 let composerJob = null;
+// Unique id for the currently open composer. Dictation and pending submission
+// items are tied to this id so a background transcription can tell whether the
+// same form is still on screen, and a restored submission can finish after a
+// reload without needing the modal to be open.
+let composerDraftId = null;
+// The mode-specific label for the submit button, restored after temporary
+// "waiting for dictation" text.
+let composerSubmitLabel = "Create job";
 let fabOpen = false;
 
 const $ = (sel) => document.querySelector(sel);
@@ -116,9 +147,16 @@ function showToast(msg) {
   toastTimer = setTimeout(() => t.classList.add("hidden"), 2600);
 }
 
+// GET helper. The HTTP status is attached to the thrown Error so callers can
+// distinguish "job no longer exists" (404) from "not your job" (403) without
+// parsing the message text.
 async function apiGet(path) {
   const r = await fetch(path, { credentials: "include" });
-  if (!r.ok) throw new Error("GET " + path + " -> " + r.status);
+  if (!r.ok) {
+    const err = new Error("GET " + path + " -> " + r.status);
+    err.status = r.status;
+    throw err;
+  }
   return r.json();
 }
 
@@ -179,11 +217,18 @@ function upsertJob(incoming) {
   jobsById.set(incoming.id, merged);
 }
 
+// Build the query parameters shared by initial loads, polling and infinite
+// scroll. The scope is included only while an admin has All jobs selected, so
+// normal requests stay byte-identical to the original My-jobs traffic.
 function filterParams() {
   const p = new URLSearchParams();
   if (filterState.q) p.set("q", filterState.q);
   if (filterState.from != null) p.set("from", String(filterState.from));
   if (filterState.to != null) p.set("to", String(filterState.to));
+  if (scopeAll && me.is_admin) {
+    p.set("scope", "all");
+    if (ownerFilter) p.set("owner", ownerFilter);
+  }
   return p;
 }
 
@@ -281,6 +326,7 @@ async function manualRefresh() {
   icon.classList.add("spinning");
   try {
     invalidateLanes();
+    if (scopeAll && me.is_admin) loadOwners();
     await loadLane(currentLane, { reset: true });
     showToast("Jobs updated");
   } finally {
@@ -326,7 +372,10 @@ function setDayFilter(key, dateStr) {
     filterState.to = null;
   }
 
-  $$(".day-chip").forEach((c) => c.classList.toggle("active", c.dataset.day === filterState.day));
+  // Only date chips carry data-day. The admin scope chips also use the
+  // day-chip pill styling, so a broad .day-chip selector here would strip
+  // their active state every time a date filter changed.
+  $$(".day-chip[data-day]").forEach((c) => c.classList.toggle("active", c.dataset.day === filterState.day));
   const picker = $("#datePick");
   picker.classList.toggle("active", filterState.day === "date");
   if (filterState.day !== "date") picker.value = "";
@@ -378,6 +427,122 @@ function setLane(lane) {
   renderList();
   window.scrollTo({ top: 0 });
   if (!laneState[lane].loaded) loadLane(lane, { reset: true });
+}
+
+// Switch between the normal owner-scoped board and the admin-only All jobs
+// board. Clearing jobsById is deliberate: without it, a stale detail object
+// from the previous scope could still be opened while the new lane loads.
+// The server independently rejects scope=all for non-admins, so this function
+// is not a security boundary.
+function setScope(all) {
+  const next = Boolean(all && me.is_admin);
+  if (next === scopeAll) return;
+  scopeAll = next;
+
+  closeJob();
+  jobsById.clear();
+  invalidateLanes();
+  renderList();
+
+  const mineBtn = $("#scopeMine");
+  const allBtn = $("#scopeAll");
+  if (mineBtn) mineBtn.classList.toggle("active", !scopeAll);
+  if (allBtn) allBtn.classList.toggle("active", scopeAll);
+  // The owner column is additive: Origin stays visible in both scopes, and the
+  // extra "Created by" column appears only while All jobs is active.
+  document.body.classList.toggle("scope-all", scopeAll);
+
+  // The owner-chip row exists only inside All jobs. Leaving that scope clears
+  // the selected owner so returning to My jobs cannot carry a stale filter.
+  showOwnerFilterBar(scopeAll);
+  loadLane(currentLane, { reset: true });
+}
+
+// Render the admin-only owner chips. The first chip is always "All users";
+// each remaining chip is one raw tenant key from /api/jobs/owners. Counts are
+// all-time job totals, not just the currently loaded lane.
+function renderOwnerChips() {
+  const wrap = $("#ownerChips");
+  if (!wrap) return;
+  const total = owners.reduce((sum, o) => sum + (o.count || 0), 0);
+  const parts = [
+    `<button type="button" class="owner-chip ${ownerFilter ? "" : "active"}" data-owner="">`
+      + `All users <span class="owner-count">${total}</span></button>`,
+  ];
+  owners.forEach((o) => {
+    const tenant = o.tenant || "";
+    const label = o.display || tenant;
+    parts.push(
+      `<button type="button" class="owner-chip ${ownerFilter === tenant ? "active" : ""}"`
+      + ` data-owner="${escapeHtml(tenant)}" title="${escapeHtml(label)}">`
+      + `${escapeHtml(label)} <span class="owner-count">${o.count || 0}</span></button>`
+    );
+  });
+  wrap.innerHTML = parts.join("");
+  wrap.querySelectorAll(".owner-chip").forEach((btn) => {
+    btn.onclick = () => setOwnerFilter(btn.dataset.owner || "");
+  });
+}
+
+// Fetch the distinct owner list for the All jobs view. Admin-only on the
+// server as well; this function is only called after whoami says is_admin.
+async function loadOwners() {
+  if (!me.is_admin) return;
+  try {
+    const data = await apiGet("/api/jobs/owners");
+    owners = data.owners || [];
+    // If the selected owner disappeared (or was renamed/merged), fall back to
+    // All users instead of leaving the list permanently empty.
+    if (ownerFilter && !owners.some((o) => o.tenant === ownerFilter)) {
+      ownerFilter = "";
+      invalidateLanes();
+    }
+    renderOwnerChips();
+  } catch (e) {
+    console.error(e);
+    showToast("Could not load owners");
+  }
+}
+
+// Select one owner chip (or "" for All users) and reload every lane with the
+// new owner filter. Clearing jobsById prevents a stale detail modal from the
+// previous owner remaining open while the new scope loads.
+function setOwnerFilter(tenant) {
+  const next = tenant || "";
+  if (next === ownerFilter) return;
+  ownerFilter = next;
+  closeJob();
+  jobsById.clear();
+  invalidateLanes();
+  renderList();
+  renderOwnerChips();
+  loadLane(currentLane, { reset: true });
+}
+
+// Show/hide the owner-chip row and reset its state when leaving All jobs.
+// loadOwners is intentionally lazy: the first switch into All jobs fetches the
+// list, and manual refresh can refresh it later.
+function showOwnerFilterBar(visible) {
+  const bar = $("#ownerFilterBar");
+  if (bar) bar.classList.toggle("hidden", !visible);
+  if (visible) {
+    renderOwnerChips();
+    loadOwners();
+  } else {
+    ownerFilter = "";
+    owners = [];
+    const chips = $("#ownerChips");
+    if (chips) chips.innerHTML = "";
+  }
+}
+
+// Desktop arrows scroll the owner row by most of a viewport; phones use normal
+// finger scrolling because the row is a horizontal overflow container.
+function scrollOwnerChips(direction) {
+  const chips = $("#ownerChips");
+  if (!chips) return;
+  const distance = Math.max(180, Math.round(chips.clientWidth * 0.7));
+  chips.scrollBy({ left: direction * distance, behavior: "smooth" });
 }
 
 function jobSignature(j) {
@@ -468,15 +633,17 @@ function renderRow(j) {
     <div class="job-main">
       <div class="job-title">${escapeHtml(j.title || "Untitled job")}</div>
       <div class="job-id">${escapeHtml(j.id)}${j.resume_rounds ? ` &middot; ${j.resume_rounds} round(s)` : ""}${j.parent_job_id ? ` &middot; chained` : ""}</div>
-      ${tagChipsHtml(j.tags)}
+      ${listTagsHtml(j)}
     </div>
     <div class="job-detail">
       <div class="job-detail-text">${escapeHtml(j.snippet || "")}</div>
     </div>
+    <div class="job-owner owner-col">${escapeHtml(j.owner_display || j.owner || "")}</div>
     <div class="job-origin">${escapeHtml(j.origin_display || "")}</div>
     <div class="job-time">${fmtTime(j.created_at)}</div>
     <div class="job-actions"><span class="row-open">Open &rsaquo;</span></div>
   `;
+  wireRowTagEditor(row, j);
   return row;
 }
 
@@ -485,16 +652,95 @@ function renderRow(j) {
 // "work:follow_up". Only the label is shown; the type just picks the
 // chip style (work: gets the accent chip, everything else is neutral --
 // the label itself already says what kind of thing it is).
-function tagChipsHtml(tags) {
-  if (!Array.isArray(tags) || !tags.length) return "";
+// Split a stored "type:Label" tag into its display pieces. The type only
+// chooses a colour; the label is what people actually read.
+function tagParts(tag) {
+  const text = String(tag || "");
+  const sep = text.indexOf(":");
+  const type = sep === -1 ? "" : text.slice(0, sep);
+  const label = sep === -1 ? text : text.slice(sep + 1);
+  // Stored classification values are snake_case (research_lookup); show the
+  // same friendly label the add-tag selector uses while keeping the raw value
+  // in the stored tag and remove-button data attribute.
+  const classification = type === "work"
+    ? TAG_CLASSIFICATIONS.find(([value]) => value === label)
+    : null;
+  return { type, label, display: classification ? classification[1] : label };
+}
+
+// The seven classification buckets tagging.py already uses for the blue
+// work: chips. Exposing them in the add-tag control lets a human add a missing
+// classification (e.g. work:communication) instead of being forced into a
+// free-text noun tag.
+const TAG_CLASSIFICATIONS = [
+  ["communication", "Communication"],
+  ["follow_up", "Follow-up"],
+  ["scheduling", "Scheduling"],
+  ["drafting_creative", "Drafting / creative"],
+  ["research_lookup", "Research / lookup"],
+  ["compliance_finance", "Compliance / finance"],
+  ["engineering", "Engineering"],
+];
+
+function tagTypeOptionsHtml() {
+  return `<option value="manual">Noun / custom text</option>`
+    + TAG_CLASSIFICATIONS.map(([value, label]) =>
+      `<option value="work:${value}">${label} (classification)</option>`
+    ).join("");
+}
+
+// A list row is itself clickable, so every tag control below stops propagation
+// before it runs. Without that, tapping a delete button would also open the job.
+function listTagsHtml(job) {
+  const tags = Array.isArray(job.tags) ? job.tags : [];
+  const jobId = escapeHtml(job.id);
   const chips = tags.map((t) => {
-    const sep = t.indexOf(":");
-    const type = sep === -1 ? "" : t.slice(0, sep);
-    const label = sep === -1 ? t : t.slice(sep + 1);
-    const cls = type === "work" ? "tag-chip tag-chip-work" : "tag-chip";
-    return `<span class="${cls}">${escapeHtml(label)}</span>`;
+    const { type, display } = tagParts(t);
+    const cls = type === "work" ? "tag-chip tag-chip-work tag-chip-editable" : "tag-chip tag-chip-editable";
+    return `<span class="${cls}">${escapeHtml(display)}`
+      + `<button type="button" class="tag-remove" data-row-remove-tag="${escapeHtml(t)}"`
+      + ` data-row-job-id="${jobId}" aria-label="Remove tag ${escapeHtml(display)}" title="Remove tag">&times;</button></span>`;
   }).join("");
-  return `<div class="job-tags">${chips}</div>`;
+  return `<div class="job-tags list-tags" data-row-tags="${jobId}">${chips}`
+    + `<button type="button" class="tag-add" data-row-add-tag="${jobId}" aria-label="Add tag" title="Add tag">+</button>`
+    + `<span class="tag-add-wrap hidden" data-row-tag-wrap="${jobId}">`
+    + `<select class="tag-add-type" data-row-tag-type="${jobId}">${tagTypeOptionsHtml()}</select>`
+    + `<input type="text" class="tag-add-input" data-row-tag-input="${jobId}" maxlength="80" placeholder="tag or type:Label" autocomplete="off">`
+    + `<button type="button" class="btn btn-primary tag-add-save" data-row-tag-save="${jobId}">Add</button>`
+    + `<button type="button" class="tag-add-cancel" data-row-tag-cancel="${jobId}" aria-label="Cancel">&times;</button>`
+    + `</span></div>`;
+}
+
+// Editable chips for the detail modal. Each chip gets a remove button that
+// appears on hover/focus (and is always visible on touch devices), followed by
+// a + button that reveals a classification selector plus a small inline input.
+function editableTagsHtml(job) {
+  const tags = Array.isArray(job.tags) ? job.tags : [];
+  const chips = tags.map((t) => {
+    const { type, display } = tagParts(t);
+    const cls = type === "work" ? "tag-chip tag-chip-work tag-chip-editable" : "tag-chip tag-chip-editable";
+    return `<span class="${cls}">${escapeHtml(display)}`
+      + `<button type="button" class="tag-remove" data-remove-tag="${escapeHtml(t)}"`
+      + ` aria-label="Remove tag ${escapeHtml(display)}" title="Remove tag">&times;</button></span>`;
+  }).join("");
+  return `<div class="job-tags editable-tags" id="jobTags">${chips}`
+    + `<button type="button" class="tag-add" id="addTagBtn" aria-label="Add tag" title="Add tag">+</button>`
+    + `<span class="tag-add-wrap hidden" id="tagAddWrap">`
+    + `<select id="tagAddType" class="tag-add-type">${tagTypeOptionsHtml()}</select>`
+    + `<input type="text" id="tagAddInput" class="tag-add-input" maxlength="80" placeholder="tag or type:Label" autocomplete="off">`
+    + `<button type="button" class="btn btn-primary tag-add-save" id="tagAddSave">Add</button>`
+    + `<button type="button" class="tag-add-cancel" id="tagAddCancel" aria-label="Cancel">&times;</button>`
+    + `</span></div>`;
+}
+
+// Selecting a classification disables the text input: the category itself is
+// the complete tag. Selecting Noun/custom re-enables free-text entry.
+function syncTagInputForType(select, input) {
+  if (!select || !input) return;
+  const isClassification = select.value.startsWith("work:");
+  input.disabled = isClassification;
+  input.placeholder = isClassification ? "Classification tag selected" : "tag or type:Label";
+  if (isClassification) input.value = "";
 }
 
 function metaItem(k, v) {
@@ -532,6 +778,13 @@ async function refreshOpenJob() {
     }
   } catch (e) {
     console.error(e);
+    // The detail endpoint is the direct-URL surface. A 403 here means the job
+    // exists but belongs to someone else (or the session's aliases changed).
+    // Close the stale modal rather than leaving a partially rendered job open.
+    if (e && e.status === 403) {
+      closeJob();
+      showToast("You do not have access to this job");
+    }
   }
 }
 
@@ -570,14 +823,15 @@ function renderJob(j) {
   html += `<div class="meta-grid">
     ${metaItem("Job ID", j.id)}
     ${metaItem("Origin", j.origin_display || "")}
+    ${scopeAll && me.is_admin ? metaItem("Owner", j.owner_display || j.owner || "") : ""}
     ${metaItem("Created", fmtTime(j.created_at))}
     ${metaItem("Completed", j.completed_at ? fmtTime(j.completed_at) : "")}
     ${metaItem("Rounds", j.resume_rounds ? String(j.resume_rounds) : "")}
   </div>`;
 
-  if (j.tags && j.tags.length) {
-    html += `<div class="section-label">Tags</div>${tagChipsHtml(j.tags)}`;
-  }
+  // Tags are always shown in detail (even when empty) because this is where
+  // the human can remove noisy auto-tags and add the vocabulary they want.
+  html += `<div class="section-label">Tags</div>${editableTagsHtml(j)}`;
 
   const pending = j.slim ? "Loading\u2026" : "";
   html += `<div class="section-label">Instruction</div>
@@ -657,7 +911,195 @@ function renderJob(j) {
   $("#jobModalBody").innerHTML = html;
   wireMicButtons($("#jobModal"));
   wireAttachControls($("#jobModal"));
+  wireTagEditor(j);
   wireJobActions(j);
+}
+
+// Replace the cached job's tag list. Re-render the detail modal only when that
+// exact job is the one currently open; list rows call renderList themselves.
+function applyTagsUpdate(jobId, tags) {
+  const current = jobsById.get(jobId);
+  if (!current) return;
+  upsertJob({ ...current, tags: Array.isArray(tags) ? tags : [] });
+  if (activeJobId === jobId && !$("#jobModal").classList.contains("hidden")) {
+    renderJob(jobsById.get(jobId));
+  }
+}
+
+// Single tag-write path shared by the detail modal and list rows. The server
+// returns the authoritative resulting tag list.
+async function updateJobTag(jobId, action, tag) {
+  const data = await apiPost(`/api/jobs/${jobId}/tags`, { action, tag });
+  applyTagsUpdate(jobId, data.tags);
+  return data;
+}
+
+// Wire the detail modal's tag editor: per-chip remove buttons, a classification
+// selector, and the +/inline custom-text form.
+function wireTagEditor(job) {
+  const root = $("#jobModal");
+  const addBtn = $("#addTagBtn");
+  const wrap = $("#tagAddWrap");
+  const typeSel = $("#tagAddType");
+  const input = $("#tagAddInput");
+  const saveBtn = $("#tagAddSave");
+  const cancelBtn = $("#tagAddCancel");
+
+  function showInput() {
+    if (!wrap || !input) return;
+    if (addBtn) addBtn.classList.add("hidden");
+    wrap.classList.remove("hidden");
+    if (typeSel) typeSel.value = "manual";
+    syncTagInputForType(typeSel, input);
+    input.value = "";
+    input.focus();
+  }
+
+  function hideInput() {
+    if (!wrap || !input) return;
+    wrap.classList.add("hidden");
+    input.value = "";
+    if (addBtn) addBtn.classList.remove("hidden");
+  }
+
+  async function addTag() {
+    const selected = typeSel ? typeSel.value : "manual";
+    const raw = selected.startsWith("work:")
+      ? selected
+      : ((input && input.value) || "").trim();
+    if (!raw) {
+      showToast("Choose a classification or enter a tag");
+      return;
+    }
+    if (saveBtn) saveBtn.disabled = true;
+    try {
+      await updateJobTag(job.id, "add", raw);
+      showToast("Tag added");
+    } catch (e) {
+      showToast("Failed: " + e.message);
+      if (saveBtn) saveBtn.disabled = false;
+    }
+  }
+
+  if (addBtn) addBtn.onclick = showInput;
+  if (saveBtn) saveBtn.onclick = addTag;
+  if (cancelBtn) cancelBtn.onclick = hideInput;
+  if (typeSel) typeSel.onchange = () => syncTagInputForType(typeSel, input);
+  if (input) {
+    input.onkeydown = (e) => {
+      e.stopPropagation();
+      if (e.key === "Enter") {
+        e.preventDefault();
+        addTag();
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        hideInput();
+      }
+    };
+  }
+
+  root.querySelectorAll("[data-remove-tag]").forEach((btn) => {
+    btn.onclick = async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const tag = btn.dataset.removeTag || "";
+      if (!tag) return;
+      btn.disabled = true;
+      try {
+        await updateJobTag(job.id, "remove", tag);
+        showToast("Tag removed");
+      } catch (err) {
+        showToast("Failed: " + err.message);
+        btn.disabled = false;
+      }
+    };
+  });
+}
+
+// Wire the inline tag editor that lives inside a clickable list row. Every
+// control stops click/key propagation so using tags never opens the job.
+function wireRowTagEditor(row, job) {
+  row.querySelectorAll(".list-tags button, .list-tags select, .list-tags input")
+    .forEach((el) => el.addEventListener("click", (e) => e.stopPropagation()));
+
+  const addBtn = row.querySelector("[data-row-add-tag]");
+  const wrap = row.querySelector("[data-row-tag-wrap]");
+  const typeSel = row.querySelector("[data-row-tag-type]");
+  const input = row.querySelector("[data-row-tag-input]");
+  const saveBtn = row.querySelector("[data-row-tag-save]");
+  const cancelBtn = row.querySelector("[data-row-tag-cancel]");
+
+  function showInput() {
+    if (!wrap || !input) return;
+    if (addBtn) addBtn.classList.add("hidden");
+    wrap.classList.remove("hidden");
+    if (typeSel) typeSel.value = "manual";
+    syncTagInputForType(typeSel, input);
+    input.value = "";
+    input.focus();
+  }
+
+  function hideInput() {
+    if (!wrap || !input) return;
+    wrap.classList.add("hidden");
+    input.value = "";
+    if (addBtn) addBtn.classList.remove("hidden");
+  }
+
+  async function addTag() {
+    const selected = typeSel ? typeSel.value : "manual";
+    const raw = selected.startsWith("work:")
+      ? selected
+      : ((input && input.value) || "").trim();
+    if (!raw) {
+      showToast("Choose a classification or enter a tag");
+      return;
+    }
+    if (saveBtn) saveBtn.disabled = true;
+    try {
+      await updateJobTag(job.id, "add", raw);
+      renderList();
+      showToast("Tag added");
+    } catch (e) {
+      showToast("Failed: " + e.message);
+      if (saveBtn) saveBtn.disabled = false;
+    }
+  }
+
+  if (addBtn) addBtn.onclick = (e) => { e.stopPropagation(); showInput(); };
+  if (saveBtn) saveBtn.onclick = (e) => { e.stopPropagation(); addTag(); };
+  if (cancelBtn) cancelBtn.onclick = (e) => { e.stopPropagation(); hideInput(); };
+  if (typeSel) typeSel.onchange = () => syncTagInputForType(typeSel, input);
+  if (input) {
+    input.onkeydown = (e) => {
+      e.stopPropagation();
+      if (e.key === "Enter") {
+        e.preventDefault();
+        addTag();
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        hideInput();
+      }
+    };
+  }
+
+  row.querySelectorAll("[data-row-remove-tag]").forEach((btn) => {
+    btn.onclick = async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const tag = btn.dataset.rowRemoveTag || "";
+      if (!tag) return;
+      btn.disabled = true;
+      try {
+        await updateJobTag(job.id, "remove", tag);
+        renderList();
+        showToast("Tag removed");
+      } catch (err) {
+        showToast("Failed: " + err.message);
+        btn.disabled = false;
+      }
+    };
+  });
 }
 
 function wireJobActions(j) {
@@ -686,7 +1128,7 @@ function wireJobActions(j) {
       try {
         await apiPostForm(`/api/jobs/${j.id}/answer`, { text }, files);
         closeJob();
-        showToast("Clarification sent — job continuing");
+        showToast("Clarification sent â€” job continuing");
         invalidateLanes();
         setLane("working");
       } catch (e) {
@@ -771,7 +1213,25 @@ async function toggleRecording(btn, targetInput) {
       }
       if (recordedChunks.length === 0) return;
       const blob = new Blob(recordedChunks, { type: "audio/webm" });
+
+      // Composer fields use the durable background queue: persist the clip,
+      // release the mic immediately, and let the worker transcribe it. This is
+      // what lets the user hit Create while the transcript is still in flight.
+      if (targetInput.id === "composerInstruction"
+          || targetInput.id === "composerFeedback") {
+        if (!composerDraftId) {
+          showToast("Open the job form again to dictate");
+          return;
+        }
+        await enqueueFormDictation(blob, targetInput.id, composerDraftId);
+        showToast("Dictation queued \u2014 transcribing in background");
+        return;
+      }
+
+      // Non-composer fields (job detail answer/retry) keep the original inline
+      // behavior, but now show an explicit busy state while the request runs.
       btn.disabled = true;
+      setButtonBusy(btn, true);
       showToast("Transcribing...");
       try {
         const form = new FormData();
@@ -791,6 +1251,7 @@ async function toggleRecording(btn, targetInput) {
         console.error(e);
         showToast("Transcription failed: " + e.message);
       } finally {
+        setButtonBusy(btn, false);
         btn.disabled = false;
       }
     };
@@ -887,6 +1348,9 @@ function openComposer(mode = "new", job = null) {
   if (!$("#jobModal").classList.contains("hidden")) closeJob();
   composerMode = mode;
   composerJob = job;
+  // A fresh draft id per opening. Any dictation recorded for an older draft is
+  // ignored by this form even if its background transcription finishes later.
+  composerDraftId = newDictationId();
   const resubmit = mode === "resubmit" && job;
   const chain = mode === "chain" && job;
 
@@ -911,10 +1375,12 @@ function openComposer(mode = "new", job = null) {
 
   $("#composerFilesInput").value = "";
   clearPendingFiles("composerFilesInput");
+  refreshMicBusyForDraft(composerDraftId);
 
-  $("#composerSubmit").textContent = chain ? "Create next job"
+  composerSubmitLabel = chain ? "Create next job"
     : resubmit ? "Resubmit as new job"
     : "Create job";
+  $("#composerSubmit").textContent = composerSubmitLabel;
   $("#composerHint").textContent = chain
     ? "Creates a new linked job. The previous job and its history stay untouched."
     : resubmit
@@ -926,25 +1392,89 @@ function openComposer(mode = "new", job = null) {
   setTimeout(() => $("#composerInstruction").focus(), 60);
 }
 
-function closeComposer() {
+function closeComposer(options = {}) {
+  const draftId = composerDraftId;
   stopRecording(true);
   composerMode = "new";
   composerJob = null;
+  composerDraftId = null;
+  composerSubmitLabel = "Create job";
+  $("#composerSubmit").textContent = composerSubmitLabel;
   $("#composerModal").classList.add("hidden");
   updateBodyLock();
+  // Explicit cancel/dismiss discards that draft's unfinished dictations. A
+  // submission that is still waiting on transcription passes keepDictations
+  // so the background worker can finish the job after the modal is gone.
+  if (draftId && !options.keepDictations) {
+    discardDraftDictations(draftId);
+  }
+  clearMicBusy();
 }
 
 async function submitComposer() {
   const instruction = ($("#composerInstruction").value || "").trim();
   const feedback = ($("#composerFeedback").value || "").trim();
   const btn = $("#composerSubmit");
-  if (!instruction) {
+
+  const wasResubmit = composerMode === "resubmit";
+  const wasChain = composerMode === "chain";
+  const draftId = composerDraftId;
+  const files = getPendingFiles("composerFilesInput");
+  const draftDictations = draftId ? formDictationsForDraft(draftId) : [];
+  const failed = draftDictations.filter((i) => i.status === "failed");
+  const pending = draftDictations.filter(
+    (i) => i.status === "queued" || i.status === "transcribing"
+  );
+
+  // A failed clip needs a human decision (retry or discard) before we can know
+  // what text belongs in the job. Do not silently submit without it.
+  if (failed.length) {
+    openDictationQueue();
+    showToast("A dictation failed \u2014 retry or discard it before submitting");
+    return;
+  }
+
+  // The instruction may be empty because the user dictated it and the
+  // transcript is still in flight. That is valid: the queued submission will
+  // fill it in when transcription completes. Only block when there is neither
+  // manual text nor a pending dictation targeting the instruction field.
+  const hasPendingInstruction = pending.some(
+    (item) => item.targetField === "composerInstruction"
+  );
+  if (!instruction && !hasPendingInstruction) {
     showToast(composerMode === "chain" ? "Describe what's next first" : "Describe the job first");
     return;
   }
 
-  const wasResubmit = composerMode === "resubmit";
-  const wasChain = composerMode === "chain";
+  // Submit while a clip is still transcribing: persist the whole submission
+  // (fields + attachments + which dictations to wait for) and close the form
+  // immediately. The background worker appends the transcript(s) and creates
+  // the job as soon as they are ready.
+  if (pending.length) {
+    // Freeze these clips for the submission. If a transcript arrives in the
+    // tiny window before the modal closes, it must not be appended to the live
+    // textarea (the submission already captured an earlier fields snapshot);
+    // the background submission worker will append it to its own copy instead.
+    pending.forEach((item) => {
+      item.submissionQueued = true;
+      dictPut(item).catch(() => {});
+    });
+    await enqueueFormSubmission({
+      draftId,
+      fields: {
+        instruction,
+        feedback,
+        mode: composerMode,
+        parent_job_id: wasChain && composerJob ? composerJob.id : null,
+      },
+      files,
+      dictationIds: pending.map((i) => i.id),
+    });
+    closeComposer({ keepDictations: true });
+    showToast("Job queued \u2014 will submit when dictation is ready");
+    return;
+  }
+
   let body = instruction;
   if (wasResubmit && feedback) {
     body += "\n\nAdditional feedback / changes requested:\n" + feedback;
@@ -952,12 +1482,12 @@ async function submitComposer() {
 
   const fields = { instruction: body };
   if (wasChain && composerJob) fields.parent_job_id = composerJob.id;
-  const files = getPendingFiles("composerFilesInput");
 
   btn.disabled = true;
   try {
     await apiPostForm("/api/jobs", fields, files);
-    closeComposer();
+    if (draftId) clearDraftDictations(draftId);
+    closeComposer({ keepDictations: true });
     showToast(wasChain ? "Next job queued" : wasResubmit ? "New job created from your changes" : "Job queued");
     invalidateLanes();
     setLane("working");
@@ -1032,31 +1562,184 @@ function dictGetAll() {
   }));
 }
 
-// id -> {id, createdAt, status, error, jobId, blob}. status is one of
-// queued | uploading | done | failed. "done" items are deleted from
-// IndexedDB the moment the job exists (nothing left worth persisting)
-// but kept in this map briefly so the panel can show a confirmation.
+// One durable queue now carries three item kinds:
+//   voice          -- the original "New job by voice" clip
+//   form_dictation -- one clip recorded into a composer field
+//   form_submit    -- a composer submission waiting on one or more dictations
+//
+// id -> item. Common fields: id, kind, createdAt, status, error, jobId.
+// Voice items also carry blob. Form dictation items carry blob, draftId,
+// targetField, text, appliedToDraft. Form submit items carry draftId, fields,
+// files, dictationIds, idempotencyKey. "done" items are deleted from
+// IndexedDB as soon as their job exists, then kept in this map briefly so the
+// panel can show a confirmation.
 const dictationQueue = new Map();
 let dictationRunning = 0;
+
+// Join two pieces of dictated/manual text with exactly one separating space.
+function dictationTextJoin(left, right) {
+  const a = String(left || "").trim();
+  const b = String(right || "").trim();
+  if (!a) return b;
+  if (!b) return a;
+  return a + " " + b;
+}
+
+// All form dictation clips recorded for one composer session.
+function formDictationsForDraft(draftId) {
+  if (!draftId) return [];
+  return Array.from(dictationQueue.values()).filter(
+    (item) => item.kind === "form_dictation" && item.draftId === draftId
+  );
+}
+
+// A clip is "pending" while the user may still submit before its transcript
+// arrives. Transcribed clips already applied to the textarea are not pending.
+function formDictationIsPending(item) {
+  return item.status === "queued" || item.status === "transcribing";
+}
+
+// A waiting form submission can start only after every referenced clip has a
+// transcript. Missing ids mean the user discarded that clip; failed clips make
+// the submission runnable so it can surface the failure instead of hanging.
+function formSubmissionIsReady(item) {
+  const ids = item.dictationIds || [];
+  for (const id of ids) {
+    const dict = dictationQueue.get(id);
+    if (!dict) continue;
+    if (dict.status === "failed") return true;
+    if (dict.status !== "transcribed") return false;
+  }
+  return true;
+}
+
+// Queue-panel visibility. A transcribed clip already appended to the open
+// composer is part of the draft and does not need a queue row; it stays in
+// IndexedDB until the job is submitted or the draft is cancelled.
+function visibleDictationItems() {
+  return Array.from(dictationQueue.values()).filter(
+    (item) => !(item.kind === "form_dictation"
+      && item.status === "transcribed"
+      && item.appliedToDraft)
+  );
+}
 
 function updateDictationBadge() {
   const badge = $("#dictationQueueBadge");
   if (!badge) return;
-  const items = Array.from(dictationQueue.values());
+  const items = visibleDictationItems();
   badge.textContent = String(items.length);
   badge.classList.toggle("hidden", items.length === 0);
   badge.classList.toggle("dictation-badge-failed", items.some((i) => i.status === "failed"));
 }
 
+// Put a visible "Transcribing..." status next to one mic button and pulse the
+// button itself. The status span is created on demand so the same helper works
+// for static composer fields and dynamically rebuilt job-detail fields.
+function setButtonBusy(btn, busy) {
+  if (!btn) return;
+  btn.classList.toggle("transcribing", busy);
+  btn.setAttribute("aria-busy", busy ? "true" : "false");
+  const row = btn.closest(".compose-row") || btn.parentElement;
+  if (!row) return;
+  let status = row.querySelector(".mic-status");
+  if (!status) {
+    status = document.createElement("span");
+    status.className = "mic-status";
+    row.appendChild(status);
+  }
+  status.textContent = busy ? "Transcribing\u2026" : "";
+}
+
+// Toggle busy state for every mic targeting one input id.
+function setMicBusyForField(targetField, busy) {
+  document.querySelectorAll(`[data-mic-for="${targetField}"]`).forEach((btn) => {
+    setButtonBusy(btn, busy);
+  });
+}
+
+// Recompute composer mic busy states from the durable queue. This is called
+// after enqueue, transcription success/failure, restore and form close, so the
+// indicator always reflects the real background work rather than a timer.
+function refreshMicBusyForDraft(draftId) {
+  const pendingFields = new Set();
+  if (draftId && isComposerDraftOpen(draftId)) {
+    for (const item of formDictationsForDraft(draftId)) {
+      if (formDictationIsPending(item)) pendingFields.add(item.targetField);
+    }
+  }
+  setMicBusyForField("composerInstruction", pendingFields.has("composerInstruction"));
+  setMicBusyForField("composerFeedback", pendingFields.has("composerFeedback"));
+}
+
+function clearMicBusy() {
+  setMicBusyForField("composerInstruction", false);
+  setMicBusyForField("composerFeedback", false);
+}
+
+function isComposerDraftOpen(draftId) {
+  return Boolean(
+    draftId
+    && composerDraftId === draftId
+    && !$("#composerModal").classList.contains("hidden")
+  );
+}
+
+// Append a finished transcript to its original composer field. Returns false
+// when that field is no longer on screen (form closed/replaced), in which case
+// a pending submission worker will use the stored text instead.
+function appendTextToComposerField(targetField, text) {
+  const input = document.getElementById(targetField);
+  if (!input || !text) return false;
+  input.value = dictationTextJoin(input.value, text);
+  return true;
+}
+
+// Remove all form-dictation records for a draft. Used after a successful
+// normal submit and when the user explicitly cancels the composer.
+function clearDraftDictations(draftId) {
+  for (const item of formDictationsForDraft(draftId)) {
+    dictationQueue.delete(item.id);
+    dictDelete(item.id).catch(() => {});
+  }
+  renderDictationQueue();
+  refreshMicBusyForDraft(draftId);
+}
+
+// Cancel a draft's clips, but never delete one that a queued form submission
+// still references (that submission is already committed to running).
+function discardDraftDictations(draftId) {
+  const referenced = new Set();
+  for (const item of dictationQueue.values()) {
+    if (item.kind === "form_submit" && item.draftId === draftId) {
+      (item.dictationIds || []).forEach((id) => referenced.add(id));
+    }
+  }
+  for (const item of formDictationsForDraft(draftId)) {
+    if (referenced.has(item.id)) continue;
+    dictationQueue.delete(item.id);
+    dictDelete(item.id).catch(() => {});
+  }
+  renderDictationQueue();
+  refreshMicBusyForDraft(draftId);
+}
+
 const DICT_STATUS_META = {
   queued: { label: "Queued", pill: "status-ready" },
+  transcribing: { label: "Transcribing\u2026", pill: "status-running" },
+  transcribed: { label: "Dictation ready", pill: "status-done" },
   uploading: { label: "Processing\u2026", pill: "status-running" },
+  waiting: { label: "Waiting for dictation\u2026", pill: "status-ready" },
+  submitting: { label: "Creating job\u2026", pill: "status-running" },
   done: { label: "Done", pill: "status-done" },
   failed: { label: "Failed", pill: "status-review" },
 };
 
 function dictationItemHtml(item) {
   const meta = DICT_STATUS_META[item.status] || { label: item.status, pill: "" };
+  const kindLabel = item.kind === "form_submit" ? "Form job"
+    : item.kind === "form_dictation" ? "Form dictation"
+    : "Voice job";
   let extra = "";
   if (item.status === "done" && item.jobId) {
     extra = `<button class="link-btn dict-open-job" data-open-job="${item.jobId}">Open job &rsaquo;</button>`;
@@ -1066,11 +1749,23 @@ function dictationItemHtml(item) {
         <button class="btn btn-primary" data-retry-dict="${item.id}">Retry</button>
         <button class="btn btn-secondary" data-discard-dict="${item.id}">Discard</button>
       </div>`;
+  } else if (item.kind === "form_dictation" && item.status === "transcribed"
+             && !item.appliedToDraft) {
+    // A recovered/orphaned clip: show what was transcribed and let the user
+    // discard it if the original form is no longer open.
+    extra = `<div class="section-body dict-error">${escapeHtml(item.text || "")}</div>
+      <div class="action-row">
+        <button class="btn btn-secondary" data-discard-dict="${item.id}">Discard</button>
+      </div>`;
+  } else if (item.kind === "form_submit" && item.status === "waiting") {
+    extra = `<div class="section-body">Waiting for the dictation transcript before creating the job.</div>`;
+  } else if (item.kind === "form_dictation" && item.status === "transcribing") {
+    extra = `<div class="section-body">Transcribing your clip\u2026</div>`;
   }
   return `<div class="dict-item">
     <div class="dict-item-head">
       <span class="pill ${meta.pill}">${meta.label}</span>
-      <span class="dict-item-time">${fmtTime(Math.floor((item.createdAt || 0) / 1000))}</span>
+      <span class="dict-item-time">${kindLabel} &middot; ${fmtTime(Math.floor((item.createdAt || 0) / 1000))}</span>
     </div>
     ${extra}
   </div>`;
@@ -1081,7 +1776,7 @@ function renderDictationQueue() {
   const modal = $("#dictationQueueModal");
   if (modal.classList.contains("hidden")) return;
   const body = $("#dictationQueueBody");
-  const items = Array.from(dictationQueue.values()).sort((a, b) => b.createdAt - a.createdAt);
+  const items = visibleDictationItems().sort((a, b) => b.createdAt - a.createdAt);
   if (!items.length) {
     body.innerHTML = `<p class="empty">No dictated jobs in the queue.</p>`;
     return;
@@ -1119,28 +1814,114 @@ function newDictationId() {
 // button) releases the UI the instant this resolves, which is the whole
 // point: the next recording can start before this one has even begun
 // uploading.
-function enqueueDictation(blob) {
+async function enqueueDictation(blob) {
   const item = {
+    kind: "voice",
     id: newDictationId(), createdAt: Date.now(), status: "queued",
     error: null, jobId: null, blob,
   };
   dictationQueue.set(item.id, item);
-  dictPut(item).catch((e) => console.error("dictation queue: persist failed", e));
+  // Await the IndexedDB write before the caller releases the UI. That closes
+  // the race where a user backgrounds the tab immediately after Stop and the
+  // only copy of the clip was still in memory.
+  try {
+    await dictPut(item);
+  } catch (e) {
+    console.error("dictation queue: persist failed", e);
+    showToast("Could not save the clip locally \u2014 keep this tab open");
+  }
   renderDictationQueue();
   pumpDictationQueue();
+}
+
+// Persist one form-field recording before any network call. The blob, draft id
+// and target field are all in IndexedDB, so a reload or disconnect cannot lose
+// the clip. The background worker transcribes it and appends the text to the
+// same textarea if that draft is still open.
+async function enqueueFormDictation(blob, targetField, draftId) {
+  const item = {
+    kind: "form_dictation",
+    id: newDictationId(),
+    draftId,
+    targetField,
+    createdAt: Date.now(),
+    status: "queued",
+    error: null,
+    text: "",
+    appliedToDraft: false,
+    blob,
+  };
+  dictationQueue.set(item.id, item);
+  try {
+    await dictPut(item);
+  } catch (e) {
+    console.error("form dictation: persist failed", e);
+    showToast("Could not save the dictation locally \u2014 keep this tab open");
+  }
+  renderDictationQueue();
+  refreshMicBusyForDraft(draftId);
+  pumpDictationQueue();
+}
+
+// Persist a complete form submission while its dictation is still in flight.
+// The fields/files snapshot is everything needed to create the job later; the
+// dictationIds list is what the worker waits on before appending transcripts.
+async function enqueueFormSubmission({ draftId, fields, files, dictationIds }) {
+  const id = newDictationId();
+  const item = {
+    kind: "form_submit",
+    id,
+    draftId,
+    createdAt: Date.now(),
+    status: "waiting",
+    error: null,
+    jobId: null,
+    fields,
+    files: files || [],
+    dictationIds: dictationIds || [],
+    idempotencyKey: "form-" + id,
+  };
+  dictationQueue.set(item.id, item);
+  try {
+    await dictPut(item);
+  } catch (e) {
+    console.error("form submission: persist failed", e);
+    showToast("Could not save the pending job locally \u2014 keep this tab open");
+  }
+  renderDictationQueue();
+  pumpDictationQueue();
+}
+
+// The pump can start three kinds of work. A waiting form submission is only
+// runnable once every referenced clip has a transcript (or has been discarded),
+// which is what makes "submit while transcribing" non-blocking but ordered.
+function isRunnableDictationItem(item) {
+  if (item.kind === "form_submit") {
+    return item.status === "waiting" && formSubmissionIsReady(item);
+  }
+  return item.status === "queued";
 }
 
 function pumpDictationQueue() {
   while (dictationRunning < DICTATION_CONCURRENCY) {
     const next = Array.from(dictationQueue.values())
-      .filter((i) => i.status === "queued")
+      .filter(isRunnableDictationItem)
       .sort((a, b) => a.createdAt - b.createdAt)[0];
     if (!next) break;
-    next.status = "uploading";
+
+    if (next.kind === "form_submit") next.status = "submitting";
+    else if (next.kind === "form_dictation") next.status = "transcribing";
+    else next.status = "uploading";
+
     dictPut(next).catch(() => {});
     dictationRunning++;
     renderDictationQueue();
-    runDictationItem(next).finally(() => {
+    if (next.kind === "form_dictation") refreshMicBusyForDraft(next.draftId);
+
+    const runner = next.kind === "form_submit" ? runFormSubmissionItem
+      : next.kind === "form_dictation" ? runFormDictationItem
+      : runDictationItem;
+    runner(next).finally(() => {
       dictationRunning--;
       pumpDictationQueue();
     });
@@ -1157,6 +1938,9 @@ async function runDictationItem(item) {
     );
     const data = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(data.error || ("from-dictation -> " + r.status));
+    // The user may have discarded this row while the request was in flight.
+    // Do not resurrect a deleted item by writing it back to IndexedDB.
+    if (dictationQueue.get(item.id) !== item) return;
     item.status = "done";
     item.jobId = data.job.id;
     item.error = null;
@@ -1170,6 +1954,7 @@ async function runDictationItem(item) {
       renderDictationQueue();
     }, 4000);
   } catch (e) {
+    if (dictationQueue.get(item.id) !== item) return;
     item.status = "failed";
     item.error = e.message || String(e);
     dictPut(item).catch(() => {});
@@ -1178,27 +1963,184 @@ async function runDictationItem(item) {
   }
 }
 
+// Transcribe one form clip in the background. On success the text is appended
+// to the live composer if the same draft is still open; otherwise it remains in
+// the queue for a waiting form submission to consume. No job is created here.
+async function runFormDictationItem(item) {
+  try {
+    const form = new FormData();
+    form.append("audio", item.blob, "audio/webm");
+    const r = await fetch("/api/transcribe", {
+      method: "POST",
+      credentials: "include",
+      body: form,
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(data.error || ("transcribe -> " + r.status));
+    const text = (data.text || "").trim();
+    if (!text) throw new Error("No speech detected");
+    if (dictationQueue.get(item.id) !== item) return;
+
+    item.text = text;
+    item.status = "transcribed";
+    item.error = null;
+    if (isComposerDraftOpen(item.draftId) && !item.submissionQueued) {
+      item.appliedToDraft = appendTextToComposerField(item.targetField, text);
+    }
+    dictPut(item).catch(() => {});
+    renderDictationQueue();
+    refreshMicBusyForDraft(item.draftId);
+    pumpDictationQueue(); // release any submission waiting on this clip
+    showToast(item.appliedToDraft ? "Dictation added" : "Dictation ready");
+  } catch (e) {
+    if (dictationQueue.get(item.id) !== item) return;
+    item.status = "failed";
+    item.error = e.message || String(e);
+    dictPut(item).catch(() => {});
+    renderDictationQueue();
+    refreshMicBusyForDraft(item.draftId);
+    showToast("Dictation failed \u2014 check the queue");
+  }
+}
+
+// Create the job for a form submission after its transcript(s) are available.
+// Transcripts already applied to the textarea are skipped because the captured
+// fields snapshot already contains them; pending clips are appended now.
+async function runFormSubmissionItem(item) {
+  try {
+    const dictations = (item.dictationIds || [])
+      .map((id) => dictationQueue.get(id))
+      .filter(Boolean);
+    const failed = dictations.find((d) => d.status === "failed");
+    if (failed) {
+      throw new Error("A dictation failed: " + (failed.error || "unknown error"));
+    }
+
+    let instruction = (item.fields && item.fields.instruction) || "";
+    let feedback = (item.fields && item.fields.feedback) || "";
+    for (const dict of dictations) {
+      if (dict.appliedToDraft) continue;
+      const text = (dict.text || "").trim();
+      if (!text) continue;
+      if (dict.targetField === "composerFeedback") {
+        feedback = dictationTextJoin(feedback, text);
+      } else {
+        instruction = dictationTextJoin(instruction, text);
+      }
+    }
+    if (!instruction) throw new Error("No job instruction after dictation");
+
+    let body = instruction;
+    if (item.fields && item.fields.mode === "resubmit" && feedback) {
+      body += "\n\nAdditional feedback / changes requested:\n" + feedback;
+    }
+    const payload = {
+      instruction: body,
+      idempotency_key: item.idempotencyKey,
+    };
+    if (item.fields && item.fields.mode === "chain" && item.fields.parent_job_id) {
+      payload.parent_job_id = item.fields.parent_job_id;
+    }
+
+    const data = await apiPostForm("/api/jobs", payload, item.files || []);
+    // If the user discarded this submission while the request was in flight,
+    // still delete the persisted row but do not resurrect/announce it.
+    if (dictationQueue.get(item.id) !== item) return;
+    item.status = "done";
+    item.jobId = data.job.id;
+    item.error = null;
+
+    // The submission and its source clips have become a real job; nothing is
+    // left worth persisting. Keep the done row in memory briefly for the panel.
+    for (const dict of dictations) {
+      dictationQueue.delete(dict.id);
+      dictDelete(dict.id).catch(() => {});
+    }
+    dictDelete(item.id).catch(() => {});
+    renderDictationQueue();
+    invalidateLanes();
+    if (currentLane === "working") loadLane("working", { reset: true });
+    showToast("Dictated job created");
+    setTimeout(() => {
+      dictationQueue.delete(item.id);
+      renderDictationQueue();
+    }, 4000);
+  } catch (e) {
+    if (dictationQueue.get(item.id) !== item) return;
+    item.status = "failed";
+    item.error = e.message || String(e);
+    dictPut(item).catch(() => {});
+    renderDictationQueue();
+    showToast("A dictated form job failed \u2014 check the queue");
+  }
+}
+
 function retryDictationItem(id) {
   const item = dictationQueue.get(id);
   if (!item) return;
-  item.status = "queued";
+  if (item.kind === "form_submit") {
+    item.status = "waiting";
+    // Retrying a failed submission also retries any clip that caused it to
+    // fail; otherwise the pump would immediately fail the submission again.
+    for (const dictId of item.dictationIds || []) {
+      const dict = dictationQueue.get(dictId);
+      if (dict && dict.status === "failed") {
+        dict.status = "queued";
+        dict.error = null;
+        dict.text = "";
+        dictPut(dict).catch(() => {});
+      }
+    }
+  } else {
+    item.status = "queued";
+    if (item.kind === "form_dictation") item.text = "";
+  }
   item.error = null;
   dictPut(item).catch(() => {});
   renderDictationQueue();
+  refreshMicBusyForDraft(item.draftId);
   pumpDictationQueue();
 }
 
 function discardDictationItem(id) {
+  const item = dictationQueue.get(id);
+  if (!item) return;
   dictationQueue.delete(id);
   dictDelete(id).catch(() => {});
+
+  if (item.kind === "form_submit") {
+    // Discarding a whole submission also discards the clips it was waiting on.
+    for (const dictId of item.dictationIds || []) {
+      dictationQueue.delete(dictId);
+      dictDelete(dictId).catch(() => {});
+    }
+  } else if (item.kind === "form_dictation") {
+    // A waiting submission should proceed without a clip the user discarded.
+    for (const other of dictationQueue.values()) {
+      if (other.kind === "form_submit" && (other.dictationIds || []).includes(id)) {
+        other.dictationIds = other.dictationIds.filter((x) => x !== id);
+        dictPut(other).catch(() => {});
+      }
+    }
+  }
   renderDictationQueue();
+  refreshMicBusyForDraft(item.draftId);
+  pumpDictationQueue();
 }
 
 async function restoreDictationQueue() {
   try {
     const rows = await dictGetAll();
     for (const item of rows) {
+      if (!item.kind) item.kind = "voice";
+      // In-flight states are never trustworthy after a reload: the request
+      // that set them died with the old page. Put them back in a runnable state.
       if (item.status === "uploading") item.status = "queued";
+      if (item.status === "transcribing") item.status = "queued";
+      if (item.status === "submitting") item.status = "waiting";
+      // The composer DOM is gone after a reload, so no transcript can still be
+      // considered "already applied"; a waiting submission must consume it.
+      if (item.kind === "form_dictation") item.appliedToDraft = false;
       dictationQueue.set(item.id, item);
     }
     renderDictationQueue();
@@ -1239,7 +2181,7 @@ async function startVoiceOnlyJob() {
 
   overlay.classList.remove("hidden");
   updateBodyLock();
-  status.textContent = "Listening… tap stop when done.";
+  status.textContent = "Listeningâ€¦ tap stop when done.";
   $("#voicePulse").classList.remove("thinking");
   stopBtn.disabled = false;
   cancelBtn.disabled = false;
@@ -1283,14 +2225,35 @@ async function startVoiceOnlyJob() {
       showToast("No audio captured");
       return;
     }
-    enqueueDictation(new Blob(chunks, { type: "audio/webm" }));
+    await enqueueDictation(new Blob(chunks, { type: "audio/webm" }));
     showToast("Added to queue \u2014 processing in background");
   };
 
   recorder.start();
 }
 
-function init() {
+async function init() {
+  // Resolve the signed-in identity before the first lane load. A failure here
+  // is non-fatal: the list endpoint still applies the safe My-jobs default, and
+  // the All-jobs control simply stays hidden.
+  try {
+    me = await apiGet("/api/whoami");
+  } catch (e) {
+    console.error("whoami failed", e);
+  }
+  const scopeBar = $("#scopeBar");
+  if (me && me.is_admin && scopeBar) {
+    scopeBar.classList.remove("hidden");
+  }
+  const scopeMine = $("#scopeMine");
+  const scopeAllBtn = $("#scopeAll");
+  if (scopeMine) scopeMine.onclick = () => setScope(false);
+  if (scopeAllBtn) scopeAllBtn.onclick = () => setScope(true);
+  const ownerLeft = $("#ownerScrollLeft");
+  const ownerRight = $("#ownerScrollRight");
+  if (ownerLeft) ownerLeft.onclick = () => scrollOwnerChips(-1);
+  if (ownerRight) ownerRight.onclick = () => scrollOwnerChips(1);
+
   $$(".tab").forEach((tab) => {
     tab.onclick = () => setLane(tab.dataset.lane);
   });
@@ -1328,7 +2291,11 @@ function init() {
     searchInput.focus();
   };
 
-  $$(".day-chip").forEach((chip) => {
+  // Wire only the actual date chips. The scope chips (My jobs / All jobs) are
+  // wired separately above; including them here used to overwrite their
+  // handlers with setDayFilter(undefined), which made the scope switch appear
+  // to do nothing and removed its active highlight.
+  $$(".day-chip[data-day]").forEach((chip) => {
     chip.onclick = () => setDayFilter(chip.dataset.day);
   });
   $("#datePick").onchange = (e) => {
@@ -1407,3 +2374,5 @@ function init() {
 }
 
 document.addEventListener("DOMContentLoaded", init);
+
+

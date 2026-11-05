@@ -9,13 +9,21 @@ Auth model: this process trusts the ``X-Forwarded-Email`` header and
 assumes nginx + oauth2-proxy sit in front of it and that NOTHING else can
 reach it -- it binds 127.0.0.1 only, inside a container with no public
 port. The real access boundary is oauth2-proxy's allowed-email list, not
-this code. Within that boundary, every authenticated person sees EVERY
-job (admin-sees-all, D6) -- this is a personal/small-team control panel,
-not a multi-tenant product, so per-tenant filtering would just hide your
-own Telegram-created jobs from your own browser session (they're scoped
-by platform user id, e.g. a Telegram numeric id, not by email -- there
-is no shared identity between surfaces). ``_DISPLAY_NAMES`` below is
-cosmetic labelling only, never an access check.
+this code. Within that boundary, each signed-in person sees and acts on
+ONLY their own jobs. Ownership is the job row's ``tenant`` column: the
+email for board-created jobs, or the platform user id for chat-created
+jobs (for example a Telegram numeric id). Because those surfaces do not
+share an identifier, ``authz.py`` resolves the signed-in email through
+gws-vault and returns every alias linked to that person. A job is visible
+when its tenant is in that alias set.
+
+Admins are exactly the vault identities whose ``role`` is ``"admin"``.
+They may view every job, and (per explicit product decision) may also
+answer, continue, or drop any job from the All jobs view. Everyone else
+gets a 403 when they address another user's job by id, including through
+the direct ``/api/jobs/{id}`` URL. A missing job is still a 404.
+
+``_DISPLAY_NAMES`` below is cosmetic labelling only, never an access check.
 
 Run: python3 board_server.py
 Env: BOARD_PORT (default 8900), API_SERVER_KEY (to call /v1/runs if ever
@@ -26,6 +34,7 @@ Env: BOARD_PORT (default 8900), API_SERVER_KEY (to call /v1/runs if ever
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -38,7 +47,7 @@ sys.path.insert(0, "/opt/hermes")
 
 from aiohttp import web, ClientSession, FormData  # noqa: E402
 
-from hermes_jobs import store  # noqa: E402
+from hermes_jobs import authz, store  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("jobs-board")
@@ -77,6 +86,12 @@ _DISPLAY_NAMES = {
 
 
 def _display_origin(job: Dict[str, Any]) -> str:
+    """Return the human-facing origin label for a job row.
+
+    Web jobs show the board host; chat jobs show a cosmetic person label when
+    one is known, otherwise a platform + id fallback. This is presentation only
+    and is never used to authorize anything.
+    """
     platform = job.get("origin_platform") or "cli"
     if platform == "web":
         return "jobs.ahfl.in"
@@ -85,6 +100,22 @@ def _display_origin(job: Dict[str, Any]) -> str:
     if label:
         return label
     return "%s%s" % (platform, (" " + chat_id) if chat_id else "")
+
+
+def _display_owner(job: Dict[str, Any]) -> str:
+    """Return a useful owner label for the admin-only All jobs view.
+
+    A web job's tenant is already an email, which is the clearest owner label.
+    For chat-created jobs it is a numeric platform id, so reuse the existing
+    cosmetic origin label (for example "Nishant (Telegram)") instead of showing
+    a bare number. Never an access decision -- only display.
+    """
+    tenant = str(job.get("tenant") or "").strip()
+    if not tenant:
+        return ""
+    if "@" in tenant:
+        return tenant
+    return _display_origin(job) or tenant
 
 
 async def _cleanup_dictation(session: ClientSession, raw_text: str,
@@ -150,11 +181,37 @@ def _completed_artifacts(job_id: str) -> List[Dict[str, Any]]:
 
 
 def _parse_tags(raw: Any) -> List[str]:
+    """Decode the JSON-array string stored in ``tasks.tags`` safely."""
     try:
         tags = json.loads(raw or "[]")
     except Exception:
         return []
     return tags if isinstance(tags, list) else []
+
+
+MAX_TAG_LENGTH = 80
+
+
+def _normalize_tag(raw: Any) -> str:
+    """Normalize a user-entered tag into the board's ``type:Label`` shape.
+
+    Existing tags are ``contacts:Name``, ``projects:Name``, ``work:follow_up``,
+    etc. A person editing tags may type a bare noun ("Raghu Iyer") or a fully
+    typed tag ("work:follow_up"). Bare values become ``manual:<text>`` so they
+    remain valid, neutral-coloured chips and can later be promoted into the
+    controlled noun universe. Returns "" for empty/oversized input.
+    """
+    text = " ".join(str(raw or "").replace("\n", " ").split())
+    if not text or len(text) > MAX_TAG_LENGTH:
+        return ""
+    if ":" not in text:
+        text = "manual:" + text
+    tag_type, _, label = text.partition(":")
+    tag_type = tag_type.strip().lower() or "manual"
+    label = label.strip()
+    if not label:
+        return ""
+    return ("%s:%s" % (tag_type, label))[:MAX_TAG_LENGTH]
 
 
 def _serialize(job: Dict[str, Any]) -> Dict[str, Any]:
@@ -183,28 +240,104 @@ def _serialize(job: Dict[str, Any]) -> Dict[str, Any]:
         "drop_reason": job.get("drop_reason"),
         "origin_platform": job.get("origin_platform"),
         "origin_display": _display_origin(job),
+        # Owner fields are additive. They let the admin All jobs view show
+        # whose row it is without changing any existing field's meaning.
+        "owner": job.get("tenant") or "",
+        "owner_display": _display_owner(job),
         "session_id": job.get("session_id"),
         "parent_job_id": job.get("parent_job_id"),
     }
 
 
 def _who(request: web.Request) -> str:
-    return request.headers.get(AUTH_HEADER, "unknown")
+    """Return the normalized signed-in email supplied by oauth2-proxy.
+
+    Emails are lower-cased here because every ownership comparison and every
+    vault lookup is case-insensitive. The literal fallback "unknown" is only
+    reachable in the BOARD_ALLOW_NO_AUTH development path; it owns no jobs.
+    """
+    return (request.headers.get(AUTH_HEADER, "unknown") or "unknown").strip().lower()
+
+
+def _identity(request: web.Request) -> authz.Identity:
+    """Return the vault-resolved identity cached on this request by middleware.
+
+    Handlers call this instead of re-reading the header so one request performs
+    exactly one (possibly cached) vault lookup. The fallback is safe: an
+    identity that owns only the exact header email and has no admin rights.
+    """
+    identity = request.get("identity")
+    if isinstance(identity, authz.Identity):
+        return identity
+    return authz.identity_for_email(_who(request))
+
+
+def _owner_tenants(request: web.Request) -> Optional[List[str]]:
+    """Return the tenant filter for a write/read, or None for a vault admin.
+
+    ``None`` is the only value that disables owner filtering in store.py, so
+    this function is the single place that decides "is this caller allowed to
+    bypass ownership?" Only a strict vault role-admin produces None.
+    """
+    identity = _identity(request)
+    if identity.is_admin:
+        return None
+    return sorted(identity.aliases)
+
+
+def _load_visible_job(request: web.Request, job_id: str):
+    """Load a job and return ``(job, error_response)`` with the right status.
+
+    The first read is already owner-scoped in SQL: a non-admin passes their
+    alias list to ``store.get_job``, so another person's row is never returned
+    to application code. If that scoped read misses, one unfiltered existence
+    check distinguishes "someone else's job" (403, the explicit product
+    requirement for direct /api/jobs/{id} access) from "does not exist" (404).
+    Admins pass ``None`` and therefore get the job on the first read.
+
+    This helper is used by every detail/read/write endpoint so the rule cannot
+    drift between routes.
+    """
+    if not job_id:
+        return None, web.json_response({"error": "not found"}, status=404)
+
+    tenants = _owner_tenants(request)
+    job = store.get_job(job_id, tenants=tenants)
+    if job:
+        return job, None
+
+    if tenants is not None and store.get_job(job_id) is not None:
+        return None, web.json_response({"error": "forbidden"}, status=403)
+    return None, web.json_response({"error": "not found"}, status=404)
 
 
 async def require_auth(request: web.Request, handler):
-    # Defense in depth only -- see module docstring. The real gate is
-    # oauth2-proxy; this just refuses to silently treat a misconfigured
-    # proxy pass-through as "someone logged in".
+    """Authenticate an /api request and attach its vault identity.
+
+    Defense in depth only -- see module docstring. The real gate is
+    oauth2-proxy; this refuses to silently treat a misconfigured proxy
+    pass-through as "someone logged in". The vault lookup runs in a worker
+    thread because it is a blocking Unix-socket call and must not stall the
+    aiohttp event loop.
+    """
     if not request.headers.get(AUTH_HEADER):
-        if os.environ.get("BOARD_ALLOW_NO_AUTH") == "1":
-            return await handler(request)
-        return web.json_response({"error": "no identity header from proxy"}, status=401)
+        if os.environ.get("BOARD_ALLOW_NO_AUTH") != "1":
+            return web.json_response({"error": "no identity header from proxy"}, status=401)
+
+    # Resolve once per request. authz.py owns its short TTL cache, so the 5s
+    # board poll normally performs no vault I/O at all.
+    request["identity"] = await asyncio.to_thread(authz.identity_for_email, _who(request))
     return await handler(request)
 
 
 @web.middleware
 async def auth_middleware(request: web.Request, handler):
+    """Apply the API identity gate only to /api/* routes.
+
+    Static shell files and /health deliberately bypass it: oauth2-proxy already
+    protects public traffic, and the PWA shell must remain loadable for the
+    service worker/manifest paths.
+    """
     if request.path.startswith("/api/"):
         return await require_auth(request, handler)
     return await handler(request)
@@ -264,6 +397,10 @@ def _serialize_slim(row: Dict[str, Any]) -> Dict[str, Any]:
         "parent_job_id": row.get("parent_job_id"),
         "origin_platform": row.get("origin_platform"),
         "origin_display": _display_origin(row),
+        # Same owner fields as the full serializer. The list query already
+        # selects tenant via _LIST_COLUMNS, so this adds no database cost.
+        "owner": row.get("tenant") or "",
+        "owner_display": _display_owner(row),
         # Tells the UI this object is a list row, not a full job -- the
         # detail modal must wait for /api/jobs/{id} before it can render
         # instruction/result/question bodies.
@@ -276,11 +413,43 @@ async def api_list_jobs(request: web.Request) -> web.Response:
 
     Paginated because the old "return every job in full" response was
     278 KB at 59 jobs and the board re-fetches it every 5 seconds.
+
+    ``scope=all`` is the admin-only cross-user view. Everyone, including an
+    admin, defaults to ``scope=mine``. A non-admin requesting ``all`` is refused
+    rather than silently downgraded, so the client can never think it is seeing
+    the whole board when it is not. The same tenant scope is passed to both the
+    page query and the counts query so the lane badges cannot leak a total from
+    jobs the list refuses to show.
     """
     lane = (request.query.get("lane") or "").strip()
     statuses = LANE_STATUSES.get(lane) if lane else None
     if lane and statuses is None:
         return web.json_response({"error": "unknown lane %r" % lane}, status=400)
+
+    identity = _identity(request)
+    scope = (request.query.get("scope") or "mine").strip().lower()
+    if scope not in ("mine", "all"):
+        return web.json_response({"error": "scope must be 'mine' or 'all'"}, status=400)
+    scope_all = scope == "all"
+    if scope_all and not identity.is_admin:
+        return web.json_response({"error": "forbidden"}, status=403)
+
+    # Optional owner chip filter. It only makes sense inside the admin-only All
+    # jobs view; accepting it in My jobs would silently turn an owner-scoped
+    # request into someone else's jobs, so reject that combination outright.
+    owner = (request.query.get("owner") or "").strip()
+    if owner and not scope_all:
+        return web.json_response(
+            {"error": "owner filter requires scope=all"}, status=403,
+        )
+
+    # None means no owner filter and is reachable only after the strict vault
+    # role-admin check above. A selected owner chip narrows All jobs to that
+    # exact tenant; otherwise non-admins get their concrete alias set.
+    if scope_all:
+        tenants: Optional[List[str]] = [owner] if owner else None
+    else:
+        tenants = sorted(identity.aliases)
 
     try:
         limit = int(request.query.get("limit") or DEFAULT_PAGE_LIMIT)
@@ -311,13 +480,14 @@ async def api_list_jobs(request: web.Request) -> web.Response:
     try:
         rows, next_cursor = store.list_jobs_page(
             statuses=statuses, q=q, created_from=created_from,
-            created_to=created_to, limit=limit, cursor=cursor,
+            created_to=created_to, tenants=tenants, limit=limit, cursor=cursor,
         )
     except ValueError as exc:
         return web.json_response({"error": str(exc)}, status=400)
 
     by_status = store.count_jobs_by_status(
         q=q, created_from=created_from, created_to=created_to,
+        tenants=tenants,
     )
     counts: Dict[str, int] = {}
     for status, n in by_status.items():
@@ -329,6 +499,28 @@ async def api_list_jobs(request: web.Request) -> web.Response:
         "counts": counts,
         "total": sum(by_status.values()),
     })
+
+
+async def api_list_owners(request: web.Request) -> web.Response:
+    """List every job owner for the admin-only All jobs filter chips.
+
+    This is intentionally admin-only: the list itself reveals which people use
+    the board and how many jobs each has. The endpoint returns raw ``tenant``
+    (the exact value stored on jobs, used as the filter key) plus a cosmetic
+    ``display`` label and total count. Non-admins receive 403, matching the
+    scope=all rule on the list endpoint.
+    """
+    if not _identity(request).is_admin:
+        return web.json_response({"error": "forbidden"}, status=403)
+
+    owners = []
+    for row in store.list_owners():
+        owners.append({
+            "tenant": row.get("tenant") or "",
+            "display": _display_owner(row),
+            "count": row.get("count") or 0,
+        })
+    return web.json_response({"owners": owners, "total": len(owners)})
 
 
 MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024
@@ -412,9 +604,16 @@ async def api_create_job(request: web.Request) -> web.Response:
     if not instruction:
         return web.json_response({"error": "instruction is required"}, status=400)
 
-    parent = store.get_job(parent_job_id) if parent_job_id else None
-    if parent_job_id and not parent:
-        return web.json_response({"error": "parent job not found"}, status=404)
+    # A "Next job" chain folds the parent's instruction and result into the new
+    # job body. That makes the parent lookup an information-disclosure surface:
+    # a caller must not be able to read another user's parent content by
+    # supplying its id. Admin has full control, so _load_visible_job also
+    # permits it there.
+    parent = None
+    if parent_job_id:
+        parent, parent_error = _load_visible_job(request, parent_job_id)
+        if parent_error:
+            return parent_error
 
     body_text = instruction
     if parent:
@@ -456,9 +655,15 @@ async def api_create_job(request: web.Request) -> web.Response:
 
 
 async def api_get_job(request: web.Request) -> web.Response:
-    job = store.get_job(request.match_info["job_id"])
-    if not job:
-        return web.json_response({"error": "not found"}, status=404)
+    """Return one job's full detail only to its owner or a vault admin.
+
+    This is the endpoint the SPA opens when a job row is clicked, and also the
+    endpoint a pasted /api/jobs/{id} URL hits. Missing = 404, someone else's job
+    = 403, so the check happens before any body/result/attachment is serialized.
+    """
+    job, error = _load_visible_job(request, request.match_info["job_id"])
+    if error:
+        return error
     data = _serialize(job)
     data["lane"] = LANES.get(data["status"], "other")
     data["events"] = [
@@ -489,9 +694,11 @@ async def api_download_artifact(request: web.Request) -> web.Response:
     it exists on disk.
     """
     job_id = request.match_info["job_id"]
-    job = store.get_job(job_id)
-    if not job:
-        return web.json_response({"error": "not found"}, status=404)
+    # Authorization comes before the path allowlist check. A non-owner must not
+    # even learn whether a guessed path belongs to this job or exists on disk.
+    job, error = _load_visible_job(request, job_id)
+    if error:
+        return error
     requested = request.query.get("path") or ""
     allowed = {a["path"] for a in _completed_artifacts(job_id)}
     allowed |= {a["stored_path"] for a in store.list_input_attachments(job_id)}
@@ -506,12 +713,22 @@ async def api_download_artifact(request: web.Request) -> web.Response:
 
 
 async def api_answer(request: web.Request) -> web.Response:
+    """Answer a job's clarification question.
+
+    The job is authorized before the body is even parsed, and the UPDATE itself
+    also receives the caller's tenant filter (None for admins). That double
+    guard means a non-owner cannot mutate another user's job even if a future
+    refactor accidentally drops the pre-check.
+    """
     job_id = request.match_info["job_id"]
+    _, error = _load_visible_job(request, job_id)
+    if error:
+        return error
     fields, files = await _parse_body_and_files(request)
     text = (fields.get("text") or "").strip()
     if not text:
         return web.json_response({"error": "text is required"}, status=400)
-    ok = store.answer_job(job_id, text)
+    ok = store.answer_job(job_id, text, tenants=_owner_tenants(request))
     if not ok:
         job = store.get_job(job_id)
         return web.json_response(
@@ -525,10 +742,20 @@ async def api_answer(request: web.Request) -> web.Response:
 
 
 async def api_continue(request: web.Request) -> web.Response:
+    """Retry a failed job with optional extra input.
+
+    Same two-layer owner guard as answer: a visibility pre-check plus a
+    tenant-restricted UPDATE. Admins pass None and may retry any user's job.
+    """
     job_id = request.match_info["job_id"]
+    _, error = _load_visible_job(request, job_id)
+    if error:
+        return error
     fields, files = await _parse_body_and_files(request)
     extra = (fields.get("extra") or "").strip()
-    ok = store.continue_job(job_id, extra_input=extra)
+    ok = store.continue_job(
+        job_id, extra_input=extra, tenants=_owner_tenants(request),
+    )
     if not ok:
         job = store.get_job(job_id)
         return web.json_response(
@@ -542,15 +769,84 @@ async def api_continue(request: web.Request) -> web.Response:
 
 
 async def api_drop(request: web.Request) -> web.Response:
+    """Permanently drop a job (terminal archived state).
+
+    The visibility check happens before parsing the body, and the UPDATE carries
+    the caller's tenant filter for non-admins. Admins have full control and may
+    drop any user's job from the All jobs view.
+    """
     job_id = request.match_info["job_id"]
+    _, error = _load_visible_job(request, job_id)
+    if error:
+        return error
     body = await request.json() if request.can_read_body else {}
     reason = (body.get("reason") or "").strip()
     who = _who(request)
-    ok = store.drop_job(job_id, by=who, reason=reason)
+    ok = store.drop_job(
+        job_id, by=who, reason=reason, tenants=_owner_tenants(request),
+    )
     if not ok:
         return web.json_response({"error": "could not drop"}, status=409)
     logger.info("job %s dropped by %s", job_id, who)
     return web.json_response({"ok": True})
+
+
+async def api_update_tags(request: web.Request) -> web.Response:
+    """Add or remove one tag on a job.
+
+    Body: ``{"action": "add"|"remove", "tag": "..."}``.
+
+    Authorization uses the same owner-or-admin rule as every other job action.
+    Non-admins pass their alias set into the store write, so even a direct API
+    call cannot edit tags on someone else's job. Admins have full control from
+    the All jobs view. The response returns the job's resulting tag list so the
+    UI can re-render immediately without a second detail fetch.
+    """
+    job_id = request.match_info["job_id"]
+    _, error = _load_visible_job(request, job_id)
+    if error:
+        return error
+
+    body = await request.json() if request.can_read_body else {}
+    action = (body.get("action") or "").strip().lower()
+    raw_tag = body.get("tag") or ""
+    if action not in ("add", "remove"):
+        return web.json_response(
+            {"error": "action must be 'add' or 'remove'"}, status=400,
+        )
+
+    if action == "add":
+        tag = _normalize_tag(raw_tag)
+        if not tag:
+            return web.json_response({"error": "tag is required"}, status=400)
+        ok = store.add_job_tags(
+            job_id, [tag], tenants=_owner_tenants(request),
+        )
+    else:
+        tag = str(raw_tag or "").strip()
+        if not tag:
+            return web.json_response({"error": "tag is required"}, status=400)
+        ok = store.remove_job_tag(
+            job_id, tag, tenants=_owner_tenants(request),
+        )
+
+    if not ok:
+        return web.json_response({"error": "could not update tags"}, status=409)
+
+    job = store.get_job(job_id, tenants=_owner_tenants(request))
+    if not job:
+        return web.json_response({"error": "not found"}, status=404)
+    tags = _parse_tags(job.get("tags"))
+    # add_job_tags is merge-only and applies a hard cap. If the requested tag
+    # is still absent after the write, the cap (not a duplicate) swallowed it;
+    # tell the user to remove a chip first rather than reporting a false success.
+    if action == "add" and tag not in tags:
+        return web.json_response(
+            {"error": "tag limit reached; remove a tag first", "tags": tags},
+            status=409,
+        )
+    logger.info("job %s tag %s by %s: %s", job_id, action, _who(request), tag)
+    return web.json_response({"ok": True, "tags": tags})
 
 
 MAX_AUDIO_BYTES = 25 * 1024 * 1024
@@ -750,7 +1046,18 @@ async def api_create_job_from_dictation(request: web.Request) -> web.Response:
 
 
 async def api_whoami(request: web.Request) -> web.Response:
-    return web.json_response({"email": _who(request)})
+    """Tell the shell who is signed in and whether to show the All jobs toggle.
+
+    ``is_admin`` comes from the request identity resolved by middleware, which
+    is a strict vault role check. The frontend uses this only for presentation;
+    every actual authorization decision is repeated server-side on each API
+    route, so hiding/showing the button can never be the security boundary.
+    """
+    identity = _identity(request)
+    return web.json_response({
+        "email": _who(request),
+        "is_admin": identity.is_admin,
+    })
 
 
 async def health(request: web.Request) -> web.Response:
@@ -779,11 +1086,15 @@ def build_app() -> web.Application:
     app.router.add_get("/api/jobs", api_list_jobs)
     app.router.add_post("/api/jobs", api_create_job)
     app.router.add_post("/api/jobs/from-dictation", api_create_job_from_dictation)
+    # Static /owners must be registered before the dynamic {job_id} route or
+    # aiohttp would treat "owners" as a job id.
+    app.router.add_get("/api/jobs/owners", api_list_owners)
     app.router.add_get("/api/jobs/{job_id}", api_get_job)
     app.router.add_get("/api/jobs/{job_id}/artifact", api_download_artifact)
     app.router.add_post("/api/jobs/{job_id}/answer", api_answer)
     app.router.add_post("/api/jobs/{job_id}/continue", api_continue)
     app.router.add_post("/api/jobs/{job_id}/drop", api_drop)
+    app.router.add_post("/api/jobs/{job_id}/tags", api_update_tags)
     app.router.add_post("/api/transcribe", api_transcribe)
     app.router.add_get("/", serve_index)
     app.router.add_get("/index.html", serve_index)

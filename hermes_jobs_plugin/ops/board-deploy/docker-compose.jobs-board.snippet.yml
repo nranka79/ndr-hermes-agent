@@ -23,6 +23,9 @@
       - "127.0.0.1:8900:8900"
     volumes:
       - /opt/hermes/hermes-data:/data/hermes
+      # gws-vault runs on the HOST as systemd; the socket is bind-mounted in
+      # read-only so authz.py can resolve email aliases and check role=admin.
+      - /run/gws-vault:/run/gws-vault:ro
       # This image's s6 scaffolding starts regardless of `command` and
       # tries to run a "gateway-default" log service at
       # $HERMES_HOME/logs/gateways/default -- with HERMES_HOME shared
@@ -45,6 +48,9 @@
       # auto-created an empty kanban.db in its own container layer.
       HERMES_HOME: /data/hermes
       HERMES_KANBAN_DB: /data/hermes/kanban.db
+      # Per-user job visibility: resolve email -> vault identity aliases and
+      # allow the All jobs view only for a strict vault role=admin.
+      GWS_VAULT_SOCKET: /run/gws-vault/vault.sock
       # Jobs-page dictation uses the same STT provider chain as
       # voice.ahfl.in / chat.ahfl.in, but through the AI Model Gateway
       # (llm-gateway) so it shares the central Groq -> AssemblyAI pools.

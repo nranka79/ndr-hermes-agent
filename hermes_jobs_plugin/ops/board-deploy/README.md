@@ -99,11 +99,18 @@ cp /opt/hermes/docker-compose.prod.yml.pre-jobs-board.bak /opt/hermes/docker-com
 Nothing here can affect `hermes-hermes-1` or `hermes-apps-1` — both new
 services are additive, and stopping/removing them touches nothing else.
 
+## Access model (updated 2026-11-04)
+
+- Every signed-in person sees only jobs whose `tenant` matches one of their
+  gws-vault aliases. The jobs-board container therefore bind-mounts
+  `/run/gws-vault` read-only and sets `GWS_VAULT_SOCKET`.
+- Only a vault identity with `role == "admin"` gets the All jobs toggle and may
+  address other users' job ids. Everyone defaults to My jobs.
+- Non-owners receive `403 Forbidden` on detail/artifact/answer/continue/drop;
+  missing ids remain `404`.
+
 ## Known gaps, stated plainly
 
-- **No "admin sees all" distinction in the UI** — every authenticated
-  person sees every job. Fine for a 1-2 person allowlist; would need
-  real work for a bigger team.
 - **Mic dictation requires HTTPS** (browsers refuse `getUserMedia` on
   plain HTTP for any host other than `localhost`) — this is exactly why
   step 9 (the real cert) has to happen before dictation can be tested at
