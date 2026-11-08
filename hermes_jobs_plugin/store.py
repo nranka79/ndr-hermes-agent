@@ -339,7 +339,24 @@ def park_question(
     job_id: str, *, question: str, context: str = "",
     options: Optional[List[str]] = None, conn=None,
 ) -> bool:
-    """Agent asked the human something. Run ends, slot frees, no auto-retry."""
+    """Agent asked the human something. Run ends, slot frees, no auto-retry.
+
+    Isolation rule #6 (bug found 2026-11-08 on job_f4686e63 / job_5dd6d2a3):
+    on top of our own ``needs_input`` event, this ALSO logs a
+    ``kind="blocked"`` task_event. That is purely for
+    ``hermes_cli.kanban_db._has_sticky_block()`` / ``recompute_ready()``'s
+    benefit -- the shared dispatcher runs ``recompute_ready()`` on every
+    tick and auto-promotes any ``status='blocked'`` row with no
+    ``task_links`` parents straight back to ``ready`` UNLESS its most
+    recent ``blocked``/``unblocked`` event is ``blocked`` (that is how it
+    tells a worker-initiated, human-reviewable block apart from a
+    transient circuit-breaker block it should auto-recover). hermes_jobs
+    rows have no parent links, so without this event every parked
+    clarification question was silently promoted back to ``ready`` within
+    one dispatcher tick (seconds), reclaimed, and re-run from scratch with
+    no answer -- forever, never actually waiting for the human. See
+    README's "isolation rules" list; this is the sixth.
+    """
     own = conn is None
     conn = conn or connect()
     try:
@@ -357,6 +374,14 @@ def park_question(
                 log_event(conn, job_id, "needs_input", {
                     "kind": PENDING_CLARIFICATION, "question": question,
                 })
+                # Sticky-block marker for recompute_ready() -- see
+                # docstring above. Kind/payload shape mirrors kanban's own
+                # worker-initiated kanban_block event closely enough for
+                # _has_sticky_block()'s "kind IN ('blocked','unblocked'),
+                # most recent wins" check to treat it the same way.
+                log_event(conn, job_id, "blocked", {
+                    "reason": "job_clarify: " + question[:200],
+                })
         return ok
     finally:
         if own:
@@ -364,7 +389,18 @@ def park_question(
 
 
 def park_failure(job_id: str, *, error: str, conn=None) -> bool:
-    """Run broke or hit budget. Never auto-retried -- a human decides."""
+    """Run broke or hit budget. Never auto-retried -- a human decides.
+
+    No sticky-block event needed here (unlike ``park_question`` above):
+    ``ST_WAIT_FAILURE`` maps to kanban's ``'review'`` status, and the
+    dispatcher's own review-column sweep already skips every hermes_jobs
+    row there via isolation rule #1 (``assignee IS NULL`` ->
+    ``skipped_unassigned``) -- confirmed by reading
+    ``hermes_cli.kanban_db.dispatch_once``'s review-column dispatch, which
+    requires ``row["assignee"]`` before it will touch a ``'review'`` row.
+    ``recompute_ready()`` only ever acts on ``'todo'``/``'blocked'``, so it
+    cannot reach this status at all.
+    """
     own = conn is None
     conn = conn or connect()
     try:
@@ -423,6 +459,15 @@ def answer_job(
     keys. The board passes the caller's aliases for non-admins so an
     unauthorized id cannot be mutated even if an application-level check were
     bypassed. Admins pass ``None`` (no owner restriction).
+
+    Also logs a ``kind="unblocked"`` task_event, the counterpart to
+    ``park_question``'s ``"blocked"`` one -- not required for correctness
+    here (this function moves the row off ``'blocked'`` directly, so
+    ``recompute_ready()`` never gets a chance to act on it), but it keeps
+    the ``task_events`` history honest for anything that later asks "is
+    this job currently sticky-blocked" by checking the single most recent
+    ``blocked``/``unblocked`` event, matching kanban's own
+    ``kanban_unblock`` convention.
     """
     own = conn is None
     conn = conn or connect()
@@ -441,6 +486,7 @@ def answer_job(
             ok = cur.rowcount == 1
             if ok:
                 log_event(conn, job_id, "answered", {"answer": answer[:500]})
+                log_event(conn, job_id, "unblocked", {"reason": "human answered"})
         return ok
     finally:
         if own:

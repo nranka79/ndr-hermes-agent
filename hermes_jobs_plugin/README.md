@@ -7,12 +7,30 @@ inside `hermes-hermes-1`), which is **not** a git repo — never edit it in plac
 ## Design invariants
 
 1. Job rows live on the **shared default kanban board**, marked `created_by='hermes_jobs'`.
-2. Job rows are invisible to the gateway's embedded kanban dispatcher, by five rules:
+2. Job rows are invisible to the gateway's embedded kanban dispatcher, by six rules:
    - `assignee IS NULL`        -> spawn loop buckets them `skipped_unassigned`
+     (this is also what protects `ST_WAIT_FAILURE`/`'review'` rows from the
+     dispatcher's review-column sweep, which requires an `assignee` before
+     it will touch a `'review'` row)
    - `worker_pid IS NULL`      -> `detect_crashed_workers` skips them
    - `max_runtime_seconds IS NULL` -> `enforce_max_runtime` skips them
    - never `status='triage'`   -> the LLM auto-decomposer never sees them
    - runner heartbeats `claim_expires` while running -> no stale reclaim
+   - `park_question()` logs a `kind="blocked"` task_event alongside its own
+     `needs_input` one -> `kanban_db._has_sticky_block()` sees it and
+     `recompute_ready()` leaves the row alone. **Without this, every
+     `ST_WAIT_QUESTION`/`'blocked'` row gets auto-promoted back to `'ready'`
+     on the dispatcher's very next tick** (seconds later) because
+     `recompute_ready()` treats any `'blocked'` row with no `task_links`
+     parents as vacuously unblocked by default — it has no other way to
+     tell "parked for a human" apart from a circuit-breaker block it
+     should auto-recover. `answer_job()` logs the matching `"unblocked"`
+     event when the human actually replies. Bug found + fixed 2026-11-08
+     (job_f4686e63 / job_5dd6d2a3 looped: park -> auto-promoted -> reclaimed
+     -> re-run from scratch -> park again, never actually waiting for the
+     human). `ST_WAIT_FAILURE`/`'review'` rows never needed this fix —
+     they're already covered by the `assignee IS NULL` rule above, and
+     `recompute_ready()` only ever acts on `'todo'`/`'blocked'` anyway.
 3. Execution is in-gateway via `POST /v1/runs`. No subprocess workers (memory).
 4. Jobs never die automatically. Unlimited clarification rounds; failures park
    for a human decision. Only an explicit human **drop** is terminal.
