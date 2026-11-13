@@ -1300,6 +1300,8 @@ MEDIA_DELIVERY_EXTS: Tuple[str, ...] = (
     ".zip", ".tar", ".gz", ".tgz", ".bz2", ".xz", ".7z", ".rar", ".apk", ".ipa",
     # Web / rendered output
     ".html", ".htm",
+    # Maps / geodata (Google Earth / My Maps; e.g. Bhoomi survey KMLs)
+    ".kml", ".kmz",
 )
 
 # Regex alternation fragment of bare extensions (no leading dot), e.g.
