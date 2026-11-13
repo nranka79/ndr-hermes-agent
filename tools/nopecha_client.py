@@ -48,6 +48,30 @@ Free (default -- no key / NOPECHA_API_KEY unset or empty):
 Paid (NOPECHA_API_KEY set):
     Sent as ``Authorization: Bearer <key>``.
 
+Egress (NOPECHA_EGRESS)
+-----------------------
+Free-tier quota is bucketed by the caller's public IP, so the client can
+give each job its own egress instead of letting one IP absorb every call:
+
+    auto    (default) router when free mode + a proxy is configured,
+            otherwise direct. This is the production free-tier behaviour.
+    router  always through the residential-tunnel SOCKS5 front door
+            (``AGENT_BROWSER_PROXY`` / ``NOPECHA_EGRESS_PROXY``).
+    direct  always from the Hermes container's own IP.
+
+A router-mode job gets a unique SOCKS5 session id (``nopecha-<uuid>``),
+travels in the proxy username, and is pinned by the router to one
+Direct/Residential leg. Submit and every poll for that job pass the same
+``Egress`` object, so NopeCHA sees one IP for the whole job; the next job
+rolls a new session. The router policy must list ``api.nopecha.com`` under
+``split`` -- see the hermes-apps-stack tunnel router's ``policy.yaml``.
+
+Free mode + router egress deliberately skips the on-disk quota preflight:
+that cache is keyed only by API key/mode, and a value observed on one IP
+says nothing about the next session's IP. The tool instead retries once on
+a ``res-`` session after ``ip_ineligible`` / ``rate_limited``, which forces
+the residential leg (see ``tools/nopecha_recognition_tool.py``).
+
 Error codes (app-level ``error`` field in the JSON body, confirmed against
 the live API reference and against real 429/403 responses hit during
 testing):
@@ -75,6 +99,10 @@ request id, last error) for observability -- see
 best-effort: concurrent processes can race on the stats file (lost update,
 not corruption -- writes are atomic), which is an accepted tradeoff for
 advisory counters, not billing-critical state.
+
+In free mode + router egress the quota cache is bypassed entirely (see
+"Egress" above); paid keys keep the cache because their quota is
+account-level, not per-IP.
 """
 
 import hashlib
@@ -82,14 +110,145 @@ import json
 import logging
 import os
 import time
+import uuid
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from urllib.parse import quote, urlsplit, urlunsplit
 
-import requests
+import httpx
 
 logger = logging.getLogger(__name__)
 
 NOPECHA_API_BASE = "https://api.nopecha.com"
+
+# Egress selection. NopeCHA's free tier buckets usage by the caller's public
+# IP, so routing each job through a different egress spreads the quota and
+# the risk-model exposure. Router mode uses the Hermes residential-tunnel
+# SOCKS5 front door; the router policy must list api.nopecha.com under
+# `split` (see the hermes-apps-stack tunnel router).
+NOPECHA_EGRESS_ENV = "NOPECHA_EGRESS"
+NOPECHA_EGRESS_PROXY_ENV = "NOPECHA_EGRESS_PROXY"
+NOPECHA_EGRESS_RETRIES_ENV = "NOPECHA_EGRESS_RETRIES"
+AGENT_BROWSER_PROXY_ENV = "AGENT_BROWSER_PROXY"
+
+
+@dataclass(frozen=True)
+class Egress:
+    """One HTTP egress for a single NopeCHA job.
+
+    ``mode`` is ``"direct"`` (the Hermes container's own IP) or ``"router"``
+    (the residential-tunnel SOCKS5 front door). Router mode carries a unique
+    session id in the SOCKS5 username; the router pins that session to one
+    Direct/Residential leg, so submit + poll for a job keep the same IP.
+    """
+
+    mode: str
+    session_id: Optional[str] = None
+    proxy_url: Optional[str] = None
+
+    @property
+    def is_router(self) -> bool:
+        return self.proxy_url is not None
+
+
+def _get_setting(name: str) -> Optional[str]:
+    """Env-first, then the Hermes config/.env fallback (same as API keys)."""
+    value = os.getenv(name)
+    if value is None:
+        try:
+            from hermes_cli.config import get_env_value
+            value = get_env_value(name)
+        except Exception:
+            value = None
+    return value
+
+
+def max_egress_attempts() -> int:
+    """Total attempts for one job: 1 + NOPECHA_EGRESS_RETRIES (clamped 1..3).
+
+    The default is one retry (two attempts total). Retries only happen for
+    IP/rate rejections and only in router mode; see the tool.
+    """
+    raw = _get_setting(NOPECHA_EGRESS_RETRIES_ENV)
+    try:
+        retries = int((raw or "1").strip())
+    except (TypeError, ValueError):
+        retries = 1
+    return max(1, min(3, retries + 1))
+
+
+def _normalize_proxy_for_session(raw_proxy: str, session_id: str) -> str:
+    """Add/replace SOCKS5 userinfo with the session id.
+
+    ``socks5h://`` (remote DNS) is used even when the configured URL says
+    ``socks5://``; the front door's policy works on domain names, and remote
+    resolution keeps the lookup on the egress side.
+    """
+    raw = raw_proxy.strip()
+    if "://" not in raw:
+        raw = "socks5h://" + raw
+    parts = urlsplit(raw)
+    scheme = parts.scheme.lower()
+    if scheme == "socks5":
+        scheme = "socks5h"
+    if not parts.hostname:
+        raise ValueError(f"invalid proxy URL: {raw_proxy!r}")
+    netloc = f"{quote(session_id, safe='')}:x@{parts.hostname}"
+    if parts.port:
+        netloc += f":{parts.port}"
+    return urlunsplit((scheme, netloc, parts.path, parts.query, parts.fragment))
+
+
+def resolve_egress(
+    *, mode: Optional[str] = None, force_residential: bool = False,
+) -> Egress:
+    """Resolve the egress for one job.
+
+    ``NOPECHA_EGRESS``:
+      - ``auto`` (default): router when free mode (no API key) and a proxy is
+        configured, otherwise direct.
+      - ``router``: always the residential-tunnel SOCKS5 front door.
+      - ``direct``: always the container's own IP.
+
+    ``force_residential`` switches the session-id prefix to ``res-``, which
+    the router honours in split mode. That is used by the tool's bounded
+    retry after a banned/rate-limited egress.
+    """
+    resolved_mode = (mode or _get_setting(NOPECHA_EGRESS_ENV) or "auto").strip().lower()
+    if resolved_mode not in ("auto", "router", "direct"):
+        logger.warning("nopecha_client: unknown NOPECHA_EGRESS=%r, using auto", resolved_mode)
+        resolved_mode = "auto"
+
+    if resolved_mode == "direct":
+        return Egress(mode="direct")
+
+    proxy_raw = (
+        _get_setting(NOPECHA_EGRESS_PROXY_ENV)
+        or _get_setting(AGENT_BROWSER_PROXY_ENV)
+        or ""
+    ).strip()
+
+    if resolved_mode == "auto":
+        if not proxy_raw or _resolve_api_key():
+            return Egress(mode="direct")
+        resolved_mode = "router"
+
+    if not proxy_raw:
+        logger.warning(
+            "nopecha_client: NOPECHA_EGRESS=router but no proxy is configured; "
+            "falling back to direct (set NOPECHA_EGRESS_PROXY or AGENT_BROWSER_PROXY)"
+        )
+        return Egress(mode="direct")
+
+    session_prefix = "res-" if force_residential else "nopecha-"
+    session_id = f"{session_prefix}{uuid.uuid4().hex}"
+    return Egress(
+        mode="router",
+        session_id=session_id,
+        proxy_url=_normalize_proxy_for_session(proxy_raw, session_id),
+    )
+
 
 # Conservative client-side cap. NopeCHA's reference doesn't publish a hard
 # per-image limit; this just keeps a misbehaving caller (e.g. a full-page
@@ -184,7 +343,7 @@ def _auth_headers(key: str) -> Dict[str, str]:
     return headers
 
 
-def _raise_for_error(resp: requests.Response) -> None:
+def _raise_for_error(resp: httpx.Response) -> None:
     """Parse a non-2xx NopeCHA response and raise a normalized NopeCHAError."""
     try:
         body = resp.json()
@@ -196,18 +355,34 @@ def _raise_for_error(resp: requests.Response) -> None:
     raise NopeCHAError(reason=reason, message=message, code=code, http_status=resp.status_code)
 
 
-def _request_with_retry(method: str, url: str, *, max_attempts: int = 2, **kwargs) -> requests.Response:
+def _client(egress: Egress, timeout: float) -> httpx.Client:
+    """httpx client pinned to this job's egress. trust_env=False so a stray
+    HTTP(S)_PROXY in the environment cannot silently override the choice."""
+    if egress.proxy_url:
+        return httpx.Client(proxy=egress.proxy_url, timeout=timeout, trust_env=False)
+    return httpx.Client(timeout=timeout, trust_env=False)
+
+
+def _http_request(client: httpx.Client, method: str, url: str, **kwargs) -> httpx.Response:
+    """Single seam around the wire call so tests can substitute responses."""
+    return client.request(method, url, **kwargs)
+
+
+def _request_with_retry(
+    client: httpx.Client, method: str, url: str, *, max_attempts: int = 2, **kwargs,
+) -> httpx.Response:
     """Bounded retry for TRANSIENT NETWORK failures only.
 
     Does not retry on any HTTP response the server actually returned
     (including 429/403/etc) -- those are rejections, not transport failures,
-    and spec explicitly says not to retry rejected challenges.
+    and spec explicitly says not to retry rejected challenges. Egress-level
+    retries live in ``tools/nopecha_recognition_tool.py`` (a new session id).
     """
     last_exc: Optional[Exception] = None
     for attempt in range(1, max_attempts + 1):
         try:
-            return requests.request(method, url, **kwargs)
-        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as exc:
+            return _http_request(client, method, url, **kwargs)
+        except httpx.TransportError as exc:
             last_exc = exc
             if attempt < max_attempts:
                 logger.debug("nopecha_client: transient network error (attempt %d/%d): %s", attempt, max_attempts, exc)
@@ -215,16 +390,20 @@ def _request_with_retry(method: str, url: str, *, max_attempts: int = 2, **kwarg
     raise NopeCHAError(reason="network_error", message=str(last_exc), code=None, http_status=None)
 
 
-def get_status(key: Optional[str] = None, timeout: float = 10.0) -> Dict[str, Any]:
+def get_status(
+    key: Optional[str] = None, timeout: float = 10.0, egress: Optional[Egress] = None,
+) -> Dict[str, Any]:
     """GET /v1/status -- quota/credit/reset-interval check. Does not consume
     a recognition credit; safe to call proactively before submitting a job.
     """
     resolved_key = _resolve_api_key(key)
-    resp = _request_with_retry(
-        "GET", f"{NOPECHA_API_BASE}/v1/status",
-        headers=_auth_headers(resolved_key), timeout=timeout,
-    )
-    if not resp.ok:
+    resolved_egress = egress or resolve_egress()
+    with _client(resolved_egress, timeout) as client:
+        resp = _request_with_retry(
+            client, "GET", f"{NOPECHA_API_BASE}/v1/status",
+            headers=_auth_headers(resolved_key), timeout=timeout,
+        )
+    if not resp.is_success:
         _raise_for_error(resp)
     return resp.json()
 
@@ -250,17 +429,31 @@ def _stats_cache_path() -> Path:
     return _cache_dir() / "call_stats.json"
 
 
-def get_status_cached(key: Optional[str] = None, *, force: bool = False) -> Dict[str, Any]:
+def get_status_cached(
+    key: Optional[str] = None, *, force: bool = False, egress: Optional[Egress] = None,
+) -> Dict[str, Any]:
     """``get_status`` with a short-TTL on-disk cache shared across processes.
 
     Returns the same shape as ``get_status`` (plus internal ``_cached_at``/
     ``_fingerprint`` bookkeeping keys, harmless for callers that just read
     ``credit``/``quota``/``duration``). Raises NopeCHAError exactly like
     ``get_status`` when there is no usable cache and the live call fails.
+
+    Free-tier quota is per public IP, so router mode + no API key must NOT
+    use (or write) the shared cache: a value observed on one egress says
+    nothing about the next session's egress. Paid keys are account-level,
+    so their cache remains valid regardless of egress.
     """
     resolved_key = _resolve_api_key(key)
+    resolved_egress = egress or resolve_egress()
     fingerprint = _key_fingerprint(resolved_key)
     path = _quota_cache_path()
+
+    if resolved_egress.is_router and not resolved_key:
+        status = get_status(key=resolved_key, egress=resolved_egress)
+        status["_cached_at"] = time.time()
+        status["_fingerprint"] = fingerprint
+        return status
 
     if not force:
         try:
@@ -271,7 +464,7 @@ def get_status_cached(key: Optional[str] = None, *, force: bool = False) -> Dict
         except (OSError, ValueError, json.JSONDecodeError):
             pass
 
-    status = get_status(key=resolved_key)
+    status = get_status(key=resolved_key, egress=resolved_egress)
     status["_cached_at"] = time.time()
     status["_fingerprint"] = fingerprint
     try:
@@ -327,7 +520,7 @@ def get_call_stats() -> Dict[str, Any]:
         return {"success_count": 0, "failure_count": 0, "by_type": {}}
 
 
-def _preflight_quota_check(key: str) -> None:
+def _preflight_quota_check(key: str, egress: Optional[Egress] = None) -> None:
     """Fail fast on a known-persistent quota problem using a fresh cache.
 
     Only ever short-circuits on PERSISTENT error reasons (banned IP,
@@ -336,9 +529,16 @@ def _preflight_quota_check(key: str) -> None:
     no cache, a transient error, or credit > 0 -- falls through silently
     and lets the real submit attempt proceed; this check must never mask
     a request that might actually succeed.
+
+    Free mode + router egress is skipped entirely: each job may land on a
+    different IP, so neither the cache nor a single status probe is
+    meaningful. The bounded egress retry in the tool handles a banned IP.
     """
+    resolved_egress = egress or resolve_egress()
+    if resolved_egress.is_router and not key:
+        return
     try:
-        status = get_status_cached(key=key)
+        status = get_status_cached(key=key, egress=resolved_egress)
     except NopeCHAError as exc:
         if exc.reason in _PERSISTENT_ERROR_REASONS:
             raise
@@ -366,11 +566,13 @@ def submit_recognition(
     audio_data: Optional[List[str]] = None,
     key: Optional[str] = None,
     timeout: float = _DEFAULT_TIMEOUT,
+    egress: Optional[Egress] = None,
 ) -> str:
     """Submit a recognition job. Returns the job ID (NopeCHA's ``data`` field).
 
     See module docstring "IMPLEMENTATION STATUS" for which challenge_type
-    values are actually wired end-to-end.
+    values are actually wired end-to-end. Pass the same ``egress`` to
+    ``poll_recognition`` so the whole job stays on one IP.
     """
     spec = RECOGNITION_SPECS.get(challenge_type)
     if spec is None:
@@ -403,13 +605,15 @@ def submit_recognition(
         )
 
     resolved_key = _resolve_api_key(key)
-    _preflight_quota_check(resolved_key)
+    resolved_egress = egress or resolve_egress()
+    _preflight_quota_check(resolved_key, resolved_egress)
 
-    resp = _request_with_retry(
-        "POST", f"{NOPECHA_API_BASE}/v1/recognition/{challenge_type}",
-        json=payload, headers=_auth_headers(resolved_key), timeout=timeout,
-    )
-    if not resp.ok:
+    with _client(resolved_egress, timeout) as client:
+        resp = _request_with_retry(
+            client, "POST", f"{NOPECHA_API_BASE}/v1/recognition/{challenge_type}",
+            json=payload, headers=_auth_headers(resolved_key), timeout=timeout,
+        )
+    if not resp.is_success:
         _raise_for_error(resp)
     body = resp.json()
     job_id = body.get("data")
@@ -426,6 +630,7 @@ def poll_recognition(
     timeout: float = _DEFAULT_TIMEOUT,
     max_wait: float = 20.0,
     poll_interval: float = 0.5,
+    egress: Optional[Egress] = None,
 ) -> Any:
     """Poll GET /v1/recognition/{type}?id=... until the job completes.
 
@@ -434,27 +639,31 @@ def poll_recognition(
     recommended ~500ms spacing. Any other error is raised immediately
     (not retried) -- a rejected/invalid job will never become valid by
     waiting.
+
+    Reuses one client (and therefore one egress/session) for every poll.
     """
     resolved_key = _resolve_api_key(key)
+    resolved_egress = egress or resolve_egress()
     deadline = time.time() + max_wait
-    while True:
-        resp = _request_with_retry(
-            "GET", f"{NOPECHA_API_BASE}/v1/recognition/{challenge_type}",
-            params={"id": job_id}, headers=_auth_headers(resolved_key), timeout=timeout,
-        )
-        if resp.ok:
-            return resp.json().get("data")
-        try:
-            body = resp.json()
-        except ValueError:
-            body = {}
-        if body.get("error") == 14 and time.time() < deadline:
-            time.sleep(poll_interval)
-            continue
-        if body.get("error") == 14:
-            raise NopeCHAError(
-                reason="recognition_timeout",
-                message=f"Job {job_id} still incomplete after {max_wait}s.",
-                code=14, http_status=resp.status_code,
+    with _client(resolved_egress, timeout) as client:
+        while True:
+            resp = _request_with_retry(
+                client, "GET", f"{NOPECHA_API_BASE}/v1/recognition/{challenge_type}",
+                params={"id": job_id}, headers=_auth_headers(resolved_key), timeout=timeout,
             )
-        _raise_for_error(resp)
+            if resp.is_success:
+                return resp.json().get("data")
+            try:
+                body = resp.json()
+            except ValueError:
+                body = {}
+            if body.get("error") == 14 and time.time() < deadline:
+                time.sleep(poll_interval)
+                continue
+            if body.get("error") == 14:
+                raise NopeCHAError(
+                    reason="recognition_timeout",
+                    message=f"Job {job_id} still incomplete after {max_wait}s.",
+                    code=14, http_status=resp.status_code,
+                )
+            _raise_for_error(resp)

@@ -655,6 +655,15 @@ free-tier risk model can flag even a residential IP as `ip_ineligible`
 paid key as the realistic default for production use; free mode as a
 best-effort fallback. See [environment variables](/reference/environment-variables#tool-apis) for `NOPECHA_API_KEY` / `NOPECHA_ENABLED`.
 
+**Egress rotation (free tier):** set `NOPECHA_EGRESS=router` (or leave the
+default `auto` with `AGENT_BROWSER_PROXY` configured) to send each job through
+the residential-tunnel SOCKS5 front door. Every job gets a unique SOCKS5
+session id, so submit and all polls for that job stay on one egress; the next
+job can land on the VPS or another online residential node. The tunnel policy
+must list `api.nopecha.com` under `split`. After an `ip_ineligible` or
+`rate_limited` rejection, the tool retries once on a `res-` session, which
+forces the residential leg (`NOPECHA_EGRESS_RETRIES`, default 1).
+
 **Testing free-tier access without a key:** leave `NOPECHA_API_KEY` unset and
 call `nopecha_recognition`, or check quota directly with
 `tools.nopecha_client.get_status()` (`GET https://api.nopecha.com/v1/status`)
