@@ -35,8 +35,10 @@ from typing import Any, Dict, Optional
 from tools.nopecha_client import (
     MAX_IMAGE_BYTES,
     NopeCHAError,
+    max_egress_attempts,
     poll_recognition,
     record_call_result,
+    resolve_egress,
     submit_recognition,
 )
 from tools.registry import registry
@@ -47,6 +49,10 @@ _MIME_BY_EXT = {
     ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
     ".webp": "image/webp", ".gif": "image/gif",
 }
+
+# Rejections that a DIFFERENT egress can actually fix. Anything else
+# (invalid request, out of credit, bad key, timeout) is not retried here.
+_RETRYABLE_EGRESS_REASONS = {"ip_ineligible", "rate_limited"}
 
 
 NOPECHA_RECOGNITION_SCHEMA: Dict[str, Any] = {
@@ -61,9 +67,11 @@ NOPECHA_RECOGNITION_SCHEMA: Dict[str, Any] = {
         "squares with X') is supported.\n\n"
         "Provide the challenge image via image_path (a local screenshot/crop path, "
         "e.g. from browser_vision) OR image_data (already base64-encoded) -- exactly "
-        "one of the two. Free mode (no API key configured) works from some IPs but "
-        "is unreliable in practice -- if you see error reason 'ip_ineligible', a paid "
-        "NOPECHA_API_KEY is required; do not retry the same request repeatedly."
+        "one of the two. Free mode (no API key configured) automatically rotates "
+        "each job across the configured egress (the residential tunnel when "
+        "available) and retries once on a different egress after 'ip_ineligible'/"
+        "'rate_limited'. If both attempts are rejected, a paid NOPECHA_API_KEY is "
+        "required -- do not retry the same request repeatedly."
     ),
     "parameters": {
         "type": "object",
@@ -159,34 +167,75 @@ def nopecha_recognition(
         # Not a provider call at all -- don't count this against call stats.
         return _envelope("error", error={"reason": "invalid_request", "message": str(exc), "code": None})
 
-    job_id = None
     try:
-        job_id = submit_recognition(
-            challenge_type, task=task, grid=grid, image_data=[data_uri],
-        )
-        result = poll_recognition(challenge_type, job_id)
-        duration = time.monotonic() - started
-        logger.info(
-            "nopecha_recognition: success challenge_type=%s task_id=%s request_id=%s duration=%.2fs",
-            challenge_type, task_id, job_id, duration,
-        )
-        record_call_result(challenge_type, success=True, request_id=job_id)
-        return _envelope("success", result=result, request_id=job_id)
-    except NotImplementedError as exc:
-        logger.info("nopecha_recognition: unsupported type (task_id=%s): %s", task_id, exc)
-        record_call_result(challenge_type, success=False, reason="unsupported_challenge_type")
-        return _envelope("error", error={"reason": "unsupported_challenge_type", "message": str(exc), "code": None})
-    except NopeCHAError as exc:
-        duration = time.monotonic() - started
-        logger.info(
-            "nopecha_recognition: failed challenge_type=%s task_id=%s reason=%s code=%s duration=%.2fs",
-            challenge_type, task_id, exc.reason, exc.code, duration,
-        )
-        record_call_result(challenge_type, success=False, request_id=job_id, code=exc.code, reason=exc.reason)
-        return _envelope(
-            "error", request_id=job_id,
-            error={"reason": exc.reason, "message": exc.message, "code": exc.code},
-        )
+        egress = resolve_egress()
+        attempts = max_egress_attempts()
+    except Exception as exc:
+        logger.info("nopecha_recognition: egress configuration invalid (task_id=%s): %s", task_id, exc)
+        return _envelope("error", error={"reason": "invalid_egress", "message": str(exc), "code": None})
+
+    job_id = None
+    for attempt in range(1, attempts + 1):
+        try:
+            job_id = submit_recognition(
+                challenge_type, task=task, grid=grid, image_data=[data_uri],
+                egress=egress,
+            )
+            result = poll_recognition(challenge_type, job_id, egress=egress)
+            duration = time.monotonic() - started
+            logger.info(
+                "nopecha_recognition: success challenge_type=%s task_id=%s request_id=%s "
+                "egress=%s attempts=%d duration=%.2fs",
+                challenge_type, task_id, job_id, egress.mode, attempt, duration,
+            )
+            record_call_result(challenge_type, success=True, request_id=job_id)
+            return _envelope("success", result=result, request_id=job_id)
+        except NotImplementedError as exc:
+            logger.info("nopecha_recognition: unsupported type (task_id=%s): %s", task_id, exc)
+            record_call_result(challenge_type, success=False, reason="unsupported_challenge_type")
+            return _envelope("error", error={"reason": "unsupported_challenge_type", "message": str(exc), "code": None})
+        except NopeCHAError as exc:
+            if (
+                attempt < attempts
+                and egress.is_router
+                and exc.reason in _RETRYABLE_EGRESS_REASONS
+            ):
+                logger.info(
+                    "nopecha_recognition: egress rejected attempt=%d/%d reason=%s code=%s "
+                    "egress=%s task_id=%s -- retrying on forced-residential session",
+                    attempt, attempts, exc.reason, exc.code, egress.mode, task_id,
+                )
+                record_call_result(
+                    challenge_type, success=False, request_id=job_id,
+                    code=exc.code, reason=exc.reason,
+                )
+                try:
+                    egress = resolve_egress(force_residential=True)
+                except Exception as retry_exc:
+                    logger.warning(
+                        "nopecha_recognition: could not build retry egress (task_id=%s): %s",
+                        task_id, retry_exc,
+                    )
+                else:
+                    job_id = None
+                    continue
+
+            duration = time.monotonic() - started
+            logger.info(
+                "nopecha_recognition: failed challenge_type=%s task_id=%s reason=%s code=%s "
+                "egress=%s attempts=%d duration=%.2fs",
+                challenge_type, task_id, exc.reason, exc.code, egress.mode, attempt, duration,
+            )
+            record_call_result(challenge_type, success=False, request_id=job_id, code=exc.code, reason=exc.reason)
+            return _envelope(
+                "error", request_id=job_id,
+                error={"reason": exc.reason, "message": exc.message, "code": exc.code},
+            )
+
+    return _envelope(
+        "error",
+        error={"reason": "unknown_error", "message": "No recognition attempt completed.", "code": None},
+    )
 
 
 def _nopecha_check() -> bool:

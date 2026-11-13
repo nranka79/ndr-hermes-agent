@@ -15,6 +15,7 @@ import time
 from pathlib import Path
 from unittest import mock
 
+import httpx
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -31,7 +32,7 @@ from tools.nopecha_recognition_tool import nopecha_recognition  # noqa: E402
 class _FakeResponse:
     def __init__(self, status_code=200, json_body=None, text=""):
         self.status_code = status_code
-        self.ok = 200 <= status_code < 300
+        self.is_success = 200 <= status_code < 300
         self._json_body = json_body if json_body is not None else {}
         self.text = text or json.dumps(self._json_body)
 
@@ -51,6 +52,16 @@ def _isolated_hermes_home(tmp_path, monkeypatch):
 def _no_real_api_key(monkeypatch):
     """Force free mode (no key) unless a test explicitly sets one."""
     monkeypatch.delenv("NOPECHA_API_KEY", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _direct_egress(monkeypatch):
+    """Keep the unit suite hermetic: never touch the real tunnel unless a
+    test opts into router mode explicitly."""
+    monkeypatch.setenv("NOPECHA_EGRESS", "direct")
+    monkeypatch.delenv("NOPECHA_EGRESS_PROXY", raising=False)
+    monkeypatch.delenv("AGENT_BROWSER_PROXY", raising=False)
+    monkeypatch.delenv("NOPECHA_EGRESS_RETRIES", raising=False)
 
 
 # ---------------------------------------------------------------------------
@@ -112,14 +123,13 @@ def test_tool_unsupported_type_returns_structured_error():
 # ---------------------------------------------------------------------------
 
 def test_network_unavailable_raises_network_error_after_bounded_retries():
-    import requests
     calls = {"n": 0}
 
     def _boom(*a, **k):
         calls["n"] += 1
-        raise requests.exceptions.ConnectionError("no route to host")
+        raise httpx.ConnectError("no route to host")
 
-    with mock.patch("tools.nopecha_client.requests.request", side_effect=_boom), \
+    with mock.patch("tools.nopecha_client._http_request", side_effect=_boom), \
          mock.patch("tools.nopecha_client.time.sleep"):
         with pytest.raises(nc.NopeCHAError) as exc_info:
             nc.get_status()
@@ -133,7 +143,7 @@ def test_network_unavailable_raises_network_error_after_bounded_retries():
 
 def test_submit_with_missing_data_field_raises_unknown_error():
     resp = _FakeResponse(status_code=200, json_body={})  # 200 OK but no "data"
-    with mock.patch("tools.nopecha_client.requests.request", return_value=resp):
+    with mock.patch("tools.nopecha_client._http_request", return_value=resp):
         with pytest.raises(nc.NopeCHAError) as exc_info:
             nc.submit_recognition("recaptcha", task="x", grid="4x4", image_data=["data:image/png;base64,AAAA"])
     assert exc_info.value.reason == "unknown_error"
@@ -149,11 +159,11 @@ def test_preflight_blocks_submit_when_cached_credit_is_zero():
     })
     calls = []
 
-    def _fake_request(method, url, **kwargs):
+    def _fake_request(client, method, url, **kwargs):
         calls.append((method, url))
         return status_resp
 
-    with mock.patch("tools.nopecha_client.requests.request", side_effect=_fake_request):
+    with mock.patch("tools.nopecha_client._http_request", side_effect=_fake_request):
         with pytest.raises(nc.NopeCHAError) as exc_info:
             nc.submit_recognition("recaptcha", task="x", grid="4x4", image_data=["data:image/png;base64,AAAA"])
 
@@ -170,10 +180,10 @@ def test_preflight_does_not_block_when_quota_check_itself_is_transient_error():
     submit_ok = _FakeResponse(status_code=200, json_body={"data": "job123"})
     responses = [rate_limited, submit_ok]
 
-    def _fake_request(method, url, **kwargs):
+    def _fake_request(client, method, url, **kwargs):
         return responses.pop(0)
 
-    with mock.patch("tools.nopecha_client.requests.request", side_effect=_fake_request):
+    with mock.patch("tools.nopecha_client._http_request", side_effect=_fake_request):
         job_id = nc.submit_recognition("recaptcha", task="x", grid="4x4", image_data=["data:image/png;base64,AAAA"])
     assert job_id == "job123"
 
@@ -184,7 +194,7 @@ def test_preflight_does_not_block_when_quota_check_itself_is_transient_error():
 
 def test_ip_ineligible_error_surfaces_through_the_tool():
     banned_resp = _FakeResponse(status_code=403, json_body={"error": 12, "message": "Banned IP"})
-    with mock.patch("tools.nopecha_client.requests.request", return_value=banned_resp):
+    with mock.patch("tools.nopecha_client._http_request", return_value=banned_resp):
         out = json.loads(nopecha_recognition(
             challenge_type="recaptcha", task="Select all squares with vehicles.", grid="4x4",
             image_data="data:image/png;base64,AAAA",
@@ -203,10 +213,10 @@ def test_poll_retries_on_job_incomplete_then_succeeds():
     done = _FakeResponse(status_code=200, json_body={"data": [True, False]})
     responses = [incomplete, incomplete, done]
 
-    def _fake_request(method, url, **kwargs):
+    def _fake_request(client, method, url, **kwargs):
         return responses.pop(0)
 
-    with mock.patch("tools.nopecha_client.requests.request", side_effect=_fake_request), \
+    with mock.patch("tools.nopecha_client._http_request", side_effect=_fake_request), \
          mock.patch("tools.nopecha_client.time.sleep"):
         result = nc.poll_recognition("recaptcha", "job123", poll_interval=0.01, max_wait=5.0)
     assert result == [True, False]
@@ -226,7 +236,7 @@ def test_quota_cache_shared_across_concurrent_callers_only_hits_network_once():
         calls["n"] += 1
         return status_resp
 
-    with mock.patch("tools.nopecha_client.requests.request", side_effect=_fake_request):
+    with mock.patch("tools.nopecha_client._http_request", side_effect=_fake_request):
         first = nc.get_status_cached()   # "session 1"
         second = nc.get_status_cached()  # "session 2", same process tick, same IP/key bucket
     assert first["credit"] == 50
@@ -247,10 +257,10 @@ def test_tool_success_path_end_to_end_mocked():
     poll_resp = _FakeResponse(status_code=200, json_body={"data": [False, False, True, False]})
     responses = [status_resp, submit_resp, poll_resp]
 
-    def _fake_request(method, url, **kwargs):
+    def _fake_request(client, method, url, **kwargs):
         return responses.pop(0)
 
-    with mock.patch("tools.nopecha_client.requests.request", side_effect=_fake_request):
+    with mock.patch("tools.nopecha_client._http_request", side_effect=_fake_request):
         out = json.loads(nopecha_recognition(
             challenge_type="recaptcha",
             task="Select all squares with vehicles.",
@@ -288,3 +298,138 @@ def test_tool_rejects_both_image_path_and_image_data():
     ))
     assert out["status"] == "error"
     assert out["error"]["reason"] == "invalid_request"
+
+
+# ---------------------------------------------------------------------------
+# Egress routing: router mode, per-job sessions, and the bounded retry
+# ---------------------------------------------------------------------------
+
+class _FakeHttpxClient:
+    """Minimal stand-in for httpx.Client used by the _client seam."""
+
+    def __init__(self, response):
+        self.response = response
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        return False
+
+    def request(self, method, url, **kwargs):
+        return self.response
+
+
+def test_resolve_egress_router_uses_unique_socks5h_sessions(monkeypatch):
+    monkeypatch.setenv("NOPECHA_EGRESS", "router")
+    monkeypatch.setenv("NOPECHA_EGRESS_PROXY", "socks5://hermes-utilities:1000")
+
+    first = nc.resolve_egress()
+    second = nc.resolve_egress()
+
+    assert first.mode == second.mode == "router"
+    assert first.is_router is True
+    assert first.proxy_url.startswith("socks5h://nopecha-")
+    assert "@hermes-utilities:1000" in first.proxy_url
+    assert first.session_id != second.session_id
+
+    retry = nc.resolve_egress(force_residential=True)
+    assert retry.session_id.startswith("res-")
+    assert retry.proxy_url.startswith("socks5h://res-")
+
+
+def test_auto_egress_is_direct_without_a_proxy(monkeypatch):
+    monkeypatch.setenv("NOPECHA_EGRESS", "auto")
+    egress = nc.resolve_egress()
+    assert egress.mode == "direct"
+    assert egress.is_router is False
+
+
+def test_max_egress_attempts_default_and_clamped(monkeypatch):
+    monkeypatch.delenv("NOPECHA_EGRESS_RETRIES", raising=False)
+    assert nc.max_egress_attempts() == 2
+
+    monkeypatch.setenv("NOPECHA_EGRESS_RETRIES", "0")
+    assert nc.max_egress_attempts() == 1
+
+    monkeypatch.setenv("NOPECHA_EGRESS_RETRIES", "9")
+    assert nc.max_egress_attempts() == 3
+
+
+def test_router_mode_skips_free_quota_preflight(monkeypatch):
+    monkeypatch.setenv("NOPECHA_EGRESS_PROXY", "socks5://hermes-utilities:1000")
+    seen = []
+
+    def _fake_client(egress, timeout):
+        seen.append((egress, timeout))
+        return _FakeHttpxClient(_FakeResponse(status_code=200, json_body={"data": "job_router"}))
+
+    with mock.patch("tools.nopecha_client._client", side_effect=_fake_client):
+        job_id = nc.submit_recognition(
+            "recaptcha", task="x", grid="4x4",
+            image_data=["data:image/png;base64,AAAA"],
+            egress=nc.resolve_egress(mode="router"),
+        )
+
+    assert job_id == "job_router"
+    assert len(seen) == 1  # POST only -- no /v1/status preflight
+    assert seen[0][0].is_router is True
+
+
+def test_submit_and_poll_reuse_one_egress(monkeypatch):
+    monkeypatch.setenv("NOPECHA_EGRESS_PROXY", "socks5://hermes-utilities:1000")
+    egresses = []
+    responses = [
+        _FakeResponse(status_code=200, json_body={"data": "job_shared"}),
+        _FakeResponse(status_code=200, json_body={"data": [True, False]}),
+    ]
+
+    def _fake_client(egress, timeout):
+        egresses.append(egress)
+        return _FakeHttpxClient(responses.pop(0))
+
+    egress = nc.resolve_egress(mode="router")
+    with mock.patch("tools.nopecha_client._client", side_effect=_fake_client):
+        job_id = nc.submit_recognition(
+            "recaptcha", task="x", image_data=["data:image/png;base64,AAAA"], egress=egress,
+        )
+        result = nc.poll_recognition("recaptcha", job_id, egress=egress)
+
+    assert job_id == "job_shared"
+    assert result == [True, False]
+    assert len(egresses) == 2
+    assert egresses[0] == egresses[1]
+    assert egresses[0].session_id.startswith("nopecha-")
+
+
+def test_retry_on_ip_ineligible_uses_forced_residential_session(monkeypatch):
+    monkeypatch.setenv("NOPECHA_EGRESS", "router")
+    monkeypatch.setenv("NOPECHA_EGRESS_PROXY", "socks5://hermes-utilities:1000")
+    monkeypatch.setenv("NOPECHA_EGRESS_RETRIES", "1")
+
+    egresses = []
+    responses = [
+        _FakeResponse(status_code=403, json_body={"error": 12, "message": "Banned IP"}),
+        _FakeResponse(status_code=200, json_body={"data": "job_retry"}),
+        _FakeResponse(status_code=200, json_body={"data": [False, True]}),
+    ]
+
+    def _fake_client(egress, timeout):
+        egresses.append(egress)
+        return _FakeHttpxClient(responses.pop(0))
+
+    with mock.patch("tools.nopecha_client._client", side_effect=_fake_client):
+        out = json.loads(nopecha_recognition(
+            challenge_type="recaptcha",
+            task="Select all squares with vehicles.",
+            grid="4x4",
+            image_data="data:image/png;base64,AAAA",
+            task_id="test-retry",
+        ))
+
+    assert out["status"] == "success"
+    assert out["request_id"] == "job_retry"
+    assert len(egresses) == 3  # failed attempt, retry submit, retry poll
+    assert egresses[0].session_id.startswith("nopecha-")
+    assert all(e.session_id.startswith("res-") for e in egresses[1:])
+    assert egresses[1] == egresses[2]

@@ -151,6 +151,9 @@ For native Anthropic auth, Hermes prefers Claude Code's own credential files whe
 | `NOPECHA_API_KEY` | NopeCHA CAPTCHA Recognition API key ([nopecha.com](https://nopecha.com/)). Optional -- leave unset/empty for free mode (IP-bucketed, ~100 credits/23h, unreliable in practice for scripted use -- see `tools/nopecha_client.py`). |
 | `NOPECHA_ENABLED` | Set to `false` to disable the `nopecha_recognition` tool entirely (default: enabled, in free mode if no key is set) |
 | `NOPECHA_MODE` | Informational only (`free`/`paid`) -- actual mode is determined by whether `NOPECHA_API_KEY` is set, not by this variable |
+| `NOPECHA_EGRESS` | Egress for NopeCHA API calls: `auto` (default -- router when free mode + a proxy is configured), `router` (residential-tunnel SOCKS5), or `direct` (Hermes container IP). Router mode gives each job one session-pinned Direct/Residential leg. |
+| `NOPECHA_EGRESS_PROXY` | Proxy URL for router mode. Defaults to `AGENT_BROWSER_PROXY`; use `socks5h://hermes-utilities:1000` for the in-stack tunnel. |
+| `NOPECHA_EGRESS_RETRIES` | Extra attempts after `ip_ineligible`/`rate_limited` (default `1`). A retry uses a fresh `res-` session to force the residential leg; `0` disables it. |
 | `FAL_KEY` | Image generation ([fal.ai](https://fal.ai/)) |
 | `GROQ_API_KEY` | Groq Whisper STT API key ([groq.com](https://groq.com/)) |
 | `ELEVENLABS_API_KEY` | ElevenLabs premium TTS voices ([elevenlabs.io](https://elevenlabs.io/)) |
