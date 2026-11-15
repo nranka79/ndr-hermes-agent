@@ -876,9 +876,9 @@ class RunStore:
                 "UPDATE runs SET status = 'interrupted', "
                 "error = CASE WHEN error IS NULL OR error = '' "
                 "THEN 'gateway restarted' ELSE error END, "
-                "updated_at = ?, completed_at = COALESCE(completed_at, ?) "
+                "completed_at = COALESCE(completed_at, ?) "
                 "WHERE status IN ('queued', 'running') AND updated_at <= ?",
-                (now, now, cutoff),
+                (now, cutoff),
             )
             self._conn.commit()
             return int(cur.rowcount or 0)
@@ -2579,6 +2579,12 @@ class APIServerAdapter(BasePlatformAdapter):
                             status="cancelled",
                             error="turn cancelled",
                         )
+                        try:
+                            self._set_run_status(
+                                completion_id, "cancelled", last_event="run.cancelled"
+                            )
+                        except Exception:
+                            pass
                         return
                     try:
                         result, agent_usage = fut.result()
@@ -2596,6 +2602,16 @@ class APIServerAdapter(BasePlatformAdapter):
                         error=str(result.get("error") or ""),
                         usage=agent_usage,
                     )
+                    # Mirror the terminal status into the in-memory status map
+                    # too: /v1/runs lists it merged with RunStore rows, and a
+                    # leftover "running" entry would keep the deploy guard
+                    # waiting on a turn that already finished.
+                    try:
+                        self._set_run_status(
+                            completion_id, status, last_event="run.finished"
+                        )
+                    except Exception:
+                        pass
                 except Exception as _persist_exc:
                     logger.debug(
                         "[api_server] done-callback persist failed for %s: %s",
@@ -4749,6 +4765,10 @@ class APIServerAdapter(BasePlatformAdapter):
                     status=status,
                     usage=usage,
                 )
+            except Exception:
+                pass
+            try:
+                self._set_run_status(run_id, status, last_event="run.finished")
             except Exception:
                 pass
             logger.info(
