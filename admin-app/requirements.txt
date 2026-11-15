@@ -6,3 +6,4 @@ httpx>=0.28,<1
 pydantic>=2.0,<3
 python-multipart>=0.0.18,<1
 itsdangerous>=2.2,<3
+asyncssh>=2.24,<3

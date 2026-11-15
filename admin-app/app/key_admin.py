@@ -13,12 +13,15 @@ Manages the LLM gateway's rotation buckets plus the flat provider keys:
     * multi_token        -> LLM_MULTIMODAL_TOKEN_POOL         (OpenRouter / Token Harbor — vision/audio/video)
     * image_free         -> LLM_IMAGE_FREE_POOL         (NVIDIA flux — image generation)
     * image_subscription -> LLM_IMAGE_SUBSCRIPTION_POOL (Token Harbor — image generation)
-    * image_token        -> LLM_IMAGE_TOKEN_POOL        (Token Harbor / OpenRouter / Gemini — image generation)
-  Each bucket entry is provider + model + key. (Pollinations was the one
-  keyless exception here — removed 2026-09-27 when it started requiring a
-  paid "pollen" balance with no way to fund it through this page; the
-  "keyless" provider flag stays generic infrastructure for if that ever
-  changes, or another keyless provider shows up.)
+    * image_token        -> LLM_IMAGE_TOKEN_POOL        (Pollinations / Token Harbor / OpenRouter / Gemini — image generation)
+    * stt_* / tts_* / embed_* -> LLM_{STT,TTS,EMBED}_{FREE,SUBSCRIPTION,TOKEN}_POOL
+      (speech-to-text, text-to-speech, embeddings -- same three tiers)
+  The gateway also serves the flat Groq / AssemblyAI keys below as STT
+  entries and the OpenRouter key as the embeddings entry, so those need no
+  bucket entry of their own.
+  Each bucket entry is provider + model + key. (The "keyless" provider flag is
+  generic infrastructure for a provider that needs no key; none is configured
+  -- Pollinations was, until 2026-09-27, and now takes a keyed sk_ entry.)
 
   Flat provider keys (consumed by other services):
     Tavily / Apify / Firecrawl (web search+scrape, multi-key), AssemblyAI
@@ -62,13 +65,24 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from starlette.background import BackgroundTask
 
 from .jinja_env import env
-from .provider_models import image_options_for, options_for
+from .provider_models import image_options_for, kind_options_for, options_for
 
 router = APIRouter()
 logger = logging.getLogger("admin-app.keys")
 
 ENV_PATH = "/opt/hermes/.env.rotator-keys"
 MAIN_ENV_PATH = "/opt/hermes/.env"
+# Hermes's env_file. Hermes must know no model provider -- it reaches every
+# model through the AI Model Gateway -- so instead of the whole rotator file
+# (pools + provider keys) it gets this allow-listed projection of it,
+# regenerated on every write below. Entries ending in "*" are prefixes.
+HERMES_ENV_PATH = "/opt/hermes/.env.hermes"
+HERMES_ENV_ALLOW = [
+    "LLM_GATEWAY_API_KEY",                                   # the gateway itself
+    "TAVILY_API_KEY*", "FIRECRAWL_API_KEY*", "APIFY_API_KEY*",  # web tools, not models
+    "XAI_OAUTH_TOKEN",   # x_search (SuperGrok) -- until X search moves behind the gateway
+    "TELEGRAM_HOME_CHANNEL",
+]
 COMPOSE_FILE = "/opt/hermes/docker-compose.prod.yml"
 COMPOSE_DIR = "/opt/hermes"
 HELPER_IMAGE = "python:3.12-slim"
@@ -112,7 +126,7 @@ BUCKETS: dict[str, dict] = {
         "env_var": "LLM_FREE_POOL",
         "default_provider": "gemini",
         "restart": ["llm-gateway"],
-        "help": "Cost-free credentials (Token Harbor free models, Google AI "
+        "help": "Cost-free credentials (Token Harbor / OpenCode Go free models, Google AI "
                 "Studio/Gemini, Cloudflare Workers AI, DeepSeek free credits, "
                 "Azure AI Foundry credits). Each entry fixes provider + model "
                 "+ key; calls use the free pool first, round-robin, and weekly "
@@ -131,7 +145,7 @@ BUCKETS: dict[str, dict] = {
         "label": "API / pay-per-call",
         "env_var": "LLM_OPENROUTER_POOL",
         "default_provider": "openrouter",
-        "restart": ["llm-gateway", "hermes-apps"],
+        "restart": ["llm-gateway", "hermes-apps", "ai-gateway-fallback"],
         "help": "OpenRouter, Token Harbor, and other API-based providers. "
                 "Each entry is provider + default model + key. A request that "
                 "names a provider/model routes to the right provider's keys; a "
@@ -201,6 +215,76 @@ BUCKETS: dict[str, dict] = {
         "help": "Pay-per-call image providers (Token Harbor, OpenRouter, "
                 "Gemini). Final fallback for POST /v1/images/generations.",
     },
+    # -- speech-to-text / text-to-speech / embeddings (2026-09-29) ----------
+    "stt_free": {
+        "label": "Speech-to-text — Free tier",
+        "env_var": "LLM_STT_FREE_POOL",
+        "default_provider": "groq",
+        "restart": ["llm-gateway"],
+        "help": "Free transcription (Groq Whisper, Pollinations Whisper). The Groq "
+                "keys under Flat keys below are always included here automatically.",
+    },
+    "stt_subscription": {
+        "label": "Speech-to-text — Subscription",
+        "env_var": "LLM_STT_SUBSCRIPTION_POOL",
+        "default_provider": "assemblyai",
+        "restart": ["llm-gateway"],
+        "help": "Flat-rate transcription providers. Tried after the free tier.",
+    },
+    "stt_token": {
+        "label": "Speech-to-text — API / pay-per-use",
+        "env_var": "LLM_STT_TOKEN_POOL",
+        "default_provider": "assemblyai",
+        "restart": ["llm-gateway"],
+        "help": "Pay-per-use transcription (AssemblyAI, Pollinations, OpenAI). The "
+                "AssemblyAI keys under Flat keys below are always included here.",
+    },
+    "tts_free": {
+        "label": "Text-to-speech — Free tier",
+        "env_var": "LLM_TTS_FREE_POOL",
+        "default_provider": "edge",
+        "restart": ["llm-gateway"],
+        "help": "Free voices. Microsoft Edge neural voices need no key and are "
+                "always available; the entry's model is the default voice.",
+    },
+    "tts_subscription": {
+        "label": "Text-to-speech — Subscription",
+        "env_var": "LLM_TTS_SUBSCRIPTION_POOL",
+        "default_provider": "openai-compatible",
+        "restart": ["llm-gateway"],
+        "help": "Flat-rate voice providers. Tried after the free tier.",
+    },
+    "tts_token": {
+        "label": "Text-to-speech — API / pay-per-use",
+        "env_var": "LLM_TTS_TOKEN_POOL",
+        "default_provider": "pollinations",
+        "restart": ["llm-gateway"],
+        "help": "Pay-per-use voices (Pollinations ElevenLabs/Gemini voices, OpenAI).",
+    },
+    "embed_free": {
+        "label": "Embeddings — Free tier",
+        "env_var": "LLM_EMBED_FREE_POOL",
+        "default_provider": "pollinations",
+        "restart": ["llm-gateway"],
+        "help": "Free embeddings. Every embeddings entry must serve the SAME model "
+                "(text-embedding-3-small, 1536 dims) -- GBrain and Honcho vectors "
+                "only match the model that made them; other models are ignored.",
+    },
+    "embed_subscription": {
+        "label": "Embeddings — Subscription",
+        "env_var": "LLM_EMBED_SUBSCRIPTION_POOL",
+        "default_provider": "openai-compatible",
+        "restart": ["llm-gateway"],
+        "help": "Flat-rate embeddings. Same-model rule as the free tier.",
+    },
+    "embed_token": {
+        "label": "Embeddings — API / pay-per-use",
+        "env_var": "LLM_EMBED_TOKEN_POOL",
+        "default_provider": "openrouter",
+        "restart": ["llm-gateway"],
+        "help": "Pay-per-use embeddings. The flat OpenRouter key is always included "
+                "here (openai/text-embedding-3-small).",
+    },
 }
 
 FLAT_PROVIDERS: dict[str, dict] = {
@@ -229,20 +313,20 @@ FLAT_PROVIDERS: dict[str, dict] = {
         "restart": ["hermes"],
     },
     "assemblyai": {
-        "label": "AssemblyAI (voice transcription)",
+        "label": "AssemblyAI (speech-to-text — gateway pay-per-use + fallback)",
         "base": "ASSEMBLYAI_API_KEY",
         "aliases": [],
         "max_slots": 10,
         "multi": True,
-        "restart": ["hermes-apps"],
+        "restart": ["hermes-apps", "llm-gateway", "ai-gateway-fallback"],
     },
     "groq": {
-        "label": "Groq (voice transcription)",
+        "label": "Groq (speech-to-text — gateway free tier)",
         "base": "GROQ_API_KEY",
         "aliases": [],
         "max_slots": 10,
         "multi": True,
-        "restart": ["hermes-apps"],
+        "restart": ["hermes-apps", "llm-gateway", "ai-gateway-fallback"],
     },
     "supergrok": {
         "label": "SuperGrok",
@@ -321,9 +405,12 @@ PROVIDERS: dict[str, dict] = {
         "extra_fields": [("resource", "Resource name", "Your Azure resource name")],
     },
     # -- subscription tier --------------------------------------------------
+    # free: the Go endpoint also serves "-free" models (longcat-2.5-preview-
+    # free, beam-free) on a separate key. MIRROR_SPEC only mirrors the
+    # subscription bucket, so free-bucket keys stay out of OPENCODE_* (quota).
     "opencode": {
-        "label": "OpenCode Go (subscription)",
-        "tiers": ["subscription", "multi_subscription"],
+        "label": "OpenCode Go",
+        "tiers": ["free", "subscription", "multi_subscription"],
         "base": "https://opencode.ai/zen/go/v1",
         "mirror": "opencode",
     },
@@ -341,7 +428,15 @@ PROVIDERS: dict[str, dict] = {
         # llm-gateway/server.py _openrouter_image_body. Existence-verified via
         # GET /api/v1/models (output_modalities includes "image"); generation
         # untested (402 "requires more credits" on every attempt at build time).
-        "tiers": ["api", "multi_token", "image_token"],
+        # free / multi_free: OpenRouter also serves a rotating set of
+        # zero-cost models (id ends ":free", pricing.prompt == pricing.
+        # completion == "0") -- confirmed live via GET /api/v1/models on
+        # 2026-09-29 (16 such ids at the time). A key is still required (free
+        # = zero token cost, not keyless) but calls against these ids cost
+        # nothing. See provider_models.CATALOG["openrouter"] for the id list
+        # and its own staleness caveat -- OpenRouter rotates which models
+        # carry ":free" over time, same drift risk as any other catalog here.
+        "tiers": ["free", "multi_free", "api", "multi_token", "image_token", "embed_token"],
         "base": "https://openrouter.ai/api/v1",
     },
     # NVIDIA NIM. Offered in the free buckets (that is what an nvapi- key on the
@@ -371,7 +466,7 @@ PROVIDERS: dict[str, dict] = {
     },
     "openai": {
         "label": "OpenAI",
-        "tiers": ["api", "multi_token"],
+        "tiers": ["api", "multi_token", "stt_token", "tts_token", "embed_token"],
         "base": "https://api.openai.com/v1",
     },
     "opencode-zen": {
@@ -381,7 +476,7 @@ PROVIDERS: dict[str, dict] = {
     },
     "groq": {
         "label": "Groq",
-        "tiers": ["api"],
+        "tiers": ["api", "stt_free"],
         "base": "https://api.groq.com/openai/v1",
     },
     "together": {
@@ -401,8 +496,40 @@ PROVIDERS: dict[str, dict] = {
     },
     "openai-compatible": {
         "label": "Custom OpenAI-compatible endpoint",
-        "tiers": ["free", "subscription", "api", "multi_free", "multi_subscription", "multi_token"],
+        "tiers": ["free", "subscription", "api", "multi_free", "multi_subscription", "multi_token",
+                  "stt_free", "stt_subscription", "stt_token", "tts_free", "tts_subscription",
+                  "tts_token", "embed_free", "embed_subscription", "embed_token"],
         "base": None,
+    },
+    # Pollinations.ai (gen.pollinations.ai, "sk_" key from
+    # enter.pollinations.ai/keys). OpenAI-compatible for chat, vision and
+    # POST /v1/images/generations (the gateway reuses the tokenharbor image
+    # adapter). Calls spend "pollen": official models not flagged paid_only
+    # also run on the account's free daily grant, so it is offered in the free
+    # buckets (paid_only models hidden there) and the pay-per-call ones (all
+    # models). It has no subscription plan, so no *_subscription bucket.
+    # models_url: its own /models (outside /v1) is the listing that carries
+    # paid_only; see list_models for the per-bucket filters.
+    "pollinations": {
+        "label": "Pollinations.ai",
+        "tiers": ["free", "api", "multi_free", "multi_token", "image_free", "image_token",
+                  "stt_free", "stt_token", "tts_token", "embed_free", "embed_token"],
+        "base": "https://gen.pollinations.ai/v1",
+        "models_url": "https://gen.pollinations.ai/models",
+    },
+    # AssemblyAI -- speech-to-text only (async upload/transcript/poll in the
+    # gateway). Its flat keys (below) are served automatically.
+    "assemblyai": {
+        "label": "AssemblyAI",
+        "tiers": ["stt_subscription", "stt_token"],
+        "base": "https://api.assemblyai.com/v2",
+    },
+    # Microsoft Edge neural voices -- keyless TTS (edge-tts in the gateway).
+    "edge": {
+        "label": "Microsoft Edge voices (free, no key)",
+        "tiers": ["tts_free"],
+        "base": "https://speech.platform.bing.com",
+        "keyless": True,
     },
 }
 
@@ -416,6 +543,15 @@ BUCKET_DEFAULTS = {
     "image_free": "nvidia",
     "image_subscription": "tokenharbor",
     "image_token": "tokenharbor",
+    "stt_free": "groq",
+    "stt_subscription": "assemblyai",
+    "stt_token": "assemblyai",
+    "tts_free": "edge",
+    "tts_subscription": "openai-compatible",
+    "tts_token": "pollinations",
+    "embed_free": "pollinations",
+    "embed_subscription": "openai-compatible",
+    "embed_token": "openrouter",
 }
 BUCKET_PROVIDERS: dict[str, set[str]] = {
     bid: {pid for pid, p in PROVIDERS.items() if bid in p["tiers"]}
@@ -429,6 +565,9 @@ BUCKET_TIER: dict[str, str] = {
     "free": "free", "subscription": "subscription", "api": "api",
     "multi_free": "free", "multi_subscription": "subscription", "multi_token": "api",
     "image_free": "free", "image_subscription": "subscription", "image_token": "api",
+    "stt_free": "free", "stt_subscription": "subscription", "stt_token": "api",
+    "tts_free": "free", "tts_subscription": "subscription", "tts_token": "api",
+    "embed_free": "free", "embed_subscription": "subscription", "embed_token": "api",
 }
 
 # Page layout: three modality sections, each rendering its free/subscription/api
@@ -444,8 +583,17 @@ BUCKET_GROUPS: list[dict] = [
      "subtitle": "Vision / audio / video — same endpoint, auto-detected from message content",
      "buckets": ["multi_free", "multi_subscription", "multi_token"]},
     {"id": "image", "icon": "🎨", "title": "Image generation",
-     "subtitle": "POST /v1/images/generations — NVIDIA flux, Token Harbor, OpenRouter, Gemini",
+     "subtitle": "POST /v1/images/generations — NVIDIA flux, Pollinations, Token Harbor, OpenRouter, Gemini",
      "buckets": ["image_free", "image_subscription", "image_token"]},
+    {"id": "stt", "icon": "🎙️", "title": "Speech-to-text",
+     "subtitle": "POST /v1/audio/transcriptions — Groq / Pollinations Whisper, AssemblyAI; vocabulary hints + segments",
+     "buckets": ["stt_free", "stt_subscription", "stt_token"]},
+    {"id": "tts", "icon": "🔊", "title": "Text-to-speech",
+     "subtitle": "POST /v1/audio/speech — Microsoft Edge voices (free), Pollinations, OpenAI",
+     "buckets": ["tts_free", "tts_subscription", "tts_token"]},
+    {"id": "embed", "icon": "🧭", "title": "Embeddings",
+     "subtitle": "POST /v1/embeddings — one model only (text-embedding-3-small, 1536 dims) so stored vectors stay comparable",
+     "buckets": ["embed_free", "embed_subscription", "embed_token"]},
 ]
 
 
@@ -471,8 +619,8 @@ def _provider_meta() -> dict:
     the free-text "Custom…" input for that bucket kind.
 
     ``keyless`` marks a provider that needs no API key at all (none currently
-    configured -- Pollinations held this until it started requiring a paid
-    balance on 2026-09-27; kept generic for whenever one exists again);
+    configured -- Pollinations held this until 2026-09-27 and now uses a
+    keyed entry; kept generic for whenever one exists again);
     the page un-requires the key field for it, and _validate_entry skips the
     "Key value required" check server-side.
     """
@@ -482,6 +630,9 @@ def _provider_meta() -> dict:
             "extra_fields": [f[0] for f in p.get("extra_fields", [])],
             "models": options_for(pid, vision_only=False),
             "imageModels": image_options_for(pid),
+            "sttModels": kind_options_for("stt", pid),
+            "ttsModels": kind_options_for("tts", pid),
+            "embedModels": kind_options_for("embed", pid),
             "keyless": bool(p.get("keyless")),
         }
         for pid, p in PROVIDERS.items()
@@ -662,18 +813,52 @@ def masked_entry(e):
 
 def persist(pool_changes, flat_updates, flat_removes):
     """Write pool vars to the rotator file, flat mirrors to both files."""
+    def _mirrored_keys():
+        return {bid: {e["key"] for e in pool_list(d.get(BUCKET_DEFS[bid]["env_var"], "")) if e.get("key")}
+                for bid in MIRROR if bid in BUCKET_DEFS}
+    before = _mirrored_keys()
     d.update(pool_changes)
     d.update(flat_updates)
     for v in flat_removes:
         d.pop(v, None)
         main.pop(v, None)
+    after = _mirrored_keys()
     mirrors = mirror_vars()
     d.update(mirrors)
     main.update(mirrors)
     main.update(flat_updates)
     drop = set(flat_removes)
+    # mirror_vars() only fills slots, so a slot whose entry just left its
+    # bucket (removed, or moved to an unmirrored bucket) would keep the old
+    # key and /quota would go on counting it. Drop it -- but only when it
+    # still holds one of those departed keys, never a hand-set flat value.
+    for bid, spec in MIRROR.items():
+        gone = before.get(bid, set()) - after.get(bid, set())
+        for mspec in spec.values():
+            for var in mspec["vars"]:
+                if var not in mirrors and (d.get(var) in gone or main.get(var) in gone):
+                    d.pop(var, None)
+                    main.pop(var, None)
+                    drop.add(var)
     write_env(ENV_FILE, d, drop_keys=drop)
     write_env(MAIN_FILE, main, drop_keys=drop)
+    write_hermes_env()
+
+def write_hermes_env():
+    """Rewrite Hermes's env_file as the allow-listed subset of the rotator file."""
+    path = cfg.get("hermes_env")
+    if not path:
+        return
+    allow = cfg.get("hermes_allow") or []
+    def ok(k):
+        return any(k.startswith(a[:-1]) if a.endswith("*") else k == a for a in allow)
+    body = "".join(f"{k}={v}\n" for k, v in d.items() if ok(k))
+    tmp = path + ".tmp"
+    with open(tmp, "w") as fh:
+        fh.write("# Generated by admin.ahfl.in/keys-admin from .env.rotator-keys -- do not edit.\n"
+                 "# Hermes's env_file: gateway key + non-model tool keys only.\n" + body)
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, path)
 
 BUCKET_GROUP_OF = cfg.get("bucket_group", {})  # bucket id -> "llm"/"multimodal"/"image"
 
@@ -745,6 +930,18 @@ elif op == "bucket":
         entries.append(entry)
     elif action == "remove":
         entries = [e for e in entries if e.get("id") != inp["row_id"]]
+    elif action == "move":
+        # Re-file an entry (key included) into another bucket in one write.
+        tdef = BUCKET_DEFS[inp["to"]]
+        moving = [e for e in entries if e.get("id") == inp["row_id"]]
+        if not moving:
+            print(json.dumps({"ok": False, "error": "entry not found"}))
+            raise SystemExit(0)
+        entries = [e for e in entries if e.get("id") != inp["row_id"]]
+        target = pool_list(d.get(tdef["env_var"], "")) + moving
+        persist({bdef["env_var"]: json.dumps(entries), tdef["env_var"]: json.dumps(target)}, {}, [])
+        print(json.dumps({"ok": True}))
+        raise SystemExit(0)
     elif action == "replace":
         for e in entries:
             if e.get("id") == inp["row_id"]:
@@ -770,6 +967,9 @@ elif op == "flat_del":
     var = inp["env_var"]
     persist({}, {}, [var])
     print(json.dumps({"ok": True}))
+elif op == "sync_hermes_env":
+    write_hermes_env()
+    print(json.dumps({"ok": True}))
 elif op == "list_models":
     # Ask the provider what it serves, using the key the operator just pasted.
     # Runs in here rather than in hermes-apps so the key stays inside the
@@ -780,8 +980,11 @@ elif op == "list_models":
     if not base:
         print(json.dumps({"ok": False, "error": "no base URL for this provider"}))
         raise SystemExit(0)
-    url = base + "/models"
-    req = urllib.request.Request(url, headers={"Accept": "application/json"})
+    url = inp.get("models_url") or (base + "/models")
+    # Explicit User-Agent: Cloudflare-fronted providers (opencode.ai) answer
+    # urllib's default "Python-urllib/3.x" with 403 error 1010.
+    req = urllib.request.Request(url, headers={"Accept": "application/json",
+                                               "User-Agent": "hermes-keys-admin/1.0"})
     # Send the key both ways: most providers want a bearer token, a few
     # (azure) want it in a named header. Sending both is harmless and avoids
     # threading the per-provider auth style in here.
@@ -805,9 +1008,71 @@ elif op == "list_models":
         raise SystemExit(0)
     rows = body.get("data") if isinstance(body, dict) else body
     ids = []
+
+    def _modalities(r, which):
+        # Pollinations puts {input,output}_modalities at the top level,
+        # OpenRouter under architecture; None means the provider does not say.
+        if not isinstance(r, dict):
+            return None
+        mods = r.get(which)
+        if mods is None and isinstance(r.get("architecture"), dict):
+            mods = r["architecture"].get(which)
+        return mods if isinstance(mods, list) else None
+
+    def _is_paid(r):
+        # Pollinations flags paid_only; OpenRouter's free models are the ones
+        # priced at 0 for both prompt and completion. None = unknown.
+        if not isinstance(r, dict):
+            return None
+        if "paid_only" in r:
+            return bool(r["paid_only"])
+        pr = r.get("pricing")
+        if isinstance(pr, dict) and "prompt" in pr and "completion" in pr:
+            try:
+                return float(pr["prompt"]) != 0 or float(pr["completion"]) != 0
+            except (TypeError, ValueError):
+                return None
+        return None
+
+    def _fits(r):
+        # Per-bucket filter. Rows without the relevant info are kept, so a
+        # provider whose listing says nothing about modality/price is
+        # unfiltered, exactly as before.
+        if isinstance(r, dict) and r.get("community"):
+            return False  # Pollinations' third-party community endpoints
+        out, inn = _modalities(r, "output_modalities"), _modalities(r, "input_modalities")
+        kind = inp.get("kind") or "chat"
+        if kind == "stt":
+            if (out is not None and out != ["text"]) or (inn is not None and "audio" not in inn):
+                return False
+            return not (inp.get("free_only") and _is_paid(r))
+        if kind == "tts":
+            if out is not None and out != ["audio"]:
+                return False
+            return not (inp.get("free_only") and _is_paid(r))
+        if kind == "embed":
+            if out is not None and out != ["embedding"]:
+                return False
+            return not (inp.get("free_only") and _is_paid(r))
+        if out is not None:
+            if kind == "image":
+                if "image" not in out:
+                    return False
+            elif out != ["text"]:
+                return False  # chat/vision buckets: text-in, text-out only
+        if kind in ("chat", "multi") and inn is not None and "text" not in inn:
+            return False  # e.g. audio-only transcription models
+        if kind == "multi" and inn is not None and "image" not in inn:
+            return False
+        if inp.get("free_only") and _is_paid(r):
+            return False
+        return True
+
     if isinstance(rows, list):
         for r in rows:
-            mid = r.get("id") if isinstance(r, dict) else r
+            if not _fits(r):
+                continue
+            mid = (r.get("id") or r.get("name")) if isinstance(r, dict) else r
             if isinstance(mid, str) and mid.strip():
                 ids.append(mid.strip())
     print(json.dumps({"ok": True, "models": sorted(set(ids))}))
@@ -828,6 +1093,8 @@ def _candidate_env_vars(pconfig: dict) -> list[str]:
 _config_b64 = base64.b64encode(json.dumps({
     "env": ENV_PATH,
     "main": MAIN_ENV_PATH,
+    "hermes_env": HERMES_ENV_PATH,
+    "hermes_allow": HERMES_ENV_ALLOW,
     "default_model": DEFAULT_MODEL,
     "buckets": {k: {"env_var": v["env_var"], "default_provider": v["default_provider"]} for k, v in BUCKETS.items()},
     # bucket id -> modality group id, so the helper's key_exists() can scope
@@ -1036,12 +1303,35 @@ def _validate_entry(provider: str, model: str, key: str, base: str,
 # Routes
 # ---------------------------------------------------------------------------
 
+def _bucket_kind(bid: str) -> str:
+    """Which model catalog a bucket's dropdown uses (and Fetch live filters by)."""
+    for prefix, kind in (("image_", "image"), ("multi_", "multi"), ("stt_", "stt"),
+                         ("tts_", "tts"), ("embed_", "embed")):
+        if bid.startswith(prefix):
+            return kind
+    return "chat"
+
+
+def _decorate_entries(entries: list[dict]) -> list[dict]:
+    """Attach a per-provider sequence number + pretty provider label to each
+    entry, so the page can show "OpenCode Go #2" the same way /quota does
+    instead of a bare lowercase provider id repeated with no way to tell
+    entries of the same provider apart."""
+    seq: dict[str, int] = {}
+    out = []
+    for e in entries:
+        p = str(e.get("provider") or "")
+        seq[p] = seq.get(p, 0) + 1
+        out.append({**e, "seq": seq[p], "provider_label": PROVIDERS.get(p, {}).get("label", p)})
+    return out
+
+
 def _bucket_view(bid: str, b: dict, state: dict) -> dict:
     """The per-bucket dict the template renders one "card" from."""
     return {
         "id": bid, "label": b["label"], "help": b["help"],
         "tier": BUCKET_TIER.get(bid, "api"),
-        "entries": state["buckets"].get(bid, []),
+        "entries": _decorate_entries(state["buckets"].get(bid, [])),
         "provider_options": _bucket_provider_options(bid),
         "extra_fields": _bucket_extra_fields(bid),
         # Multimodal buckets only offer vision-capable models; the page
@@ -1049,13 +1339,51 @@ def _bucket_view(bid: str, b: dict, state: dict) -> dict:
         "vision_only": bid.startswith("multi_"),
         # api / multi_token entries may omit the model (the provider's
         # default is then used), the other buckets require one.
-        "model_optional": bid in ("api", "multi_token"),
+        "model_optional": bid in ("api", "multi_token") or bid.startswith(("stt_", "tts_")),
         # image_* buckets pull from PMETA[provider].imageModels instead of
         # .models -- a provider's image-model ids are a different space
         # entirely from its chat/vision ids (see _provider_meta).
-        "kind": "image" if bid.startswith("image_") else "chat",
+        "kind": _bucket_kind(bid),
         "default_provider": BUCKET_DEFAULTS.get(bid, b["default_provider"]),
+        # Sibling buckets of the same modality an entry can be re-filed into
+        # (e.g. a free-model key added under subscription by mistake); the
+        # template only offers those that list the entry's provider.
+        "move_targets": [
+            {"id": o, "label": BUCKETS[o]["label"], "providers": BUCKET_PROVIDERS[o]}
+            for g in BUCKET_GROUPS if bid in g["buckets"]
+            for o in g["buckets"] if o != bid and o in BUCKETS
+        ],
     }
+
+
+FALLBACK_HEALTH_URL = "http://ai-gateway-fallback:8330/health"
+_fallback_cache: dict = {"at": 0.0, "rows": None}
+
+
+def _fallback_rows() -> list[dict] | None:
+    """The fallback gateway's fixed providers, for the read-only card (30s cache)."""
+    import time
+    import urllib.request
+
+    if time.time() - _fallback_cache["at"] < 30:
+        return _fallback_cache["rows"]
+    rows = None
+    try:
+        with urllib.request.urlopen(FALLBACK_HEALTH_URL, timeout=1.5) as r:
+            h = json.loads(r.read())
+        rows = [
+            {"modality": "Chat / vision", "provider": "OpenRouter",
+             "model": f"{h['chat']['model']} · vision {h['chat']['vision']}", "ready": h["chat"]["ready"]},
+            {"modality": "Image generation", "provider": "OpenRouter", "model": h["image"]["model"], "ready": h["image"]["ready"]},
+            {"modality": "Speech-to-text", "provider": "AssemblyAI", "model": f"{h['stt']['keys']} key(s), tried in order",
+             "ready": h["stt"]["keys"] > 0},
+            {"modality": "Text-to-speech", "provider": "Microsoft Edge (no key)", "model": h["tts"]["voice"], "ready": True},
+            {"modality": "Embeddings", "provider": "OpenRouter", "model": h["embeddings"]["model"], "ready": h["embeddings"]["ready"]},
+        ]
+    except Exception as e:  # noqa: BLE001
+        logger.info("fallback health unavailable: %s", e)
+    _fallback_cache.update(at=time.time(), rows=rows)
+    return rows
 
 
 def _render(request: Request, state: dict, message: str | None = None, error: str | None = None, restart: list[str] | None = None) -> HTMLResponse:
@@ -1077,6 +1405,7 @@ def _render(request: Request, state: dict, message: str | None = None, error: st
             for g in BUCKET_GROUPS
         ],
         provider_meta=_provider_meta(),
+        fallback=_fallback_rows(),
         flat_providers=[
             {"id": pid, "label": p["label"], "multi": p["multi"],
              "slots": state["flat"].get(pid, [])}
@@ -1105,6 +1434,7 @@ async def keys_bucket_add(request: Request,
                           model: str = Form(""),
                           model_custom: str = Form(""),
                           key: str = Form(...),
+                          label: str = Form(""),
                           base: str = Form(""),
                           account_id: str = Form(""),
                           resource: str = Form(""),
@@ -1139,6 +1469,8 @@ async def keys_bucket_add(request: Request,
         }
         if model.strip():
             fields["model"] = model.strip()
+        if label.strip():
+            fields["label"] = label.strip()[:80]
         if account_id.strip():
             fields["account_id"] = account_id.strip()
         if resource.strip():
@@ -1199,21 +1531,56 @@ async def keys_models_fetch(request: Request,
         "base": resolved_base,
         "key": key.strip(),
         "auth_headers": [auth_header] if auth_header else [],
+        "models_url": PROVIDERS[pid].get("models_url"),
+        "kind": _bucket_kind(bucket),
+        "free_only": BUCKET_TIER.get(bucket) == "free",
     })
     if not ok:
         return JSONResponse(
             {"ok": False, "error": result.get("error") or "Could not list models."},
             status_code=502,
         )
-    if bucket.startswith("image_"):
-        known = [e["id"] for e in image_options_for(pid)]
+    kind = _bucket_kind(bucket)
+    if kind == "image":
+        catalog = image_options_for(pid)
+    elif kind in ("stt", "tts", "embed"):
+        catalog = kind_options_for(kind, pid)
     else:
-        known = [e["id"] for e in options_for(pid, vision_only=bucket.startswith("multi_"))]
+        catalog = options_for(pid, vision_only=kind == "multi")
+    free_only = BUCKET_TIER.get(bucket) == "free"
+    known = [e["id"] for e in catalog if not (free_only and e.get("paid_only"))]
     return JSONResponse({
         "ok": True,
         "models": result.get("models") or [],
         "known": known,
     })
+
+
+@router.post("/keys-admin/bucket/move")
+async def keys_bucket_move(request: Request,
+                           bucket: str = Form(...),
+                           row_id: str = Form(...),
+                           to: str = Form(...)):
+    message = error = None
+    state = await _read_state()
+    entry = next((e for e in state["buckets"].get(bucket, []) if e.get("id") == row_id), None)
+    if bucket not in BUCKETS or to not in BUCKETS or to == bucket:
+        error = "Unknown bucket."
+    elif not any(bucket in g["buckets"] and to in g["buckets"] for g in BUCKET_GROUPS):
+        error = "Entries can only move between tiers of the same modality."
+    elif entry is None:
+        error = "Entry not found."
+    elif entry.get("provider") not in BUCKET_PROVIDERS.get(to, set()):
+        error = f"{PROVIDERS.get(entry.get('provider'), {}).get('label', entry.get('provider'))} is not offered for {BUCKETS[to]['label']}."
+    else:
+        ok, result = await _run_op("bucket", {"bucket": bucket, "action": "move", "row_id": row_id, "to": to})
+        if ok:
+            message = f"Moved to {BUCKETS[to]['label']}. Containers will restart shortly."
+            state = await _read_state()
+        else:
+            error = result.get("error") or "Could not move the entry."
+    restart = None if error else sorted(set(BUCKETS[bucket]["restart"]) | set(BUCKETS[to]["restart"]))
+    return _render(request, state, message=message, error=error, restart=restart)
 
 
 @router.post("/keys-admin/bucket/remove")

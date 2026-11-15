@@ -58,6 +58,7 @@
   .entry:first-of-type { border-top:none; }
   .entry .prov { font-weight:600; }
   .entry .mod { color:var(--muted); font-family:monospace; font-size:11px; background:var(--bg); border:1px solid var(--line); border-radius:6px; padding:2px 6px; }
+  .entry .label-tag { color:var(--text); font-size:11px; background:rgba(91,141,239,.14); border:1px solid rgba(91,141,239,.35); border-radius:6px; padding:2px 8px; }
   .entry .key { color:var(--muted); font-family:monospace; font-size:12px; margin-left:auto; }
   .entry .row-idx { color:var(--muted); font-size:10px; }
   .row-actions { display:flex; gap:6px; align-items:center; }
@@ -99,7 +100,7 @@
 {% if message %}<div class="banner ok">{{ message }}</div>{% endif %}
 {% if error %}<div class="banner err">{{ error }}</div>{% endif %}
 
-<h2 class="section">🔁 LLM gateway — rotation buckets</h2>
+<h2 class="section">🔁 AI Model Gateway — rotation buckets</h2>
 {% for g in bucket_groups %}
 <section class="modality modality--{{ g.id }}">
   <div class="modality-head">
@@ -125,8 +126,9 @@
     {% if b.entries %}
       {% for e in b.entries %}
       <div class="entry">
-        <span class="row-idx">#{{ loop.index }}</span>
-        <span class="prov">{{ e.provider }}</span>
+        <span class="row-idx">#{{ e.seq }}</span>
+        <span class="prov">{{ e.provider_label }}</span>
+        {% if e.label %}<span class="label-tag">{{ e.label }}</span>{% endif %}
         {% if e.model %}<span class="mod">{{ e.model }}</span>{% else %}<span class="mod">default model</span>{% endif %}
         <span class="key">{{ e.masked if e.has_key else "no key" }}</span>
         <div class="row-actions">
@@ -140,10 +142,26 @@
               <p style="margin:6px 0 0"><button type="submit" class="primary">Replace</button></p>
             </form>
           </details>
+          {% set targets = [] %}
+          {% for t in b.move_targets if e.provider in t.providers %}{% set _ = targets.append(t) %}{% endfor %}
+          {% if targets %}
+          <details style="position:relative">
+            <summary>move</summary>
+            <form method="post" action="/keys-admin/bucket/move" class="add">
+              <input type="hidden" name="bucket" value="{{ b.id }}" />
+              <input type="hidden" name="row_id" value="{{ e.id }}" />
+              <label>Move this key to</label>
+              <select name="to">
+                {% for t in targets %}<option value="{{ t.id }}">{{ t.label }}</option>{% endfor %}
+              </select>
+              <p style="margin:6px 0 0"><button type="submit" class="primary">Move</button></p>
+            </form>
+          </details>
+          {% endif %}
           <form method="post" action="/keys-admin/bucket/remove" class="inline">
             <input type="hidden" name="bucket" value="{{ b.id }}" />
             <input type="hidden" name="row_id" value="{{ e.id }}" />
-            <button type="submit" class="danger" onclick="return confirm('Remove {{ e.provider }} / {{ e.model or 'default' }} and restart affected containers?')">Remove</button>
+            <button type="submit" class="danger" onclick="return confirm('Remove {{ e.provider_label }} / {{ e.model or 'default' }} and restart affected containers?')">Remove</button>
           </form>
         </div>
       </div>
@@ -170,6 +188,7 @@
                     data-vision="{{ 1 if b.vision_only else 0 }}"
                     data-optional="{{ 1 if b.model_optional else 0 }}"
                     data-kind="{{ b.kind }}"
+                    data-tier="{{ b.tier }}"
                     onchange="onModelChange(this)" autocomplete="off"></select>
             <button type="button" class="model-fetch" data-bucket="{{ b.id }}"
                     onclick="fetchLiveModels(this)"
@@ -185,6 +204,12 @@
                  data-default-placeholder="Paste {{ b.label }} key…"
                  placeholder="Paste {{ b.label }} key…" required autocomplete="off"
                  autocorrect="off" autocapitalize="none" spellcheck="false" />
+        </div>
+        <div class="wide">
+          <label>Label (optional)</label>
+          <input type="text" name="label" maxlength="80"
+                 placeholder="e.g. which account / workspace this key is from"
+                 autocomplete="off" />
         </div>
         {% for name, label, placeholder in b.extra_fields %}
         <div class="extra-fld" data-extras-group="{{ b.id }}" data-field="{{ name }}" hidden>
@@ -221,6 +246,26 @@
   </div>
 </section>
 {% endfor %}
+
+<h2 class="section">🛟 Fallback gateway — used only when the AI Model Gateway is down</h2>
+<div class="card" style="margin-bottom:22px">
+  {% if fallback %}
+  <div class="sub" style="margin-bottom:8px">ai-gateway-fallback:8330 — one fixed provider per modality. Clients retry here only when
+    the primary gateway is unreachable or answers 502/503/504. Its keys are the flat OpenRouter / AssemblyAI keys on this page.</div>
+  <table style="width:100%;font-size:13px;border-collapse:collapse">
+    {% for row in fallback %}
+    <tr style="border-top:1px solid var(--line)">
+      <td style="padding:6px 8px 6px 0;white-space:nowrap">{{ row.modality }}</td>
+      <td style="padding:6px 8px">{{ row.provider }}</td>
+      <td style="padding:6px 8px;color:var(--muted)">{{ row.model }}</td>
+      <td style="padding:6px 0;text-align:right">{% if row.ready %}<span style="color:var(--green)">ready</span>{% else %}<span style="color:var(--red)">no key</span>{% endif %}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}
+  <div class="sub" style="color:var(--red)">Fallback gateway not reachable from here (ai-gateway-fallback:8330).</div>
+  {% endif %}
+</div>
 
 <h2 class="section">🔑 Other provider keys</h2>
 <div class="grid">
@@ -287,9 +332,18 @@
        chat catalog has no relation to "black-forest-labs/flux.1-dev"), so
        there is no vision-style filtering to apply here -- every imageModels
        entry is already image-only. */
-    const catalog = kind === 'image'
-      ? (meta.imageModels || [])
-      : (meta.models || []).filter(m => !visionOnly || m.vision);
+    /* Free-tier buckets hide paid_only models (Pollinations flags the ones
+       that need purchased pollen; the rest run on its free daily grant). */
+    const freeOnly = sel.dataset.tier === 'free';
+    /* image / stt / tts / embed buckets each have their own catalog (a
+       provider's image, speech, voice and embedding ids are separate id
+       spaces from its chat ids); chat + multimodal share .models. */
+    const kindCatalog = {image: meta.imageModels, stt: meta.sttModels,
+                         tts: meta.ttsModels, embed: meta.embedModels}[kind];
+    const catalog = (kindCatalog !== undefined
+      ? (kindCatalog || [])
+      : (meta.models || []).filter(m => !visionOnly || m.vision))
+      .filter(m => !freeOnly || !m.paid_only);
     const known = new Set(catalog.map(m => m.id));
 
     sel.innerHTML = '';
@@ -303,7 +357,10 @@
     }
     if (catalog.length) {
       const g = document.createElement('optgroup');
-      g.label = kind === 'image' ? 'image models — see notes' : (visionOnly ? 'vision-capable — verified' : 'verified');
+      g.label = {image: 'image models — see notes', stt: 'speech-to-text models',
+                 tts: kind === 'tts' && provider === 'edge' ? 'voices' : 'voice models',
+                 embed: 'embedding models (one model family only)'}[kind]
+                || (visionOnly ? 'vision-capable — verified' : 'verified');
       catalog.forEach(m => {
         g.appendChild(new Option(m.note ? m.id + '  — ' + m.note : m.id, m.id));
       });

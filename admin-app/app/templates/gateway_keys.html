@@ -1,0 +1,104 @@
+{% extends "base.html" %}
+{% block title %}Gateway API Keys{% endblock %}
+{% block heading %}AI Model Gateway — API Keys{% endblock %}
+{% block content %}
+<div class="max-w-5xl mx-auto space-y-6">
+
+  <div class="bg-indigo-50 border border-indigo-200 rounded-xl px-4 py-3 text-sm text-indigo-800">
+    <p class="font-medium mb-1">For third-party apps calling our AI Model Gateway directly:</p>
+    <p>
+      Endpoint: <code class="font-mono bg-white px-1.5 py-0.5 rounded border border-indigo-200">https://llm.ahfl.in/v1</code>
+      (OpenAI-compatible — <code class="font-mono">POST /v1/chat/completions</code>,
+      <code class="font-mono">/v1/models</code>, <code class="font-mono">/v1/images/generations</code>, etc).
+      Send <code class="font-mono">Authorization: Bearer &lt;key&gt;</code> using any key issued below.
+    </p>
+  </div>
+
+  {% if message %}
+  <div class="bg-green-50 border border-green-200 rounded-xl px-4 py-3 text-sm text-green-700">{{ message }}</div>
+  {% endif %}
+  {% if error %}
+  <div class="bg-red-50 border border-red-200 rounded-xl px-4 py-3 text-sm text-red-700">{{ error }}</div>
+  {% endif %}
+
+  {% if new_key %}
+  <div class="bg-amber-50 border border-amber-300 rounded-xl px-4 py-4 text-sm text-amber-900">
+    <p class="font-semibold mb-1">Key created — copy it now, it will not be shown again:</p>
+    <code class="block font-mono bg-white border border-amber-200 rounded px-3 py-2 mt-1 break-all">{{ new_key }}</code>
+    <p class="mt-2 text-amber-700">The gateway is restarting to pick this up — give it ~10 seconds before the key starts working.</p>
+  </div>
+  {% endif %}
+
+  <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
+    <h2 class="text-sm font-semibold text-gray-900 mb-4">Issue a new key</h2>
+    <form method="post" action="/gateway-keys/add" class="grid grid-cols-1 md:grid-cols-5 gap-3 items-end">
+      <div class="md:col-span-1">
+        <label class="block text-xs font-medium text-gray-500 mb-1">Issued to</label>
+        <input name="issued_to" required maxlength="200" placeholder="e.g. Codex local app"
+               class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-indigo-500 focus:border-indigo-500">
+      </div>
+      <div class="md:col-span-1">
+        <label class="block text-xs font-medium text-gray-500 mb-1">Description</label>
+        <input name="description" required maxlength="200" placeholder="what it's for"
+               class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-indigo-500 focus:border-indigo-500">
+      </div>
+      <div class="md:col-span-1">
+        <label class="block text-xs font-medium text-gray-500 mb-1">Expiry</label>
+        <select name="expiry" id="expiry-select"
+                onchange="document.getElementById('custom-date').classList.toggle('hidden', this.value !== 'custom')"
+                class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-indigo-500 focus:border-indigo-500">
+          <option value="30d">30 days</option>
+          <option value="90d" selected>90 days</option>
+          <option value="365d">365 days</option>
+          <option value="custom">Custom date…</option>
+          <option value="never">Never expires</option>
+        </select>
+      </div>
+      <div class="md:col-span-1">
+        <label class="block text-xs font-medium text-gray-500 mb-1">Custom date</label>
+        <input type="date" name="custom_date" id="custom-date"
+               class="hidden w-full border border-gray-300 rounded-lg px-3 py-2 text-sm">
+      </div>
+      <div class="md:col-span-1">
+        <button type="submit" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium px-4 py-2.5 rounded-lg transition shadow-sm">
+          Issue key
+        </button>
+      </div>
+    </form>
+  </div>
+
+  <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+    <table class="w-full text-sm">
+      <thead class="bg-gray-50 text-gray-500 text-xs uppercase">
+        <tr>
+          <th class="text-left px-4 py-2">Issued to</th>
+          <th class="text-left px-4 py-2">Description</th>
+          <th class="text-left px-4 py-2">Key</th>
+          <th class="text-left px-4 py-2">Created</th>
+          <th class="text-left px-4 py-2">Expires</th>
+          <th class="text-right px-4 py-2"></th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-gray-100">
+        {% for r in rows %}
+        <tr>
+          <td class="px-4 py-2 font-medium text-gray-900">{{ r.issued_to }}</td>
+          <td class="px-4 py-2 text-gray-600">{{ r.description }}</td>
+          <td class="px-4 py-2 font-mono text-gray-500">sk-gw-…{{ r.last4 }}</td>
+          <td class="px-4 py-2 text-gray-500">{{ r.created_at | ist }}</td>
+          <td class="px-4 py-2 text-gray-500">{{ (r.expires_at | ist) if r.expires_at else "Never" }}</td>
+          <td class="px-4 py-2 text-right">
+            <form method="post" action="/gateway-keys/{{ r.id }}/revoke"
+                  onsubmit="return confirm('Revoke this key? The app using it loses access once the gateway restarts (a few seconds).');">
+              <button type="submit" class="text-red-600 hover:text-red-700 text-xs font-medium">Revoke</button>
+            </form>
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="6" class="px-4 py-6 text-center text-gray-400">No keys issued yet.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

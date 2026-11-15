@@ -1,0 +1,553 @@
+{% extends "base.html" %}
+{% block title %}Cron Jobs{% endblock %}
+{% block heading %}Cron Jobs{% endblock %}
+{% block content %}
+
+<div id="toasts" class="fixed top-4 right-4 z-[100] space-y-2 w-80"></div>
+
+<div id="summary-bar" class="grid grid-cols-2 lg:grid-cols-5 gap-4"></div>
+
+<div class="bg-white rounded-xl border border-gray-200 p-4 space-y-3">
+  <div class="flex flex-wrap items-center gap-3">
+    <input id="q" type="text" placeholder="Search name, prompt, script, id, owner..."
+           class="flex-1 min-w-[240px] rounded-lg border-gray-300 text-sm px-3 py-2">
+    <select id="sort" class="rounded-lg border-gray-300 text-sm px-2 py-2">
+      <option value="next_run">Sort: Next run</option>
+      <option value="last_run">Sort: Last run</option>
+      <option value="name">Sort: Name</option>
+      <option value="owner">Sort: Owner</option>
+      <option value="status">Sort: Status</option>
+    </select>
+    <button id="dir-toggle" class="rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-600 hover:bg-gray-50">↑ asc</button>
+    <button id="clear-filters" class="rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-600 hover:bg-gray-50">Clear filters</button>
+  </div>
+  <div id="chips" class="flex flex-wrap gap-2 text-xs"></div>
+</div>
+
+<div id="bulk-bar" class="hidden bg-indigo-50 border border-indigo-200 rounded-xl p-3 flex items-center gap-2 flex-wrap text-sm">
+  <span id="bulk-count" class="font-medium text-indigo-900"></span>
+  <button class="bulk-btn rounded-lg border border-indigo-300 bg-white px-3 py-1.5 hover:bg-indigo-100" data-action="pause">Pause</button>
+  <button class="bulk-btn rounded-lg border border-indigo-300 bg-white px-3 py-1.5 hover:bg-indigo-100" data-action="resume">Resume</button>
+  <button class="bulk-btn rounded-lg border border-indigo-300 bg-white px-3 py-1.5 hover:bg-indigo-100" data-action="add_label">Add label</button>
+  <button class="bulk-btn rounded-lg border border-indigo-300 bg-white px-3 py-1.5 hover:bg-indigo-100" data-action="remove_label">Remove label</button>
+  <button class="bulk-btn rounded-lg border border-indigo-300 bg-white px-3 py-1.5 hover:bg-indigo-100" data-action="set_owner">Set owner</button>
+  <button id="bulk-clear" class="ml-auto text-indigo-700 hover:underline">Clear selection</button>
+</div>
+
+<div class="bg-white rounded-xl border border-gray-200 overflow-hidden">
+  <div class="px-4 py-3 border-b border-gray-100 flex items-center justify-between">
+    <h2 class="text-sm font-semibold text-gray-900">Jobs</h2>
+    <span id="total-count" class="text-xs text-gray-500"></span>
+  </div>
+  <div class="overflow-x-auto">
+    <table class="w-full text-sm">
+      <thead class="bg-gray-50 text-left text-xs font-semibold uppercase tracking-wide text-gray-500 sticky top-0">
+        <tr>
+          <th class="px-3 py-2"><input type="checkbox" id="select-all"></th>
+          <th class="px-3 py-2">Name</th>
+          <th class="px-3 py-2">Labels</th>
+          <th class="px-3 py-2">Owner</th>
+          <th class="px-3 py-2">Type</th>
+          <th class="px-3 py-2">Schedule</th>
+          <th class="px-3 py-2">Next run</th>
+          <th class="px-3 py-2">Last run</th>
+          <th class="px-3 py-2">Status</th>
+          <th class="px-3 py-2">Runs</th>
+          <th class="px-3 py-2">Delivery</th>
+          <th class="px-3 py-2">Actions</th>
+        </tr>
+      </thead>
+      <tbody id="rows" class="divide-y divide-gray-100"></tbody>
+    </table>
+    <div id="sentinel" class="py-6 text-center text-xs text-gray-400">Loading…</div>
+  </div>
+</div>
+
+<!-- Drawer -->
+<div id="drawer-overlay" class="fixed inset-0 bg-black/30 hidden z-40" onclick="closeDrawer()"></div>
+<aside id="drawer" class="fixed top-0 right-0 h-full w-full md:w-[560px] bg-white shadow-2xl z-50 translate-x-full transition-transform overflow-y-auto">
+  <div class="p-4 border-b border-gray-100 flex items-center justify-between sticky top-0 bg-white z-10">
+    <h3 class="font-semibold text-gray-900">Job detail</h3>
+    <button onclick="closeDrawer()" class="text-gray-400 hover:text-gray-700">✕ (Esc)</button>
+  </div>
+  <div class="px-4 pt-3 border-b border-gray-100 flex gap-4 text-sm sticky top-[57px] bg-white z-10" id="drawer-tabs">
+    <button class="tab-btn pb-2 border-b-2 border-indigo-600 text-indigo-600 font-medium" data-tab="overview">Overview</button>
+    <button class="tab-btn pb-2 border-b-2 border-transparent text-gray-500" data-tab="instruction">Instruction</button>
+    <button class="tab-btn pb-2 border-b-2 border-transparent text-gray-500" data-tab="schedule">Schedule</button>
+    <button class="tab-btn pb-2 border-b-2 border-transparent text-gray-500" data-tab="delivery">Delivery</button>
+    <button class="tab-btn pb-2 border-b-2 border-transparent text-gray-500" data-tab="runs">Runs</button>
+    <button class="tab-btn pb-2 border-b-2 border-transparent text-gray-500" data-tab="history">History</button>
+  </div>
+  <div id="drawer-body" class="p-4 space-y-4 text-sm"></div>
+</aside>
+
+<script>
+const STATUS_COLORS = {
+  active: 'bg-green-100 text-green-800', paused: 'bg-gray-100 text-gray-700',
+  failing: 'bg-red-100 text-red-800', completed: 'bg-blue-100 text-blue-800',
+  never_run: 'bg-amber-100 text-amber-800',
+};
+const DELIVERY_COLORS = {
+  telegram: 'text-green-700', email: 'text-indigo-700', local: 'text-gray-500',
+  unresolved: 'text-red-700 font-semibold',
+};
+
+let state = { q: '', status: '', owner: '', deliver: '', kind: '', label: '', sort: 'next_run', dir: 'asc', cursor: 0 };
+let loading = false, done = false;
+let selected = new Set();
+let currentJob = null;   // full detail payload of the open drawer job
+let currentTab = 'overview';
+let rowsCache = {};       // id -> row data, for bulk label ops + optimistic UI
+
+function qs(params) {
+  return Object.entries(params).filter(([,v]) => v !== '' && v !== null && v !== undefined)
+    .map(([k,v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`).join('&');
+}
+function escapeHtml(s) {
+  return (s ?? '').toString().replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+function toast(msg, kind) {
+  kind = kind || 'ok';
+  const el = document.createElement('div');
+  el.className = `rounded-lg shadow-lg px-4 py-3 text-sm text-white ${kind === 'ok' ? 'bg-gray-900' : 'bg-red-600'}`;
+  el.textContent = msg;
+  document.getElementById('toasts').appendChild(el);
+  setTimeout(() => el.remove(), 4000);
+}
+async function api(method, path, body) {
+  const resp = await fetch(path, {
+    method, headers: body ? {'Content-Type': 'application/json'} : {},
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  let data = {};
+  try { data = await resp.json(); } catch (e) {}
+  return { ok: resp.ok, status: resp.status, data };
+}
+
+function rowHtml(j) {
+  rowsCache[j.id] = j;
+  const statusCls = STATUS_COLORS[j.status] || 'bg-gray-100 text-gray-700';
+  const delivCls = DELIVERY_COLORS[j.delivery_preview.kind] || '';
+  const name = j.unnamed ? `<span class="text-gray-400 italic">(unnamed)</span> ${escapeHtml(j.display_name)}` : escapeHtml(j.display_name);
+  const sched = j.schedule_kind === 'cron' ? escapeHtml(j.schedule?.expr || j.schedule_display || '')
+    : escapeHtml(j.schedule_display || j.schedule_kind || '');
+  const runs = j.runs_limit ? `${j.runs_completed}/${j.runs_limit}` : `${j.runs_completed}`;
+  const labels = (j.labels || []).map(l => `<span class="px-1.5 py-0.5 bg-gray-100 rounded text-xs text-gray-600">${escapeHtml(l)}</span>`).join(' ');
+  const checked = selected.has(j.id) ? 'checked' : '';
+  return `<tr class="hover:bg-gray-50" data-id="${j.id}">
+    <td class="px-3 py-2" onclick="event.stopPropagation()"><input type="checkbox" class="row-check" data-id="${j.id}" ${checked}></td>
+    <td class="px-3 py-2 font-medium text-gray-900 cursor-pointer" onclick="openDrawer('${j.id}')">${name}<div class="text-xs text-gray-400">${j.id}</div></td>
+    <td class="px-3 py-2">${labels}</td>
+    <td class="px-3 py-2">${escapeHtml(j.owner_name)}${j.ownerless ? ' <span class="text-red-600 text-xs">(no owner)</span>' : ''}</td>
+    <td class="px-3 py-2 text-gray-600">${j.type}</td>
+    <td class="px-3 py-2 text-gray-600">${sched}</td>
+    <td class="px-3 py-2" title="${escapeHtml(j.next_run_ist)}">${escapeHtml(j.next_run_relative || '—')}</td>
+    <td class="px-3 py-2" title="${escapeHtml(j.last_run_ist)}">${escapeHtml(j.last_run_relative || 'never')}</td>
+    <td class="px-3 py-2"><span class="px-2 py-0.5 rounded-full text-xs font-medium ${statusCls}" title="${escapeHtml(j.last_error || '')}">${j.status}</span></td>
+    <td class="px-3 py-2 text-gray-600">${runs}</td>
+    <td class="px-3 py-2 text-xs ${delivCls}">${escapeHtml(j.delivery_preview.label)}</td>
+    <td class="px-3 py-2 whitespace-nowrap" onclick="event.stopPropagation()">
+      <button class="text-xs px-2 py-1 rounded border border-gray-300 hover:bg-gray-50" onclick="togglePause('${j.id}', ${j.enabled})">${j.enabled ? 'Pause' : 'Resume'}</button>
+      <button class="text-xs px-2 py-1 rounded border border-gray-300 hover:bg-gray-50" onclick="runNow('${j.id}')">Run</button>
+      <button class="text-xs px-2 py-1 rounded border border-red-300 text-red-600 hover:bg-red-50" onclick="confirmDelete('${j.id}', '${escapeHtml(j.display_name).replace(/'/g,"\\'")}')">Del</button>
+    </td>
+  </tr>`;
+}
+
+async function loadPage(reset) {
+  if (loading || (done && !reset)) return;
+  loading = true;
+  if (reset) { state.cursor = 0; done = false; document.getElementById('rows').innerHTML = ''; }
+  const resp = await fetch(`/cron-admin/api/jobs?${qs(state)}&limit=50`);
+  const data = await resp.json();
+  if (data.error) {
+    document.getElementById('sentinel').textContent = 'Error: ' + data.error;
+    loading = false;
+    return;
+  }
+  document.getElementById('rows').insertAdjacentHTML('beforeend', data.items.map(rowHtml).join(''));
+  document.getElementById('total-count').textContent = `${data.total} job(s)`;
+  renderSummary(data.facets, data.total);
+  renderChips(data.facets);
+  if (data.next_cursor === null) {
+    done = true;
+    document.getElementById('sentinel').textContent = data.total === 0 ? 'No jobs match.' : 'End of list.';
+  } else {
+    state.cursor = data.next_cursor;
+    document.getElementById('sentinel').textContent = 'Loading…';
+  }
+  loading = false;
+}
+
+function renderSummary(facets, total) {
+  const s = facets.status || {};
+  const cards = [
+    ['Total', total, null], ['Active', s.active || 0, 'active'], ['Paused', s.paused || 0, 'paused'],
+    ['Failing', s.failing || 0, 'failing'], ['Never run', s.never_run || 0, 'never_run'],
+  ];
+  document.getElementById('summary-bar').innerHTML = cards.map(([label, count, filterVal]) => `
+    <div class="bg-white rounded-xl border border-gray-200 p-4 cursor-pointer hover:border-indigo-300" onclick="setFilter('status', ${filterVal ? `'${filterVal}'` : 'null'})">
+      <div class="text-xs font-semibold uppercase tracking-wide text-gray-500">${label}</div>
+      <div class="mt-1 text-2xl font-bold text-gray-900">${count}</div>
+    </div>`).join('');
+}
+
+function renderChips(facets) {
+  const chips = [];
+  for (const [field, counts] of Object.entries(facets)) {
+    const key = field === 'schedule_kind' ? 'kind' : field;
+    for (const [val, count] of Object.entries(counts)) {
+      const active = state[key] === val;
+      chips.push(`<button class="px-2 py-1 rounded-full border ${active ? 'bg-indigo-600 text-white border-indigo-600' : 'border-gray-300 text-gray-600 hover:bg-gray-50'}"
+        onclick="setFilter('${key}', '${val.replace(/'/g, "\\'")}')">${field}: ${escapeHtml(val)} (${count})</button>`);
+    }
+  }
+  document.getElementById('chips').innerHTML = chips.join('');
+}
+
+function setFilter(key, val) { state[key] = (state[key] === val) ? '' : (val || ''); syncUrl(); loadPage(true); }
+function syncUrl() { const url = new URL(window.location); url.search = qs(state); history.replaceState(null, '', url); }
+
+document.getElementById('q').addEventListener('input', debounce(() => { state.q = document.getElementById('q').value; syncUrl(); loadPage(true); }, 250));
+document.getElementById('sort').addEventListener('change', (e) => { state.sort = e.target.value; syncUrl(); loadPage(true); });
+document.getElementById('dir-toggle').addEventListener('click', () => {
+  state.dir = state.dir === 'asc' ? 'desc' : 'asc';
+  document.getElementById('dir-toggle').textContent = state.dir === 'asc' ? '↑ asc' : '↓ desc';
+  syncUrl(); loadPage(true);
+});
+document.getElementById('clear-filters').addEventListener('click', () => {
+  state = { q: '', status: '', owner: '', deliver: '', kind: '', label: '', sort: 'next_run', dir: 'asc', cursor: 0 };
+  document.getElementById('q').value = '';
+  syncUrl(); loadPage(true);
+});
+function debounce(fn, ms) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; }
+
+const io = new IntersectionObserver((entries) => { if (entries[0].isIntersecting) loadPage(false); });
+io.observe(document.getElementById('sentinel'));
+
+// --- selection / bulk ---
+document.getElementById('rows').addEventListener('change', (e) => {
+  if (!e.target.classList.contains('row-check')) return;
+  const id = e.target.dataset.id;
+  if (e.target.checked) selected.add(id); else selected.delete(id);
+  updateBulkBar();
+});
+document.getElementById('select-all').addEventListener('change', (e) => {
+  document.querySelectorAll('.row-check').forEach(cb => {
+    cb.checked = e.target.checked;
+    if (e.target.checked) selected.add(cb.dataset.id); else selected.delete(cb.dataset.id);
+  });
+  updateBulkBar();
+});
+document.getElementById('bulk-clear').addEventListener('click', () => {
+  selected.clear();
+  document.querySelectorAll('.row-check').forEach(cb => cb.checked = false);
+  document.getElementById('select-all').checked = false;
+  updateBulkBar();
+});
+function updateBulkBar() {
+  const bar = document.getElementById('bulk-bar');
+  if (selected.size === 0) { bar.classList.add('hidden'); return; }
+  bar.classList.remove('hidden');
+  document.getElementById('bulk-count').textContent = `${selected.size} selected`;
+}
+document.querySelectorAll('.bulk-btn').forEach(btn => btn.addEventListener('click', async () => {
+  const action = btn.dataset.action;
+  const ids = Array.from(selected);
+  let extra = {};
+  if (action === 'add_label' || action === 'remove_label') {
+    const label = prompt(`Label to ${action === 'add_label' ? 'add' : 'remove'} (lowercase, a-z0-9_-):`);
+    if (!label) return;
+    extra.label = label;
+  } else if (action === 'set_owner') {
+    const owner = prompt('New owner (vault user id, e.g. ndr-7449813913):');
+    if (!owner) return;
+    extra.owner = owner;
+  } else {
+    if (!confirm(`${action === 'pause' ? 'Pause' : 'Resume'} ${ids.length} job(s)?`)) return;
+  }
+  const { ok, data } = await api('POST', '/cron-admin/api/jobs/bulk', { ids, action, ...extra });
+  if (ok) {
+    toast(`${data.ok_count}/${data.total} job(s) updated.`);
+    selected.clear(); updateBulkBar();
+    loadPage(true);
+  } else {
+    toast(data.error || 'Bulk action failed', 'err');
+  }
+}));
+
+// --- row actions (optimistic pause toggle) ---
+async function togglePause(id, currentlyEnabled) {
+  const row = document.querySelector(`tr[data-id="${id}"]`);
+  const btn = row?.querySelector('button');
+  if (btn) btn.textContent = '…';
+  const path = currentlyEnabled ? `/cron-admin/api/jobs/${id}/pause` : `/cron-admin/api/jobs/${id}/resume`;
+  const { ok, data } = await api('POST', path, currentlyEnabled ? {} : undefined);
+  if (ok) { toast(`Job ${currentlyEnabled ? 'paused' : 'resumed'}.`); loadPage(true); }
+  else { toast(data.error || 'Action failed', 'err'); if (btn) btn.textContent = currentlyEnabled ? 'Pause' : 'Resume'; }
+}
+async function runNow(id) {
+  const { ok, data } = await api('POST', `/cron-admin/api/jobs/${id}/run`);
+  if (ok) toast('Job queued to run now.'); else toast(data.error || 'Run failed', 'err');
+  loadPage(true);
+}
+async function confirmDelete(id, name) {
+  const typed = prompt(`Type the job name to confirm delete:\n"${name}"`);
+  if (typed !== name) { if (typed !== null) toast('Name did not match -- not deleted.', 'err'); return; }
+  const { ok, data } = await api('DELETE', `/cron-admin/api/jobs/${id}`);
+  if (ok) { toast('Job deleted.'); closeDrawer(); loadPage(true); }
+  else toast(data.error || 'Delete failed', 'err');
+}
+
+// --- drawer ---
+document.getElementById('drawer-tabs').addEventListener('click', (e) => {
+  const btn = e.target.closest('.tab-btn');
+  if (!btn) return;
+  currentTab = btn.dataset.tab;
+  document.querySelectorAll('.tab-btn').forEach(b => {
+    b.classList.toggle('border-indigo-600', b === btn);
+    b.classList.toggle('text-indigo-600', b === btn);
+    b.classList.toggle('font-medium', b === btn);
+    b.classList.toggle('border-transparent', b !== btn);
+    b.classList.toggle('text-gray-500', b !== btn);
+  });
+  renderDrawerTab();
+});
+
+async function openDrawer(id) {
+  document.getElementById('drawer-overlay').classList.remove('hidden');
+  document.getElementById('drawer').classList.remove('translate-x-full');
+  document.getElementById('drawer-body').innerHTML = '<div class="text-gray-400">Loading…</div>';
+  const resp = await fetch(`/cron-admin/api/jobs/${id}`);
+  const data = await resp.json();
+  if (data.error) {
+    document.getElementById('drawer-body').innerHTML = `<div class="text-red-600">${escapeHtml(data.error)}</div>`;
+    return;
+  }
+  currentJob = data;
+  currentTab = 'overview';
+  document.querySelectorAll('.tab-btn').forEach(b => {
+    const on = b.dataset.tab === 'overview';
+    b.classList.toggle('border-indigo-600', on); b.classList.toggle('text-indigo-600', on); b.classList.toggle('font-medium', on);
+    b.classList.toggle('border-transparent', !on); b.classList.toggle('text-gray-500', !on);
+  });
+  renderDrawerTab();
+}
+
+function closeDrawer() {
+  document.getElementById('drawer-overlay').classList.add('hidden');
+  document.getElementById('drawer').classList.add('translate-x-full');
+  currentJob = null;
+}
+
+async function saveField(fields, successMsg) {
+  const j = currentJob.job;
+  const { ok, data } = await api('PATCH', `/cron-admin/api/jobs/${j.id}`, fields);
+  if (ok) {
+    toast(successMsg || 'Saved.');
+    await openDrawer(j.id);
+    loadPage(true);
+    return true;
+  } else {
+    toast(data.error || 'Save failed', 'err');
+    return false;
+  }
+}
+
+function renderDrawerTab() {
+  const j = currentJob.job;
+  const body = document.getElementById('drawer-body');
+  if (currentTab === 'overview') {
+    body.innerHTML = `
+      <div>
+        <label class="text-xs font-semibold uppercase tracking-wide text-gray-500">Name</label>
+        <input id="f-name" class="mt-1 w-full rounded-lg border-gray-300 text-sm px-2 py-1.5" value="${escapeHtml(j.name || '')}">
+        ${j.unnamed ? '<div class="text-xs text-amber-600 mt-1">Unnamed -- showing a fallback from the prompt/script/id.</div>' : ''}
+        <div class="text-xs text-gray-400 mt-1">${j.id}</div>
+      </div>
+      <div>
+        <label class="text-xs font-semibold uppercase tracking-wide text-gray-500">Description</label>
+        <textarea id="f-desc" rows="2" class="mt-1 w-full rounded-lg border-gray-300 text-sm px-2 py-1.5">${escapeHtml(j.description || '')}</textarea>
+      </div>
+      <div>
+        <label class="text-xs font-semibold uppercase tracking-wide text-gray-500">Labels (comma-separated)</label>
+        <input id="f-labels" class="mt-1 w-full rounded-lg border-gray-300 text-sm px-2 py-1.5" value="${escapeHtml((j.labels || []).join(', '))}">
+      </div>
+      <button class="rounded-lg bg-indigo-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-indigo-700"
+        onclick="saveField({name: document.getElementById('f-name').value, description: document.getElementById('f-desc').value, labels: document.getElementById('f-labels').value.split(',').map(s=>s.trim()).filter(Boolean)}, 'Overview saved.')">
+        Save
+      </button>
+      <div class="border-t border-gray-100 pt-3">
+        <label class="text-xs font-semibold uppercase tracking-wide text-gray-500">Owner</label>
+        <div class="mt-1">${escapeHtml(j.owner_name)} ${j.owner_email ? '· ' + escapeHtml(j.owner_email) : ''} ${j.owner_telegram ? '· tg:' + escapeHtml(j.owner_telegram) : ''}
+          ${j.ownerless ? '<span class="text-red-600 text-xs ml-1">(no owner -- delivery will be unresolved)</span>' : ''}
+        </div>
+        <div class="flex gap-2 mt-2">
+          <input id="f-owner" class="flex-1 rounded-lg border-gray-300 text-sm px-2 py-1.5" placeholder="vault user id, e.g. ndr-7449813913">
+          <button class="rounded-lg border border-gray-300 px-3 py-1.5 text-sm hover:bg-gray-50"
+            onclick="saveField({owner: document.getElementById('f-owner').value}, 'Owner changed.')">Change owner</button>
+        </div>
+      </div>
+      <div class="border-t border-gray-100 pt-3 text-xs text-gray-500 space-y-1">
+        <div>Created: ${escapeHtml(j.created_at || '—')}</div>
+        <div>Next run: ${escapeHtml(j.next_run_ist || '—')}</div>
+        <div>Last run: ${escapeHtml(j.last_run_ist || 'never')}</div>
+        ${j.last_error ? `<div class="text-red-600">Last error: ${escapeHtml(j.last_error)}</div>` : ''}
+      </div>
+    `;
+  } else if (currentTab === 'instruction') {
+    const isScript = !!j.script;
+    body.innerHTML = `
+      ${isScript ? `
+        <div>
+          <label class="text-xs font-semibold uppercase tracking-wide text-gray-500">Script</label>
+          <div class="mt-1 text-sm">${escapeHtml(j.script)} <span class="text-xs text-gray-400">(${escapeHtml(j.script_scope || 'unknown scope')})</span></div>
+          <div id="script-preview" class="mt-2 text-xs text-gray-400">Loading preview…</div>
+        </div>
+      ` : `
+        <div>
+          <label class="text-xs font-semibold uppercase tracking-wide text-gray-500">Prompt</label>
+          <textarea id="f-prompt" rows="12" class="mt-1 w-full rounded-lg border-gray-300 text-xs font-mono px-2 py-1.5">${escapeHtml(j.prompt || '')}</textarea>
+          <div id="prompt-count" class="text-xs text-gray-400 mt-1"></div>
+          <div id="prompt-error" class="text-xs text-red-600 mt-1"></div>
+          <button class="mt-2 rounded-lg bg-indigo-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-indigo-700" onclick="savePrompt()">Save</button>
+        </div>
+      `}
+    `;
+    if (isScript) {
+      fetch(`${location.origin}/cron-admin/api/jobs/${j.id}`).then(() => {});
+      loadScriptPreview(j.id);
+    } else {
+      const ta = document.getElementById('f-prompt');
+      const count = document.getElementById('prompt-count');
+      const update = () => count.textContent = `${ta.value.length} / 5000 characters`;
+      ta.addEventListener('input', update); update();
+    }
+  } else if (currentTab === 'schedule') {
+    body.innerHTML = `
+      <div>
+        <label class="text-xs font-semibold uppercase tracking-wide text-gray-500">Schedule</label>
+        <input id="f-schedule" class="mt-1 w-full rounded-lg border-gray-300 text-sm px-2 py-1.5"
+          value="${escapeHtml(j.schedule_display || '')}" placeholder="every 30m, 0 9 * * *, 2026-06-01T09:00:00">
+        <div class="text-xs text-gray-400 mt-1">Interval ('every 30m'), cron ('0 9 * * *'), or once (ISO timestamp).</div>
+      </div>
+      <div id="schedule-preview" class="text-xs text-gray-600"></div>
+      <button class="rounded-lg bg-indigo-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-indigo-700" onclick="saveSchedule()">Save schedule</button>
+    `;
+    const input = document.getElementById('f-schedule');
+    input.addEventListener('input', debounce(() => previewSchedule(input.value), 300));
+    previewSchedule(input.value);
+  } else if (currentTab === 'delivery') {
+    body.innerHTML = `
+      <div>
+        <label class="text-xs font-semibold uppercase tracking-wide text-gray-500">Resolved target</label>
+        <div class="mt-1 ${DELIVERY_COLORS[j.delivery_preview.kind] || ''}">${escapeHtml(j.delivery_preview.label)}</div>
+      </div>
+      ${j.last_delivery_error ? `<div class="text-xs text-red-600">Last delivery error: ${escapeHtml(j.last_delivery_error)}</div>` : ''}
+      <div>
+        <label class="text-xs font-semibold uppercase tracking-wide text-gray-500">Delivery mode</label>
+        <select id="f-deliver" class="mt-1 w-full rounded-lg border-gray-300 text-sm px-2 py-1.5">
+          <option value="owner" ${j.deliver !== 'local' ? 'selected' : ''}>Owner (Telegram → email)</option>
+          <option value="local" ${j.deliver === 'local' ? 'selected' : ''}>Local (no notification)</option>
+        </select>
+      </div>
+      <button class="rounded-lg bg-indigo-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-indigo-700"
+        onclick="saveField({deliver: document.getElementById('f-deliver').value}, 'Delivery updated.')">Save</button>
+    `;
+  } else if (currentTab === 'runs') {
+    const runs = currentJob.runs || [];
+    body.innerHTML = runs.length === 0 ? '<div class="text-gray-400">No run output recorded yet.</div>' : runs.map(r => `
+      <details class="border border-gray-200 rounded-lg p-2">
+        <summary class="cursor-pointer text-sm flex items-center gap-2">
+          <span class="font-mono text-xs text-gray-500">${escapeHtml(r.time)}</span>
+          ${r.status ? `<span class="text-xs ${r.status === 'ok' ? 'text-green-700' : 'text-red-700'}">${escapeHtml(r.status)}</span>` : ''}
+        </summary>
+        <pre class="mt-2 text-xs whitespace-pre-wrap text-gray-700">${escapeHtml(r.output_preview || '')}</pre>
+        ${r.error ? `<div class="text-xs text-red-600 mt-1">${escapeHtml(r.error)}</div>` : ''}
+        ${r.delivery_error ? `<div class="text-xs text-amber-600 mt-1">Delivery: ${escapeHtml(r.delivery_error)}</div>` : ''}
+      </details>
+    `).join('');
+  } else if (currentTab === 'history') {
+    const audit = currentJob.audit || [];
+    body.innerHTML = audit.length === 0 ? '<div class="text-gray-400">No admin changes recorded yet.</div>' : audit.map(a => `
+      <div class="border border-gray-200 rounded-lg p-2 text-xs">
+        <div class="font-medium text-gray-900">${escapeHtml(a.action)} <span class="text-gray-400">by ${escapeHtml(a.actor)}</span></div>
+        <div class="text-gray-400">${escapeHtml(a.ts)}</div>
+        ${Object.keys(a.before || {}).length ? `<div class="mt-1 text-gray-500">before: ${escapeHtml(JSON.stringify(a.before))}</div>` : ''}
+        ${Object.keys(a.after || {}).length ? `<div class="text-gray-500">after: ${escapeHtml(JSON.stringify(a.after))}</div>` : ''}
+      </div>
+    `).join('');
+  }
+}
+
+async function savePrompt() {
+  const ta = document.getElementById('f-prompt');
+  const errEl = document.getElementById('prompt-error');
+  errEl.textContent = '';
+  const { ok, data } = await api('PATCH', `/cron-admin/api/jobs/${currentJob.job.id}`, { prompt: ta.value });
+  if (ok) { toast('Prompt saved.'); await openDrawer(currentJob.job.id); }
+  else errEl.textContent = data.error || 'Save failed.';
+}
+
+async function previewSchedule(value) {
+  const el = document.getElementById('schedule-preview');
+  if (!value.trim()) { el.textContent = ''; return; }
+  const resp = await fetch(`/cron-admin/api/schedule-preview?schedule=${encodeURIComponent(value)}`);
+  const data = await resp.json();
+  if (!data.valid) { el.innerHTML = `<span class="text-red-600">${escapeHtml(data.error || 'Invalid schedule')}</span>`; return; }
+  el.innerHTML = `<div class="text-gray-500">Next 5 runs (UTC):</div>` + (data.next_runs || []).map(r => `<div>${escapeHtml(r)}</div>`).join('');
+}
+async function saveSchedule() {
+  const value = document.getElementById('f-schedule').value;
+  await saveField({ schedule: value }, 'Schedule saved.');
+}
+
+async function loadScriptPreview(jobId) {
+  const el = document.getElementById('script-preview');
+  if (!el) return;
+  const resp = await fetch(`/cron-admin/api/jobs/${jobId}/script-preview`);
+  const data = await resp.json();
+  if (!resp.ok) {
+    el.innerHTML = `<span class="text-red-600">${escapeHtml(data.error || 'Script not found')}</span>`;
+    return;
+  }
+  el.innerHTML = `
+    <div class="text-gray-500">Resolved: ${escapeHtml(data.script_resolved_path)} (${escapeHtml(data.script_scope)})</div>
+    <pre class="mt-2 bg-gray-50 border border-gray-200 rounded-lg p-3 text-xs whitespace-pre-wrap max-h-96 overflow-y-auto">${escapeHtml((data.lines || []).join(String.fromCharCode(10)))}</pre>
+    ${data.truncated ? '<div class="text-xs text-gray-400 mt-1">Truncated to first 200 lines.</div>' : ''}
+  `;
+}
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') { closeDrawer(); return; }
+  const active = document.activeElement;
+  const typing = active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA');
+  if (typing) return;
+  if (e.key === 'j' || e.key === 'k') {
+    const rows = Array.from(document.querySelectorAll('#rows tr'));
+    if (!rows.length) return;
+    let idx = rows.findIndex(r => r.classList.contains('ring-2'));
+    rows.forEach(r => r.classList.remove('ring-2', 'ring-indigo-400'));
+    idx = e.key === 'j' ? Math.min(idx + 1, rows.length - 1) : Math.max(idx - 1, 0);
+    rows[idx].classList.add('ring-2', 'ring-indigo-400');
+    rows[idx].scrollIntoView({ block: 'nearest' });
+    rows[idx].dataset.focused = '1';
+  }
+  if (e.key === 'Enter') {
+    const focused = document.querySelector('#rows tr.ring-2');
+    if (focused) openDrawer(focused.dataset.id);
+  }
+});
+
+// Initial load from URL query string, so a filtered view is bookmarkable.
+(function initFromUrl() {
+  const params = new URLSearchParams(window.location.search);
+  for (const k of Object.keys(state)) { if (params.has(k)) state[k] = params.get(k); }
+  document.getElementById('q').value = state.q;
+  document.getElementById('sort').value = state.sort;
+  document.getElementById('dir-toggle').textContent = state.dir === 'asc' ? '↑ asc' : '↓ desc';
+})();
+
+loadPage(true);
+</script>
+{% endblock %}
