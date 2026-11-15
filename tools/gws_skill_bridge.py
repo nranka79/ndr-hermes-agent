@@ -56,6 +56,8 @@ import contextlib
 import importlib.util
 import io
 import json
+import mimetypes
+import os
 import types
 from pathlib import Path
 from email.mime.text import MIMEText
@@ -657,6 +659,137 @@ def photos_create_album(args):
     }, indent=2))
 
 
+def photos_upload_file(args):
+    """Upload local file(s) into the CURRENT account's own Photos library —
+    the capability this bridge was missing. photos_upload/photos_copy_batch
+    only handle copying a Picker-selected item BETWEEN two accounts; this is
+    the plain "push this file I already have to Photos" case (WhatsApp
+    attachment, Drive download, etc).
+
+    Same vault-backed AuthorizedSession as every other photos_* op here:
+    credentials are loaded once by _photos_session() and never leave this
+    function as a bare string — no `.token` extraction, no manual
+    `Authorization: Bearer ...` header construction. If you need this
+    capability and this function doesn't cover it, extend it here (git) —
+    do NOT write a standalone script against `creds.token` elsewhere; that
+    reintroduces the exact leak surface this bridge exists to avoid.
+
+    args:
+      paths        list[str], required — local file paths to upload.
+      album        str, optional — album title. Reused if an app-created
+                   album with this exact title already exists, else created.
+      description  str, optional — human text applied to every item (NOT a
+                   filename/auto-metadata — Google rejects/reviews that).
+                   Max 1000 chars.
+      dry_run      bool, optional — fetch uploadTokens only, create nothing.
+                   uploadTokens expire unused in 1 day: a zero-footprint way
+                   to prove account access before writing anything real.
+    """
+    paths = args.paths or ([args.path] if getattr(args, "path", None) else None)
+    if not paths:
+        raise ValueError(
+            "photos_upload_file: 'paths' (list of local file paths) is required"
+        )
+    session = _photos_session()
+
+    def _upload_one(path: str) -> str:
+        mime = mimetypes.guess_type(path)[0] or "application/octet-stream"
+        with open(path, "rb") as f:
+            data = f.read()
+        resp = _photos_check(
+            session.post(
+                f"{_LIBRARY_API}/uploads",
+                data=data,
+                headers={
+                    "Content-Type": "application/octet-stream",
+                    "X-Goog-Upload-Content-Type": mime,
+                    "X-Goog-Upload-Protocol": "raw",
+                },
+            ),
+            "photos uploads (local file)",
+        )
+        return resp.text.strip()
+
+    if args.dry_run:
+        results = [
+            {"path": p, "uploadToken_chars": len(_upload_one(p))} for p in paths
+        ]
+        print(json.dumps({"dry_run": True, "created": 0, "uploaded": results}, indent=2))
+        return
+
+    album_id = ""
+    album_created = False
+    if args.album:
+        existing = _photos_check(
+            session.get(f"{_LIBRARY_API}/albums", params={"pageSize": 50}),
+            "albums.list",
+        ).json().get("albums", [])
+        hit = next((a for a in existing if a.get("title") == args.album), None)
+        if hit:
+            album_id = hit["id"]
+        else:
+            created_album = _photos_check(
+                session.post(
+                    f"{_LIBRARY_API}/albums",
+                    json={"album": {"title": args.album[:500]}},
+                ),
+                "albums.create",
+            ).json()
+            album_id = created_album["id"]
+            album_created = True
+
+    new_items = []
+    for p in paths:
+        entry = {
+            "simpleMediaItem": {
+                "fileName": os.path.basename(p)[:255],
+                "uploadToken": _upload_one(p),
+            }
+        }
+        if args.description:
+            entry["description"] = args.description[:1000]
+        new_items.append(entry)
+
+    body = {"newMediaItems": new_items}
+    if album_id:
+        body["albumId"] = album_id
+    created_resp = _photos_check(
+        session.post(f"{_LIBRARY_API}/mediaItems:batchCreate", json=body),
+        "mediaItems.batchCreate",
+    ).json()
+
+    results = []
+    ok = 0
+    for r in created_resp.get("newMediaItemResults", []):
+        status = r.get("status", {})
+        item = r.get("mediaItem", {})
+        if status.get("code", 0) == 0 and item.get("id"):
+            ok += 1
+            results.append({
+                "ok": True,
+                "id": item["id"],
+                "filename": item.get("filename"),
+                "productUrl": item.get("productUrl"),
+            })
+        else:
+            results.append({"ok": False, "status": status})
+
+    print(json.dumps({
+        "created": ok,
+        "attempted": len(new_items),
+        "album_id": album_id or None,
+        "album_title": args.album or None,
+        "album_created": album_created,
+        "album_productUrl": (
+            f"https://photos.google.com/album/{album_id}" if album_id else None
+        ),
+        "share_link_note": (
+            "no API — open in Photos app > Share > Create link" if album_id else None
+        ),
+        "results": results,
+    }, indent=2))
+
+
 def photos_trash(args):
     """Not implementable: the Google Photos APIs have NEVER exposed a trash or
     delete endpoint (before or after the 2025 restrictions). Registered so the
@@ -704,6 +837,7 @@ _OWN_OPERATIONS = {
     "photos_inventory": photos_inventory,
     "photos_quota": photos_quota,
     "photos_upload": photos_upload,
+    "photos_upload_file": photos_upload_file,
     "photos_copy_batch": photos_copy_batch,
     "photos_get": photos_get,
     "photos_create_album": photos_create_album,
@@ -723,7 +857,9 @@ def call(operation: str, service_name: str = "google-draas", **kwargs) -> str:
 
     Two-account photos ops (photos_upload, photos_copy_batch) take explicit
     source=/destination= service names in kwargs; service_name= remains the
-    default/source account for everything else.
+    default/source account for everything else. photos_upload_file is
+    single-account: push a local file straight into service_name's own
+    library (optionally into a named album) — no second account involved.
 
     Returns the JSON text the operation printed (skill functions print, they
     don't return a value — see module docstring, "Design").

@@ -307,7 +307,27 @@ result = gws_skill_bridge.call(operation, service_name="google-draas", **kwargs)
 | `contacts_list` | People/Contacts |
 | `sheets_get`, `sheets_update`, `sheets_append`, `sheets_create` | Sheets |
 | `docs_get`, `docs_create`, `docs_append` | Docs |
-| `photos_list`, `photos_get`, `photos_upload`, `photos_copy_batch`, `photos_create_album`, `photos_picker_create`, `photos_picker_status`, `photos_inventory`, `photos_quota`, `photos_trash` | Google Photos |
+| `photos_list`, `photos_get`, `photos_upload`, `photos_upload_file`, `photos_copy_batch`, `photos_create_album`, `photos_picker_create`, `photos_picker_status`, `photos_inventory`, `photos_quota`, `photos_trash` | Google Photos |
+
+### Google Photos — single-account upload
+
+`photos_upload_file(service_name=..., paths=[...], album="...", description="...")` —
+push local file(s) (already-downloaded WhatsApp media, Drive files, etc.) straight into
+that account's own Photos library, optionally into a named album (found-or-created).
+Pass `dry_run=True` to fetch uploadTokens only and create nothing — proves account
+access with zero footprint before a real write.
+
+`photos_upload` / `photos_copy_batch` are the DIFFERENT two-account case: copying an
+item a user already picked in a Picker session from one Google account to another
+(migration). They are not for "upload this local file" — use `photos_upload_file`.
+
+Full current-state writeup (what scopes survived the 2025-03-31 cull, what's still
+genuinely impossible, worked examples): `skill_view("google-photos-picker-pivot")`.
+**Do not write a standalone script against `creds.token` for Photos work** — every
+photos_* op here uses `_photos_session()` (vault-backed `AuthorizedSession`); a raw
+bearer-token extraction reintroduces the leak surface this bridge exists to avoid. If
+a Photos capability is missing, extend `photos_*` in `tools/gws_skill_bridge.py` (git),
+don't patch around it with a new script in skill space.
 
 ### Drive folder listing — the canonical recipe
 
