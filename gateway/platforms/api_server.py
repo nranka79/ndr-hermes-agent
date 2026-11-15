@@ -858,6 +858,34 @@ class RunStore:
         except Exception as e:
             logger.warning("RunStore update failed for %s: %s", run_id, e)
 
+    def sweep_stale_running(self, older_than_seconds: float = 0.0) -> int:
+        """Mark abandoned queued/running rows as interrupted.
+
+        Called once at gateway startup.  This DB is single-writer, so any row
+        still queued/running when a new process starts belonged to the dead
+        process: leaving it "running" strands the chat (Open WebUI shows an
+        empty bubble) and blocks the reconcile path from ever firing.
+        """
+        now = time.time()
+        try:
+            cutoff = now - max(0.0, float(older_than_seconds or 0.0))
+        except (TypeError, ValueError):
+            cutoff = now
+        try:
+            cur = self._conn.execute(
+                "UPDATE runs SET status = 'interrupted', "
+                "error = CASE WHEN error IS NULL OR error = '' "
+                "THEN 'gateway restarted' ELSE error END, "
+                "completed_at = COALESCE(completed_at, ?) "
+                "WHERE status IN ('queued', 'running') AND updated_at <= ?",
+                (now, cutoff),
+            )
+            self._conn.commit()
+            return int(cur.rowcount or 0)
+        except Exception as e:
+            logger.warning("RunStore stale sweep failed: %s", e)
+            return 0
+
     def get(self, run_id: str) -> Optional[Dict[str, Any]]:
         try:
             row = self._conn.execute(
@@ -1192,6 +1220,18 @@ class APIServerAdapter(BasePlatformAdapter):
         # restarts so polling clients (Open WebUI Pipe) can retrieve a
         # completed run long after the original HTTP connection died.
         self._run_store = RunStore()
+        # Startup sweep: rows left queued/running belonged to the previous
+        # (dead) gateway process.  Mark them interrupted immediately so a chat
+        # can never hang on an empty assistant bubble after a restart.
+        try:
+            _swept = self._run_store.sweep_stale_running(0.0)
+            if _swept:
+                logger.info(
+                    "RunStore: marked %d stale running run(s) interrupted at startup",
+                    _swept,
+                )
+        except Exception:
+            logger.debug("RunStore startup sweep skipped", exc_info=True)
         # Active run streams: run_id -> asyncio.Queue of SSE event dicts
         self._run_streams: Dict[str, "asyncio.Queue[Optional[Dict]]"] = {}
         # Creation timestamps for orphaned-run TTL sweep
@@ -2391,18 +2431,80 @@ class APIServerAdapter(BasePlatformAdapter):
             # The structured callbacks are strictly richer (they carry the
             # tool_call id), so they own the chat-completions SSE channel.
             agent_ref = [None]
-            agent_task = asyncio.ensure_future(self._run_agent(
-                user_message=user_message,
-                conversation_history=history,
-                ephemeral_system_prompt=system_prompt,
-                session_id=session_id,
-                stream_delta_callback=_on_delta,
-                tool_start_callback=_on_tool_start,
-                tool_complete_callback=_on_tool_complete,
-                agent_ref=agent_ref,
-                gateway_session_key=gateway_session_key,
-                user_id=_user_id,
-            ))
+            # Hard wall-clock cap for API-driven turns.  Open WebUI chat
+            # turns are the ones that historically ran away (90 iterations /
+            # 3 hours after a client disconnect).  0 disables the cap.
+            try:
+                _api_turn_cap = float(os.getenv("HERMES_API_MAX_TURN_SECONDS", "1800") or 0)
+            except (TypeError, ValueError):
+                _api_turn_cap = 1800.0
+
+            async def _run_agent_turn():
+                if _api_turn_cap <= 0:
+                    return await self._run_agent(
+                        user_message=user_message,
+                        conversation_history=history,
+                        ephemeral_system_prompt=system_prompt,
+                        session_id=session_id,
+                        stream_delta_callback=_on_delta,
+                        tool_start_callback=_on_tool_start,
+                        tool_complete_callback=_on_tool_complete,
+                        agent_ref=agent_ref,
+                        gateway_session_key=gateway_session_key,
+                        user_id=_user_id,
+                    )
+                try:
+                    return await asyncio.wait_for(
+                        self._run_agent(
+                            user_message=user_message,
+                            conversation_history=history,
+                            ephemeral_system_prompt=system_prompt,
+                            session_id=session_id,
+                            stream_delta_callback=_on_delta,
+                            tool_start_callback=_on_tool_start,
+                            tool_complete_callback=_on_tool_complete,
+                            agent_ref=agent_ref,
+                            gateway_session_key=gateway_session_key,
+                            user_id=_user_id,
+                        ),
+                        timeout=_api_turn_cap,
+                    )
+                except asyncio.TimeoutError:
+                    agent = agent_ref[0] if agent_ref else None
+                    if agent is not None:
+                        try:
+                            agent.interrupt(
+                                "API turn exceeded HERMES_API_MAX_TURN_SECONDS="
+                                f"{int(_api_turn_cap)}s"
+                            )
+                        except Exception:
+                            pass
+                    partial = ""
+                    if agent is not None:
+                        for _attr in (
+                            "_current_streamed_assistant_text",
+                            "_last_content_with_tools",
+                        ):
+                            try:
+                                _val = getattr(agent, _attr, "") or ""
+                            except Exception:
+                                _val = ""
+                            if isinstance(_val, str) and _val.strip():
+                                partial = _val
+                                break
+                    logger.warning(
+                        "[api_server] chat completion %s exceeded %.0fs; "
+                        "finalising partial turn (%d chars)",
+                        completion_id, _api_turn_cap, len(partial),
+                    )
+                    return ({
+                        "final_response": partial,
+                        "completed": False,
+                        "partial": bool(partial),
+                        "error": f"turn exceeded {int(_api_turn_cap)}s",
+                    }, None)
+
+            agent_task = asyncio.ensure_future(_run_agent_turn())
             # Ensure SSE drain loops can terminate without relying on polling
             # agent_task.done(), which can race with queue timeout checks.
             agent_task.add_done_callback(lambda _fut: _stream_q.put(None))
@@ -2414,10 +2516,23 @@ class APIServerAdapter(BasePlatformAdapter):
             # UPDATE was a silent no-op for every chat-completions turn and
             # nothing streamed through Open WebUI was reconcilable.
             #
-            # Open WebUI forwards these when ENABLE_FORWARD_USER_INFO_HEADERS
-            # is on (see routers/openai.py + utils/tools.py).
-            _client_chat_id = (request.headers.get("X-OpenWebUI-Chat-Id") or "").strip()
+            # Open WebUI forwards X-OpenWebUI-Chat-Id but no message id, so
+            # the assistant-message id is also accepted from body metadata
+            # (metadata.message_id / assistant_message_id); without it the
+            # chat-load reconcile cannot pair a finished run to its bubble.
+            _meta = body.get("metadata") if isinstance(body.get("metadata"), dict) else {}
+            _client_chat_id = (
+                (request.headers.get("X-OpenWebUI-Chat-Id") or "").strip()
+                or str(_meta.get("chat_id") or "").strip()
+            )
             _client_message_id = (request.headers.get("X-OpenWebUI-Message-Id") or "").strip()
+            if not _client_message_id:
+                _client_message_id = str(
+                    _meta.get("message_id")
+                    or _meta.get("assistant_message_id")
+                    or body.get("message_id")
+                    or ""
+                ).strip()
             try:
                 _seed_msg = user_message if isinstance(user_message, str) else str(user_message)
                 self._run_store.create(
@@ -2433,6 +2548,95 @@ class APIServerAdapter(BasePlatformAdapter):
                 logger.debug(
                     "RunStore seed failed for %s: %s", completion_id, _seed_exc
                 )
+
+            # Final-result persist that does NOT depend on the SSE writer.
+            # The writer is torn down whenever the client vanishes (or the
+            # browser tab is closed); before this, a turn that finished
+            # server-side after a disconnect was never written to the
+            # RunStore and the chat kept an empty assistant bubble.
+            def _persist_turn_result(fut) -> None:
+                try:
+                    _stream_text = ""
+                    _agent = agent_ref[0] if agent_ref else None
+                    if _agent is not None:
+                        for _attr in (
+                            "_current_streamed_assistant_text",
+                            "_last_content_with_tools",
+                        ):
+                            try:
+                                _val = getattr(_agent, _attr, "") or ""
+                            except Exception:
+                                _val = ""
+                            if isinstance(_val, str) and _val.strip():
+                                _stream_text = _val
+                                break
+                    if fut.cancelled():
+                        self._persist_api_completion(
+                            completion_id,
+                            session_id=session_id or "",
+                            user_message=str(user_message)[:2000] if user_message else "",
+                            final_response=_stream_text,
+                            status="cancelled",
+                            error="turn cancelled",
+                        )
+                        try:
+                            self._set_run_status(
+                                completion_id, "cancelled", last_event="run.cancelled"
+                            )
+                        except Exception:
+                            pass
+                        return
+                    try:
+                        result, agent_usage = fut.result()
+                    except BaseException:
+                        return
+                    if not isinstance(result, dict):
+                        return
+                    status = "completed" if result.get("completed", True) else "interrupted"
+                    self._persist_api_completion(
+                        completion_id,
+                        session_id=str(result.get("session_id") or session_id or ""),
+                        user_message=str(user_message)[:2000] if user_message else "",
+                        final_response=str(result.get("final_response") or _stream_text),
+                        status=status,
+                        error=str(result.get("error") or ""),
+                        usage=agent_usage,
+                    )
+                    # Mirror the terminal status into the in-memory status map
+                    # too: /v1/runs lists it merged with RunStore rows, and a
+                    # leftover "running" entry would keep the deploy guard
+                    # waiting on a turn that already finished.
+                    try:
+                        self._set_run_status(
+                            completion_id, status, last_event="run.finished"
+                        )
+                    except Exception:
+                        pass
+                except Exception as _persist_exc:
+                    logger.debug(
+                        "[api_server] done-callback persist failed for %s: %s",
+                        completion_id, _persist_exc,
+                    )
+
+            agent_task.add_done_callback(_persist_turn_result)
+
+            # Heartbeat: bump updated_at while the turn is live so a row is
+            # never mistaken for a stale orphan (deploy guard, reconcile).
+            async def _heartbeat_run() -> None:
+                try:
+                    while not agent_task.done():
+                        await asyncio.sleep(30.0)
+                        if agent_task.done():
+                            return
+                        try:
+                            self._run_store.update(completion_id, status="running")
+                        except Exception:
+                            return
+                except asyncio.CancelledError:
+                    return
+
+            _heartbeat_task = asyncio.ensure_future(_heartbeat_run())
+            agent_task.add_done_callback(lambda _fut: _heartbeat_task.cancel())
 
             return await self._write_sse_chat_completion(
                 request, completion_id, model_name, created, _stream_q,
@@ -4561,6 +4765,10 @@ class APIServerAdapter(BasePlatformAdapter):
                     status=status,
                     usage=usage,
                 )
+            except Exception:
+                pass
+            try:
+                self._set_run_status(run_id, status, last_event="run.finished")
             except Exception:
                 pass
             logger.info(

@@ -4423,6 +4423,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if entry.resume_pending
                     and not entry.suspended
                     and entry.origin is not None
+                    and (
+                        os.getenv("HERMES_AUTO_RESUME_API_SESSIONS", "")
+                        .strip()
+                        .lower()
+                        in ("1", "true", "yes")
+                        or getattr(entry.origin.platform, "value", "") != "api_server"
+                    )
                     and entry.resume_reason in self._AUTO_RESUME_REASONS
                     and (platform is None or entry.origin.platform == platform)
                 ]
