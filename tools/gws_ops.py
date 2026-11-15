@@ -38,8 +38,9 @@ from typing import Any, Optional
 GMAIL_SCOPES = ["https://www.googleapis.com/auth/gmail.modify"]
 DRIVE_SCOPES = ["https://www.googleapis.com/auth/drive"]
 DOCS_SCOPES = ["https://www.googleapis.com/auth/documents"]
+SHEETS_SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 CONTACTS_SCOPES = ["https://www.google.com/m8/feeds/"]
-DEFAULT_SCOPES = sorted(set(GMAIL_SCOPES + DRIVE_SCOPES + DOCS_SCOPES + CONTACTS_SCOPES))
+DEFAULT_SCOPES = sorted(set(GMAIL_SCOPES + DRIVE_SCOPES + DOCS_SCOPES + SHEETS_SCOPES + CONTACTS_SCOPES))
 
 # Cap on the number of search results / drafts returned by default.
 DEFAULT_MAX = 25
@@ -517,6 +518,92 @@ def drive_permissions_remove(creds, file_id: str, permission_id: str) -> dict:
     return {"file_id": file_id, "removed_permission": permission_id}
 
 
+
+# ---------------------------------------------------------------------------
+# Sheets
+# ---------------------------------------------------------------------------
+
+def sheets_get_tabs(creds, spreadsheet_id: str) -> dict:
+    """List a spreadsheet's tabs with sheetId, title, row/column counts."""
+    service = _build("sheets", "v4", creds)
+    meta = service.spreadsheets().get(
+        spreadsheetId=spreadsheet_id,
+        fields=(
+            "spreadsheetId,properties(title),"
+            "sheets(properties(sheetId,title,hidden,"
+            "gridProperties(rowCount,columnCount)))"
+        ),
+    ).execute()
+    tabs = []
+    for sheet in meta.get("sheets", []) or []:
+        props = sheet.get("properties", {}) or {}
+        grid = props.get("gridProperties", {}) or {}
+        tabs.append({
+            "sheetId": props.get("sheetId"),
+            "title": props.get("title"),
+            "hidden": bool(props.get("hidden", False)),
+            "rows": grid.get("rowCount"),
+            "columns": grid.get("columnCount"),
+        })
+    return {
+        "spreadsheet_id": meta.get("spreadsheetId", spreadsheet_id),
+        "title": (meta.get("properties") or {}).get("title", ""),
+        "tabs": tabs,
+    }
+
+
+def sheets_rename_tab(creds, spreadsheet_id: str, tab_title: str, new_title: str) -> dict:
+    """Rename a tab by current title; checks edit access before writing."""
+    if not tab_title or not new_title:
+        raise GWSDataError("tab_title and new_title are required")
+    if tab_title == new_title:
+        current = sheets_get_tabs(creds, spreadsheet_id)
+        return {"renamed": False, "reason": "title unchanged", "tabs": current["tabs"]}
+    drive = _build("drive", "v3", creds)
+    try:
+        meta = drive.files().get(
+            fileId=spreadsheet_id,
+            fields="id,name,owners(emailAddress),capabilities(canEdit)",
+        ).execute()
+    except Exception as exc:  # noqa: BLE001
+        raise GWSDataError("could not read spreadsheet permissions: %s" % str(exc)[:200])
+    caps = meta.get("capabilities") or {}
+    if not caps.get("canEdit"):
+        owners = ", ".join(
+            o.get("emailAddress", "")
+            for o in (meta.get("owners") or [])
+            if o.get("emailAddress")
+        )
+        raise GWSDataError(
+            "not editable: owner=%s; ask the owner for edit access "
+            "(or use a copy you own) before renaming tabs" % (owners or "unknown")
+        )
+    current = sheets_get_tabs(creds, spreadsheet_id)
+    match = next((t for t in current["tabs"] if t.get("title") == tab_title), None)
+    if match is None:
+        raise GWSDataError(
+            "tab %r not found; available tabs: %s" % (
+                tab_title,
+                ", ".join(repr(t.get("title")) for t in current["tabs"]),
+            )
+        )
+    if any(t.get("title") == new_title for t in current["tabs"]):
+        raise GWSDataError("a tab named %r already exists" % new_title)
+    service = _build("sheets", "v4", creds)
+    body = {"requests": [{"updateSheetProperties": {
+        "properties": {"sheetId": match["sheetId"], "title": new_title},
+        "fields": "title",
+    }}]}
+    service.spreadsheets().batchUpdate(spreadsheetId=spreadsheet_id, body=body).execute()
+    after = sheets_get_tabs(creds, spreadsheet_id)
+    return {
+        "renamed": True,
+        "sheetId": match["sheetId"],
+        "old_title": tab_title,
+        "new_title": new_title,
+        "tabs": after["tabs"],
+    }
+
 # ---------------------------------------------------------------------------
 # Registry of operation callables + parameter schemas, shared by both tool
 # layers so DWD and OAuth tools stay exactly in sync.
@@ -619,6 +706,15 @@ _OP_FUNCS = {
         "file_id": {"type": "string", "description": "File id"},
         "permission_id": {"type": "string", "description": "Permission id to remove"},
     }),
+    "sheets_get_tabs": (sheets_get_tabs, {
+        "spreadsheet_id": {"type": "string", "description": "Spreadsheet id", "required": True},
+    }),
+    "sheets_rename_tab": (sheets_rename_tab, {
+        "spreadsheet_id": {"type": "string", "description": "Spreadsheet id", "required": True},
+        "tab_title": {"type": "string", "description": "Current tab title (resolved to its sheetId automatically)", "required": True},
+        "new_title": {"type": "string", "description": "New tab title", "required": True},
+    }),
+
 }
 
 # Operations that are deliberately NOT provided anywhere: send / reply-send.
@@ -639,6 +735,8 @@ def op_scopes(op_name: str) -> list:
         return GMAIL_SCOPES
     if op_name.startswith("drive"):
         return DRIVE_SCOPES
+    if op_name.startswith("sheets"):
+        return SHEETS_SCOPES
     return DEFAULT_SCOPES
 
 
