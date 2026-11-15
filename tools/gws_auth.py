@@ -164,6 +164,9 @@ _DEFAULT_SERVICE = "google"
 # derived name uses the registrable domain WITHOUT its TLD (google-draas for
 # draas.com — NOT google-draas.com, which would be rejected by the vault).
 EMAIL_TO_SERVICE = {
+    # Secondary Gmail used for LibreView/Abbott 2FA. Keep it on its own
+    # service key so it does not overwrite the primary google-gmail token.
+    "rankaruh@gmail.com":     "google-rankaruh",
     "ndr@draas.com":          "google-draas",
     "psingh@draas.com":       "google-draas",
     "rnr@draas.com":          "google-draas",
