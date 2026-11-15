@@ -46,7 +46,7 @@ import urllib.error
 import urllib.request
 from typing import Any, Optional
 
-from gateway.session_context import get_gws_identity_env
+from gateway.session_context import get_gws_identity_env, get_session_env
 from tools.registry import registry, tool_error, tool_result
 
 logger = logging.getLogger(__name__)
@@ -129,6 +129,29 @@ def _acting_vault_user_id() -> Optional[str]:
             exc_info=True,
         )
     return raw
+
+
+_JOB_SESSION_PREFIX = "job_"
+
+
+def _current_job_id() -> Optional[str]:
+    """The hermes_jobs job id bound to this run, or None outside job mode.
+
+    Mirrors hermes_jobs_plugin.tools._resolve_job_id()'s own session lookup
+    (same two env vars, same "job_" prefix check) -- duplicated rather than
+    imported because tools/ must not depend on a plugin package. Used only
+    to make wa_send_greeting's idempotency key deterministic across re-runs
+    of the SAME job (see its call site below); nothing else here changes.
+    """
+    for value in (
+        get_session_env("HERMES_SESSION_ID", ""),
+        get_session_env("HERMES_SESSION_KEY", ""),
+        os.environ.get("HERMES_SESSION_ID", ""),
+    ):
+        value = (value or "").strip()
+        if value.startswith(_JOB_SESSION_PREFIX):
+            return value
+    return None
 
 
 # =============================================================================
@@ -886,6 +909,72 @@ def _handle_send_media(args: Optional[dict], **_kw: Any) -> str:
     )
 
 
+_GREETING_ALLOWED_EXT = {
+    "jpg", "jpeg", "png", "gif", "webp",
+    "mp4", "mov", "3gp", "mkv", "webm",
+}
+
+
+def _handle_send_greeting(args: Optional[dict], **_kw: Any) -> str:
+    """Always-send, image/video-only broadcast path -- see SEND_GREETING_SCHEMA. Deliberately
+    does not reuse _handle_send_media: that one drafts-or-auto-sends depending on the auto-send
+    list (fine for a reply in an ongoing thread, wrong for a once-a-year greeting to hundreds of
+    contacts who are mostly NOT on that list). This hits a separate server route
+    (/v1/messages/send_greeting) that always sends and refuses anything but image/video."""
+    args = args or {}
+    chat_id = (args.get("chatId") or "").strip()
+    path = (args.get("path") or "").strip()
+    if not chat_id or not path:
+        return tool_error("chatId and path (a file inside the Hermes container) are required.")
+    ext = os.path.splitext(path)[1].lstrip(".").lower()
+    if ext not in _GREETING_ALLOWED_EXT:
+        return tool_error(
+            f"wa_send_greeting only sends an image or a short video clip -- .{ext or '?'} is not allowed. "
+            f"Allowed: {', '.join(sorted(_GREETING_ALLOWED_EXT))}. For anything else use wa_send_media."
+        )
+    job_id = _current_job_id()
+    if job_id:
+        # Deterministic, resume-safe key: stable across every re-run of the
+        # SAME job for the SAME chat, so a gateway restart/orphan-requeue
+        # (or any other blind re-run) dedupes at the bridge's outbox layer
+        # (repo.insertDraft's `on conflict (idempotency_key) do nothing`)
+        # instead of re-sending. Overrides whatever the model passed --
+        # that was a fresh value every run, which is exactly why it did not
+        # dedupe. Incident 2026-11-08 (job_e0a8fd21): a gateway restart
+        # mid-send orphaned the run; requeue_orphan() put it back on the
+        # queue (correctly, for a job with no evidence of failure), the
+        # re-run had no memory of what the first run already sent, and
+        # every one of 76 recipients got the greeting twice.
+        idem = "job:%s:%s" % (job_id, chat_id)
+    else:
+        idem = (args.get("idempotencyKey") or "").strip()
+        if not idem or len(idem) < 8:
+            return tool_error("idempotencyKey is required (>= 8 chars).")
+    up, err = _upload(path)
+    if err:
+        return tool_error(err)
+    up = up or {}
+    k = up.get("kind")
+    if k not in ("image", "video"):
+        return tool_error(f"Uploaded file sniffed as '{k}', not image/video -- refusing to send as a greeting.")
+    vault_id = _acting_vault_user_id()
+    payload: dict = {
+        "chatId": chat_id,
+        "mediaId": up.get("mediaId"),
+        "idempotencyKey": idem,
+        "tool": "wa_send_greeting",
+    }
+    if args.get("caption"):
+        payload["caption"] = args["caption"]
+    if vault_id:
+        payload["actingVaultUserId"] = vault_id
+    body, err = _call("/v1/messages/send_greeting", payload)
+    if err:
+        return tool_error(err)
+    body = body or {}
+    return tool_result(f"SENT (greeting, {k}): outbox {body.get('outboxId')} \u2014 {body.get('preview')}")
+
+
 def _handle_send_contact(args: Optional[dict], **_kw: Any) -> str:
     args = args or {}
     chat_id = (args.get("chatId") or "").strip()
@@ -1393,6 +1482,28 @@ SEND_MEDIA_SCHEMA = {
     },
 }
 
+SEND_GREETING_SCHEMA = {
+    "name": "wa_send_greeting",
+    "description": (
+        "Send a festival/occasion greeting: ALWAYS sends immediately, never drafts, never needs "
+        "auto-send-list membership or approval -- use this instead of wa_send_media/wa_draft_reply "
+        "for a broadcast greeting so it never sits waiting and never gets dropped. ONLY an image "
+        "(jpg/png/gif/webp) or a short video clip (mp4/mov/3gp/mkv/webm) is accepted -- nothing "
+        "else (no text-only, no document, no audio, no sticker, no contact card). One file, one "
+        "existing chat per call -- call it once per recipient for a batch of greetings."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "chatId": {"type": "string", "description": "Must be an existing chat -- wa_list_chats / wa_chat_get."},
+            "path": {"type": "string", "description": "Local file path inside the Hermes container; image or video only."},
+            "caption": {"type": "string", "description": "Optional caption on the image/video itself."},
+            "idempotencyKey": {"type": "string"},
+        },
+        "required": ["chatId", "path", "idempotencyKey"],
+    },
+}
+
 SEND_CONTACT_SCHEMA = {
     "name": "wa_send_contact",
     "description": "Stage a contact card (.vcf, tappable number) as a draft from structured fields.",
@@ -1517,6 +1628,8 @@ registry.register(name="wa_get_media", toolset=TOOLSET, schema=GET_MEDIA_SCHEMA,
                   handler=_handle_get_media, emoji="\U0001F4CE")
 registry.register(name="wa_send_media", toolset=TOOLSET, schema=SEND_MEDIA_SCHEMA,
                   handler=_handle_send_media, emoji="\U0001F4CE")
+registry.register(name="wa_send_greeting", toolset=TOOLSET, schema=SEND_GREETING_SCHEMA,
+                  handler=_handle_send_greeting, emoji="\U0001F389")
 registry.register(name="wa_send_contact", toolset=TOOLSET, schema=SEND_CONTACT_SCHEMA,
                   handler=_handle_send_contact, emoji="\U0001F464")
 registry.register(name="wa_send_new_number", toolset=TOOLSET, schema=SEND_NEW_NUMBER_SCHEMA,

@@ -1,10 +1,10 @@
 import logging
 import os
-from pathlib import Path
 
 from fastapi import APIRouter, Request, Form
 from fastapi.responses import HTMLResponse, RedirectResponse
 
+from .gbrain_provision import start_provisioning
 from .jinja_env import env
 from .openwebui import sync_chat_users
 from .vault_client import VaultClient, VaultError, MANAGED_APPS, write_app_emails_file
@@ -24,7 +24,22 @@ def llm_gateway_state(identity: dict) -> bool:
     return _is_admin_identity(identity) or apps.get("llm_gateway") is True
 
 
+def whatsapp_state(identity: dict) -> bool:
+    """DRA WhatsApp (wa.ahfl.in). Same explicit opt-in semantics as llm_gateway, and for
+    the same reason: it is deliberately NOT in MANAGED_APPS, whose unset-means-True display
+    default would show every employee as having WhatsApp access they do not actually hold.
+    The vault's check_access is the enforcement point (admins implicit, everyone else needs
+    permissions.apps.whatsapp is True); this mirrors it exactly."""
+    apps = (identity.get("permissions", {}) or {}).get("apps", {}) or {}
+    return _is_admin_identity(identity) or apps.get("whatsapp") is True
+
+
 CHAT_EMAILS_FILE = os.environ.get("CHAT_EMAILS_FILE", "/secrets/chat-emails.txt")
+# jobs.ahfl.in oauth2-proxy sidecar reads this via --authenticated-emails-file
+# and hot-reloads on change (no restart needed), same mechanism as chat above.
+# Added 2026-11-01 -- jobs access used to be a manual, admin-panel-invisible
+# file edit; now it is vault-backed like every other MANAGED_APPS entry.
+JOBS_EMAILS_FILE = os.environ.get("JOBS_EMAILS_FILE", "/opt/hermes/oauth2-proxy-jobs/emails.txt")
 
 
 def _sync_chat_emails() -> None:
@@ -45,6 +60,10 @@ def _sync_chat_emails() -> None:
         sync_chat_users()
     except Exception:  # noqa: BLE001
         logger.warning("Open WebUI chat user sync failed", exc_info=True)
+    try:
+        write_app_emails_file("jobs", JOBS_EMAILS_FILE)
+    except Exception:  # noqa: BLE001
+        logger.warning("jobs emails regeneration failed", exc_info=True)
 
 router = APIRouter()
 logger = logging.getLogger("admin-app.users")
@@ -117,6 +136,8 @@ async def create_user(
     else:
         apps = {app: (form.get(f"app_{app}") is not None) for app in MANAGED_APPS}
     apps["llm_gateway"] = (role == "admin")
+    # WhatsApp inbox: admins implicitly, employees only when ticked on this form.
+    apps["whatsapp"] = (role == "admin") or (form.get("app_whatsapp") is not None)
     permissions = {
         "vault_admin": role == "admin",
         "manage_users": role == "admin",
@@ -143,10 +164,13 @@ async def create_user(
             user=request.session.get("user"), error=str(e)
         ), status_code=500)
 
-    hermes_home = request.app.state.hermes_home
-    if hermes_home:
-        gbrain_dir = Path(hermes_home) / "users" / slug
-        gbrain_dir.mkdir(parents=True, exist_ok=True)
+    # Auto-provision a fully-configured gbrain for this user in the background.
+    # The provisioner runs inside hermes-hermes-1 (this container has no
+    # /data/hermes mount); it creates the dirs, initialises the brain, applies
+    # the gateway/pricing/cycle config, and creates the daily ingest + dream
+    # cron jobs. Failures never roll back the Vault identity -- /gbrain-health
+    # shows the failed state with a retry button.
+    start_provisioning(slug=slug, email=email, name=name, telegram_id=telegram_id)
 
     _sync_chat_emails()
     return RedirectResponse(url="/users", status_code=303)
@@ -163,6 +187,7 @@ async def view_user(request: Request, user_id: str):
             ), status_code=404)
         services = vault.list_token_services(user_id)
         token_meta = vault.list_token_metadata(user_id)
+        password_entries = vault.list_passwords(user_id)
     except Exception as e:
         return HTMLResponse(env.get_template("error.html").render(
             user=request.session.get("user"), error=str(e)
@@ -175,11 +200,13 @@ async def view_user(request: Request, user_id: str):
     apps_perms = (identity.get("permissions", {}) or {}).get("apps", {}) or {}
     app_states = {app: apps_perms.get(app, True) for app in MANAGED_APPS}
     llm_gateway_enabled = llm_gateway_state(identity)
+    whatsapp_enabled = whatsapp_state(identity)
 
     full_permissions = identity.get("permissions", {}) or {}
     oauth_providers = full_permissions.get("oauth_providers", {}) or {}
     oauth_google_emails = oauth_providers.get("google", []) or []
     oauth_kelsa = oauth_providers.get("kelsa", False)
+    oauth_tailortalk = oauth_providers.get("tailortalk", False)
 
     return HTMLResponse(env.get_template("user_detail.html").render(
         user=request.session.get("user"), user_data=identity,
@@ -187,15 +214,57 @@ async def view_user(request: Request, user_id: str):
         email_display=", ".join(emails) if emails else "-",
         telegram_display=", ".join(telegrams) if telegrams else "-",
         phone_display=phone_value or "-",
-        services=services, token_meta=token_meta, VAULT_SERVICE_NAMES=VAULT_SERVICE_NAMES,
+        services=services, token_meta=token_meta, password_entries=password_entries,
+        VAULT_SERVICE_NAMES=VAULT_SERVICE_NAMES,
         pretty_service=_pretty_service,
         managed_apps=MANAGED_APPS, app_states=app_states,
         llm_gateway_enabled=llm_gateway_enabled,
+        whatsapp_enabled=whatsapp_enabled,
         full_permissions=full_permissions,
         oauth_providers=oauth_providers,
         oauth_google_emails=oauth_google_emails,
         oauth_kelsa=oauth_kelsa,
+        oauth_tailortalk=oauth_tailortalk,
     ))
+
+
+@router.post("/{user_id}/passwords")
+async def save_password(
+    request: Request,
+    user_id: str,
+    domain: str = Form(...),
+    username: str = Form(...),
+    password: str = Form(...),
+    origins: str = Form(""),
+    label: str = Form(""),
+):
+    """Create/update an encrypted website credential in the vault. The
+    plaintext is sent over HTTPS to this admin app, then to the vault over
+    its Unix socket; it is never logged or rendered back."""
+    vault: VaultClient = request.app.state.vault
+    origin_list = [o.strip() for o in origins.split(",") if o.strip()]
+    try:
+        vault.put_password(
+            user_id, domain.strip(), username.strip(), password,
+            origin_list, label.strip(),
+        )
+    except Exception as e:
+        return HTMLResponse(env.get_template("error.html").render(
+            user=request.session.get("user"), error=str(e)
+        ), status_code=500)
+    return RedirectResponse(url=f"/users/{user_id}", status_code=303)
+
+
+@router.post("/{user_id}/passwords/{domain}/delete")
+async def delete_password(request: Request, user_id: str, domain: str):
+    vault: VaultClient = request.app.state.vault
+    try:
+        vault.delete_password(user_id, domain)
+    except Exception as e:
+        return HTMLResponse(env.get_template("error.html").render(
+            user=request.session.get("user"), error=str(e)
+        ), status_code=500)
+    return RedirectResponse(url=f"/users/{user_id}", status_code=303)
 
 
 @router.post("/{user_id}/apps")
@@ -210,6 +279,23 @@ async def update_app_permissions(request: Request, user_id: str):
             user=request.session.get("user"), error=str(e)
         ), status_code=500)
     _sync_chat_emails()
+    return RedirectResponse(url=f"/users/{user_id}", status_code=303)
+
+
+@router.post("/{user_id}/whatsapp")
+async def update_whatsapp_access(request: Request, user_id: str):
+    """Toggle permissions.apps.whatsapp (DRA WhatsApp inbox at wa.ahfl.in). Takes effect
+    at the next request to wa.ahfl.in: the bridge asks the vault's check_access on every
+    request with a 60s cache, so revocation lands within a minute, no restart anywhere."""
+    vault: VaultClient = request.app.state.vault
+    form = await request.form()
+    enabled = "whatsapp" in form
+    try:
+        vault.set_app_permissions(user_id, {"whatsapp": enabled})
+    except VaultError as e:
+        return HTMLResponse(env.get_template("error.html").render(
+            user=request.session.get("user"), error=str(e)
+        ), status_code=500)
     return RedirectResponse(url=f"/users/{user_id}", status_code=303)
 
 
@@ -279,6 +365,7 @@ async def update_oauth_providers(request: Request, user_id: str):
     Accepts form fields:
       - google_emails: comma-separated list of authorized Google emails
       - kelsa: "on" or missing (checkbox)
+      - tailortalk: "on" or missing (checkbox)
       - Any future provider as a checkbox or comma-separated list
     """
     vault: VaultClient = request.app.state.vault
@@ -295,11 +382,13 @@ async def update_oauth_providers(request: Request, user_id: str):
         google_emails = [e.strip() for e in google_raw.split(",") if e.strip()]
 
         kelsa = "kelsa" in form
+        tailortalk = "tailortalk" in form
 
         permissions = dict(identity.get("permissions", {}) or {})
         permissions["oauth_providers"] = {
             "google": google_emails,
             "kelsa": kelsa,
+            "tailortalk": tailortalk,
         }
 
         vault.update_permissions(user_id, {"oauth_providers": permissions["oauth_providers"]})

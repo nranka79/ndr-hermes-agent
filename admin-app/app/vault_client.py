@@ -9,7 +9,7 @@ logger = logging.getLogger("admin-app.vault")
 # App-access permission keys managed by the admin panel. Extend this list to
 # add a new gated app (e.g. a future "monitor" dashboard) — the toggle UI and
 # the enforcement side (gateway/identity_resolver) both key off these names.
-MANAGED_APPS = ["telegram", "voice", "chat", "apps"]
+MANAGED_APPS = ["telegram", "voice", "chat", "jobs", "apps"]
 
 # llm_gateway is deliberately NOT in MANAGED_APPS: that list's UI/creation
 # defaulting semantics are "on for everyone" (see create_user / view_user),
@@ -27,14 +27,14 @@ class VaultClient:
         self.socket_path = os.environ.get("GWS_VAULT_SOCKET", "/run/gws-vault/vault.sock")
         self.secret = os.environ.get("GWS_VAULT_SECRET", "")
 
-    def _call(self, payload: dict) -> dict:
-        if not self.socket_path or not os.path.exists(self.socket_path):
-            raise VaultError(f"Vault socket not found at {self.socket_path}")
+    def _call_socket(self, path: str, payload: dict) -> dict:
+        if not path or not os.path.exists(path):
+            raise VaultError(f"Vault socket not found at {path}")
         data = (json.dumps(payload) + "\n").encode("utf-8")
         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         s.settimeout(10)
         try:
-            s.connect(self.socket_path)
+            s.connect(path)
             s.sendall(data)
             buf = b""
             while b"\n" not in buf:
@@ -50,6 +50,44 @@ class VaultClient:
                 s.close()
             except Exception:
                 pass
+
+    def _call(self, payload: dict) -> dict:
+        return self._call_socket(self.socket_path, payload)
+
+    # --- Encrypted website password store ---------------------------------
+    def _call_password(self, payload: dict) -> dict:
+        path = os.environ.get(
+            "GWS_VAULT_PASSWORD_SOCKET", "/run/gws-vault/passwords.sock"
+        )
+        payload = dict(payload)
+        payload["vault_password_admin_secret"] = os.environ.get(
+            "GWS_VAULT_PASSWORD_ADMIN_SECRET", ""
+        )
+        return self._call_socket(path, payload)
+
+    def list_passwords(self, user_id: str) -> List[Dict[str, Any]]:
+        resp = self._call_password({"op": "password_list", "user_id": user_id})
+        if not resp.get("ok"):
+            raise VaultError(resp.get("error", "password_list failed"))
+        return resp.get("entries", []) or []
+
+    def put_password(self, user_id: str, domain: str, username: str, password: str,
+                     origins: Optional[List[str]] = None, label: str = "") -> Dict:
+        resp = self._call_password({
+            "op": "password_put", "user_id": user_id, "domain": domain,
+            "username": username, "password": password,
+            "origins": origins or [], "label": label,
+        })
+        if not resp.get("ok"):
+            raise VaultError(resp.get("error", "password_put failed"))
+        return resp.get("entry", {})
+
+    def delete_password(self, user_id: str, domain: str) -> None:
+        resp = self._call_password({
+            "op": "password_delete", "user_id": user_id, "domain": domain,
+        })
+        if not resp.get("ok"):
+            raise VaultError(resp.get("error", "password_delete failed"))
 
     def resolve(self, identity_type: str, identity_value: str) -> Optional[str]:
         resp = self._call({"op": "resolve", "identity_type": identity_type, "identity_value": identity_value})

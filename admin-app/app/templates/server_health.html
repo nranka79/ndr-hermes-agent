@@ -1,0 +1,169 @@
+{% extends "base.html" %}
+{% block title %}Server Health{% endblock %}
+{% block heading %}Server Health — {{ host }}{% endblock %}
+{% block content %}
+
+<div class="flex items-center gap-2">
+  {% for h in hosts %}
+  <a href="/server-health?host={{ h }}"
+     class="px-4 py-2 rounded-xl text-sm font-medium border transition
+       {% if h == host %}bg-indigo-600 text-white border-indigo-600{% else %}bg-white text-gray-600 border-gray-200 hover:bg-gray-50{% endif %}">
+    {{ h }}
+  </a>
+  {% endfor %}
+</div>
+
+<div class="bg-white rounded-2xl p-5 shadow-sm border border-gray-100 text-sm text-gray-600 space-y-1">
+  <p><span class="font-semibold text-gray-800">CPU / disk I/O / network</span> come live from the Hetzner Cloud metrics API (real history, no local collection needed). <span class="font-semibold text-gray-800">Memory / swap / disk usage</span> are read directly from the host (Hetzner's API has no memory metric and its "disk" metric is I/O throughput, not space used) and sampled every 10 minutes into a local store — history on those only goes back to when this page was first deployed.</p>
+  <p class="text-xs text-gray-400">ndr-playground's memory/disk/container numbers are pulled over SSH via a command-restricted read-only key. Refresh to re-check.</p>
+</div>
+
+{% if hetzner_error %}
+<div class="bg-red-50 border border-red-200 text-red-700 rounded-2xl px-4 py-3 text-sm">
+  Hetzner metrics unavailable: {{ hetzner_error }}
+</div>
+{% endif %}
+
+{% if stats_error %}
+<div class="bg-red-50 border border-red-200 text-red-700 rounded-2xl px-4 py-3 text-sm">
+  Memory/disk/container check for {{ host }} failed: {{ stats_error }}
+</div>
+{% endif %}
+
+<div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+
+  <div class="bg-white rounded-2xl p-6 shadow-sm border border-gray-100">
+    <div class="flex items-center justify-between mb-2">
+      <span class="text-xs font-semibold text-gray-500 uppercase tracking-wider">CPU</span>
+      <span class="text-2xl">⚙</span>
+    </div>
+    {% if cpu_stats.current is not none %}
+      <div class="text-3xl font-bold text-gray-900">{{ "%.1f"|format(cpu_stats.current) }}%</div>
+      <div class="text-xs text-gray-500 mt-2 space-y-0.5">
+        <div>24h avg: {{ "%.1f"|format(cpu_stats.avg_recent) if cpu_stats.avg_recent is not none else "—" }}% &middot; peak: {{ "%.1f"|format(cpu_stats.peak_recent) if cpu_stats.peak_recent is not none else "—" }}%</div>
+        <div>~30d avg: {{ "%.1f"|format(cpu_stats.avg) }}% &middot; peak: {{ "%.1f"|format(cpu_stats.peak) }}%</div>
+      </div>
+      {% if live_load %}
+      <div class="text-xs text-gray-400 mt-2">load avg: {{ live_load.load1 }} / {{ live_load.load5 }} / {{ live_load.load15 }} (1/5/15m)</div>
+      {% endif %}
+    {% else %}
+      <div class="text-sm text-gray-400">no data</div>
+    {% endif %}
+  </div>
+
+  <div class="bg-white rounded-2xl p-6 shadow-sm border border-gray-100">
+    <div class="flex items-center justify-between mb-2">
+      <span class="text-xs font-semibold text-gray-500 uppercase tracking-wider">Memory</span>
+      <span class="text-2xl">▣</span>
+    </div>
+    {% if live_mem %}
+    <div class="text-3xl font-bold text-gray-900">{{ "%.1f"|format(live_mem.mem_used_pct) }}%</div>
+    <div class="text-xs text-gray-500 mt-2 space-y-0.5">
+      <div>24h avg: {{ "%.1f"|format(local_hist.mem.avg_24h) if local_hist.mem.avg_24h is not none else "—" }}% &middot; peak: {{ "%.1f"|format(local_hist.mem.peak_24h) if local_hist.mem.peak_24h is not none else "—" }}%</div>
+      <div>since collection started avg: {{ "%.1f"|format(local_hist.mem.avg_30d) if local_hist.mem.avg_30d is not none else "—" }}% &middot; peak: {{ "%.1f"|format(local_hist.mem.peak_30d) if local_hist.mem.peak_30d is not none else "—" }}%</div>
+    </div>
+    <div class="text-xs mt-2 {% if live_mem.swap_used_pct > 30 %}text-red-600 font-semibold{% elif live_mem.swap_used_pct > 5 %}text-amber-600{% else %}text-gray-400{% endif %}">
+      swap: {{ "%.1f"|format(live_mem.swap_used_pct) }}% used{% if live_mem.swap_used_pct > 5 %} — RAM pressure signal{% endif %}
+    </div>
+    <div class="text-xs text-gray-400 mt-1">total: {{ "%.1f"|format(live_mem.mem_total_gb) }} GB</div>
+    {% else %}
+    <div class="text-sm text-gray-400">unavailable</div>
+    {% endif %}
+  </div>
+
+  <div class="bg-white rounded-2xl p-6 shadow-sm border border-gray-100">
+    <div class="flex items-center justify-between mb-2">
+      <span class="text-xs font-semibold text-gray-500 uppercase tracking-wider">Disk (/)</span>
+      <span class="text-2xl">▤</span>
+    </div>
+    {% if live_disk %}
+    <div class="text-3xl font-bold text-gray-900">{{ "%.1f"|format(live_disk.disk_used_pct) }}%</div>
+    <div class="text-xs text-gray-500 mt-2">
+      {{ "%.1f"|format(live_disk.disk_used_gb) }} GB used / {{ "%.1f"|format(live_disk.disk_total_gb) }} GB total &middot; {{ "%.1f"|format(live_disk.disk_avail_gb) }} GB free
+    </div>
+    <div class="text-xs mt-3 pt-3 border-t border-gray-100">
+      {% if growth.status == "collecting" %}
+        <span class="text-gray-400">collecting growth data ({{ growth.n_samples }} sample(s) so far, need a few days for a trend)</span>
+      {% elif eta %}
+        <span class="{% if eta.days_left < 30 %}text-red-600 font-semibold{% elif eta.days_left < 90 %}text-amber-600 font-semibold{% else %}text-gray-600{% endif %}">
+          growing ~{{ growth.gb_per_day }} GB/day → full around {{ eta.eta_date }} (~{{ eta.days_left }} days), based on {{ growth.span_days }} day(s) of samples
+        </span>
+      {% else %}
+        <span class="text-gray-500">flat/shrinking over last {{ growth.span_days }} day(s) ({{ growth.gb_per_day }} GB/day) — no fill-up projected</span>
+      {% endif %}
+    </div>
+    {% else %}
+    <div class="text-sm text-gray-400">unavailable</div>
+    {% endif %}
+  </div>
+
+</div>
+
+<div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+  <div class="px-6 py-4 border-b border-gray-100 flex items-center justify-between">
+    <h3 class="text-sm font-semibold text-gray-900 uppercase tracking-wider">Container issues</h3>
+    <span class="text-xs text-gray-400">restarted, OOM-killed, or not currently running</span>
+  </div>
+  {% if containers %}
+  <div class="overflow-x-auto">
+    <table class="w-full text-sm">
+      <thead class="bg-gray-50 text-gray-500 text-xs uppercase tracking-wider">
+        <tr>
+          <th class="text-left px-6 py-3">Container</th>
+          <th class="text-left px-4 py-3">Status</th>
+          <th class="text-left px-4 py-3">Restart count</th>
+          <th class="text-left px-4 py-3">OOM killed</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-gray-100">
+        {% for c in containers %}
+        <tr class="hover:bg-gray-50/60">
+          <td class="px-6 py-3 font-mono text-xs text-gray-800">{{ c.name }}</td>
+          <td class="px-4 py-3">
+            <span class="inline-flex px-2 py-0.5 rounded-full text-xs font-medium border {% if c.status == 'running' %}bg-emerald-50 text-emerald-700 border-emerald-200{% else %}bg-red-50 text-red-700 border-red-200{% endif %}">{{ c.status }}</span>
+          </td>
+          <td class="px-4 py-3 {% if c.restart_count > 0 %}text-amber-600 font-semibold{% else %}text-gray-500{% endif %}">{{ c.restart_count }}</td>
+          <td class="px-4 py-3 {% if c.oom_killed %}text-red-600 font-semibold{% else %}text-gray-400{% endif %}">{{ "yes" if c.oom_killed else "no" }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="px-6 py-4 text-sm text-emerald-700">All containers running cleanly, no restarts or OOM kills.</div>
+  {% endif %}
+</div>
+
+<div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+  <div class="px-6 py-4 border-b border-gray-100">
+    <h3 class="text-sm font-semibold text-gray-900 uppercase tracking-wider">Disk I/O &amp; network (Hetzner, ~29d window)</h3>
+  </div>
+  <div class="overflow-x-auto">
+    <table class="w-full text-sm">
+      <thead class="bg-gray-50 text-gray-500 text-xs uppercase tracking-wider">
+        <tr>
+          <th class="text-left px-6 py-3">Metric</th>
+          <th class="text-left px-4 py-3">Current</th>
+          <th class="text-left px-4 py-3">24h avg</th>
+          <th class="text-left px-4 py-3">24h peak</th>
+          <th class="text-left px-4 py-3">~30d avg</th>
+          <th class="text-left px-4 py-3">~30d peak</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-gray-100">
+        {% for row in disk_io_rows + net_rows %}
+        <tr class="hover:bg-gray-50/60">
+          <td class="px-6 py-3 text-gray-800">{{ row.label }}</td>
+          <td class="px-4 py-3 text-gray-600">{{ row.current }}</td>
+          <td class="px-4 py-3 text-gray-600">{{ row.avg_recent }}</td>
+          <td class="px-4 py-3 text-gray-600">{{ row.peak_recent }}</td>
+          <td class="px-4 py-3 text-gray-600">{{ row.avg }}</td>
+          <td class="px-4 py-3 text-gray-600">{{ row.peak }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+{% endblock %}

@@ -27,6 +27,8 @@ def _pretty_service(svc: str) -> str:
         return known[svc]
     if svc.startswith("google-"):
         return f"Google ({svc.removeprefix('google-')})"
+    if svc.startswith("tailortalk") or svc == "mcp-tailortalk":
+        return "TailorTalk MCP"
     if svc.startswith("mcp-"):
         return f"MCP {svc.removeprefix('mcp-')}"
     if svc.startswith("kelsa"):

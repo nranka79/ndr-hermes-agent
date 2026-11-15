@@ -1,0 +1,130 @@
+{% extends "base.html" %}
+{% block title %}Gbrain Health{% endblock %}
+{% block heading %}Gbrain Health{% endblock %}
+{% block content %}
+
+<div class="bg-white rounded-2xl p-5 shadow-sm border border-gray-100 text-sm text-gray-600 space-y-1">
+  <p>One row per gbrain user directory. <span class="font-semibold text-gray-800">Provisioning</span> = the auto-provisioner's last recorded state (a user created in Vault should reach <span class="font-mono text-xs bg-gray-100 px-1 py-0.5 rounded">provisioned</span> within a couple of minutes). <span class="font-semibold text-gray-800">Cron status</span> = did the nightly dream job execute without the agent erroring. <span class="font-semibold text-gray-800">Live doctor</span> = a fresh, read-only <span class="font-mono text-xs bg-gray-100 px-1 py-0.5 rounded">gbrain doctor --json</span> run against each brain right now.</p>
+  <p class="text-xs text-gray-400">Live checks run inside hermes-hermes-1 via <span class="font-mono">docker exec -u hermes</span> — read-only, nothing written. Refresh the page to re-check.</p>
+</div>
+
+{% if fetch_failed %}
+<div class="bg-red-50 border border-red-200 text-red-700 rounded-2xl px-4 py-3 text-sm">
+  Could not read the gbrain cron jobs store (/data/hermes/cron/jobs.json inside hermes-hermes-1). Rows below come from user directories only. Check that hermes-hermes-1 is running and this container's Docker socket access is intact.
+</div>
+{% endif %}
+
+<div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+  <div class="px-6 py-4 border-b border-gray-100 flex items-center justify-between">
+    <h3 class="text-sm font-semibold text-gray-900 uppercase tracking-wider">Gbrain users</h3>
+    <span class="text-xs text-gray-400">{{ rows|length }} user(s) &middot; sorted worst-health first</span>
+  </div>
+  <div class="overflow-x-auto">
+    <table class="w-full text-sm">
+      <thead class="bg-gray-50 text-gray-500 text-xs uppercase tracking-wider">
+        <tr>
+          <th class="text-left px-6 py-3">User</th>
+          <th class="text-left px-4 py-3">Provisioning</th>
+          <th class="text-left px-4 py-3">Nightly schedule</th>
+          <th class="text-left px-4 py-3">Last cron run</th>
+          <th class="text-left px-4 py-3">Cron status</th>
+          <th class="text-left px-4 py-3">Live doctor</th>
+          <th class="text-left px-4 py-3">Brain score</th>
+          <th class="text-left px-4 py-3">All-checks</th>
+          <th class="text-left px-4 py-3">Embedding model</th>
+          <th class="text-left px-6 py-3">Top issue(s)</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-gray-100">
+        {% for r in rows %}
+        <tr class="hover:bg-gray-50/60 align-top">
+          <td class="px-6 py-4">
+            <div class="font-medium text-gray-900">{{ r.name or "—" }}</div>
+            <div class="text-xs text-gray-400 font-mono">{{ r.slug }}</div>
+          </td>
+          <td class="px-4 py-4">
+            <span class="inline-flex px-2 py-0.5 rounded-full text-xs font-medium border {{ r.provision_badge_class }}">
+              {{ r.provision_state }}
+            </span>
+            {% if r.provision_state in ("failed", "in_progress", "not provisioned") %}
+              <form method="post" action="/gbrain-health/provision/{{ r.slug }}" class="mt-2">
+                <button type="submit" class="text-xs px-2 py-1 rounded border border-red-200 text-red-700 hover:bg-red-50">Retry</button>
+              </form>
+              {% if r.provision_error %}
+                <div class="text-xs text-red-500 mt-1 max-w-[16rem] truncate" title="{{ r.provision_error }}">{{ r.provision_error }}</div>
+              {% endif %}
+            {% elif r.provision_step %}
+              <div class="text-xs text-gray-400 mt-1">{{ r.provision_step }}</div>
+            {% endif %}
+            {% if not r.has_ingest_job %}
+              <div class="text-xs text-amber-600 mt-1">no daily ingest job</div>
+            {% endif %}
+            {% if not r.has_dream_job %}
+              <div class="text-xs text-amber-600 mt-1">no nightly dream job</div>
+            {% endif %}
+          </td>
+          <td class="px-4 py-4 font-mono text-xs text-gray-600">{{ r.schedule or "—" }}{% if not r.enabled %}<br><span class="text-red-500">disabled</span>{% endif %}</td>
+          <td class="px-4 py-4 text-gray-600 text-xs">
+            {{ r.last_run_at or "never" }}
+            {% if r.next_run_at %}<br><span class="text-gray-400">next: {{ r.next_run_at }}</span>{% endif %}
+          </td>
+          <td class="px-4 py-4">
+            <span class="inline-flex px-2 py-0.5 rounded-full text-xs font-medium border
+              {% if r.last_status == 'ok' %}bg-emerald-50 text-emerald-700 border-emerald-200
+              {% elif r.last_status %}bg-red-50 text-red-700 border-red-200
+              {% else %}bg-gray-50 text-gray-500 border-gray-200{% endif %}">
+              {{ r.last_status or "unknown" }}
+            </span>
+            {% if r.last_error %}<div class="text-xs text-red-500 mt-1 max-w-xs truncate" title="{{ r.last_error }}">{{ r.last_error }}</div>{% endif %}
+          </td>
+          <td class="px-4 py-4">
+            {% if r.live.error %}
+              <span class="inline-flex px-2 py-0.5 rounded-full text-xs font-medium border bg-gray-50 text-gray-500 border-gray-200">check failed</span>
+              <div class="text-xs text-red-500 mt-1 max-w-xs truncate" title="{{ r.live.error }}">{{ r.live.error }}</div>
+            {% else %}
+              <span class="inline-flex px-2 py-0.5 rounded-full text-xs font-medium border {{ r.badge_class }}">
+                {{ r.live.doctor_status or "unknown" }}
+              </span>
+            {% endif %}
+          </td>
+          <td class="px-4 py-4">
+            {% if r.live.brain_score is not none %}
+              <span class="text-base font-semibold {{ r.brain_score_class }}">{{ r.live.brain_score }}</span><span class="text-gray-400 text-xs">/100</span>
+              {% if r.live.brain_score_detail %}
+                <div class="text-xs text-gray-400 mt-1 max-w-[16rem] truncate" title="{{ r.live.brain_score_detail }}">{{ r.live.brain_score_detail }}</div>
+              {% endif %}
+            {% else %}
+              <span class="text-gray-400 text-xs">—</span>
+            {% endif %}
+          </td>
+          <td class="px-4 py-4">
+            {% if r.live.health_score is not none %}
+              <span class="text-sm font-medium {{ r.score_class }}">{{ r.live.health_score }}</span><span class="text-gray-400 text-xs">/100</span>
+              {% if r.live.brain_checks_score is not none %}
+                <div class="text-xs text-gray-400 mt-1">brain-checks: {{ r.live.brain_checks_score }}/100</div>
+              {% endif %}
+            {% else %}
+              <span class="text-gray-400 text-xs">—</span>
+            {% endif %}
+          </td>
+          <td class="px-4 py-4 text-xs text-gray-600 font-mono max-w-[180px] truncate" title="{{ r.live.embedding_model or '' }}">
+            {{ r.live.embedding_model or "—" }}
+          </td>
+          <td class="px-6 py-4 text-xs text-gray-600 space-y-1 max-w-sm">
+            {% for issue in r.live.top_issues %}
+              <div class="truncate" title="{{ issue.fix }}">
+                <span class="font-medium {% if issue.status == 'fail' %}text-red-600{% elif issue.status == 'warn' %}text-amber-600{% else %}text-gray-500{% endif %}">{{ issue.name }}</span>
+                — {{ issue.fix }}
+              </div>
+            {% else %}
+              <span class="text-gray-400">—</span>
+            {% endfor %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+{% endblock %}

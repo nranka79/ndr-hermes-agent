@@ -52,6 +52,9 @@ import json
 import logging
 import os
 import re
+import random
+import threading
+import time
 
 # oauthlib does an exact-string comparison of requested vs granted scope on
 # token exchange. Google frequently echoes the granted scopes back in a
@@ -164,6 +167,9 @@ _DEFAULT_SERVICE = "google"
 # derived name uses the registrable domain WITHOUT its TLD (google-draas for
 # draas.com — NOT google-draas.com, which would be rejected by the vault).
 EMAIL_TO_SERVICE = {
+    # Secondary Gmail used for LibreView/Abbott 2FA. Keep it on its own
+    # service key so it does not overwrite the primary google-gmail token.
+    "rankaruh@gmail.com":     "google-rankaruh",
     "ndr@draas.com":          "google-draas",
     "psingh@draas.com":       "google-draas",
     "rnr@draas.com":          "google-draas",
@@ -543,49 +549,143 @@ def build_service(api: str, version: str, service_name: str = _DEFAULT_SERVICE):
 
 GOOGLE_HEALTH_BASE = "https://health.googleapis.com/v4"
 
+# Health-only access tokens are minted by a down-scoped refresh grant (see the
+# block above).  They are valid for ~1 hour, so cache them per
+# (session uid, service_name) instead of minting on every page/request.
+_HEALTH_TOKEN_CACHE = {}
+_HEALTH_TOKEN_LOCK = threading.Lock()
+_HEALTH_TOKEN_TTL_SKEW = 60  # refresh this many seconds before expiry
+_HEALTH_RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
+_HEALTH_RATE_LIMIT_REASONS = frozenset({
+    "rateLimitExceeded", "userRateLimitExceeded", "quotaExceeded",
+    "backendError", "internalError",
+})
+
 
 def google_health_scopes() -> list:
     """The googlehealth.* subset of HERMES_GWS_SCOPES (read + write)."""
     return [sc for sc in HERMES_GWS_SCOPES if "googlehealth" in sc]
 
 
-def google_health_access_token(service_name: str = "google-gmail") -> str:
-    """Mint a Google-Health-only OAuth access token for the session user.
+def _health_cache_key(service_name: str) -> str:
+    try:
+        uid = canonical_uid(_current_telegram_id())
+    except Exception:
+        uid = ""
+    return "%s|%s" % (uid, service_name)
+
+
+def _health_lock():
+    return _HEALTH_TOKEN_LOCK
+
+
+def google_health_access_token(service_name: str = "google-gmail",
+                               *, force_refresh: bool = False) -> str:
+    """Return a Google-Health-only OAuth access token for the session user.
 
     Down-scopes the bundled vault refresh token to ONLY the ``googlehealth.*``
     scopes, so the returned bearer is accepted by ``health.googleapis.com``
     (which rejects tokens carrying gmail/calendar/etc. scopes). Identity comes
     from the session, same as :func:`build_service`. Raises ``RuntimeError`` if
     the account has no googlehealth scopes granted (re-consent first).
+
+    The token is cached for its lifetime (minus a small skew) keyed by the
+    session user + service. The lock is held across the mint so concurrent
+    first calls from a worker pool produce ONE token, not one per thread.
+    Pass ``force_refresh=True`` after a 401 to mint a new one immediately.
     """
     import urllib.request, urllib.parse, urllib.error
-    creds = load_credentials(service_name)
-    granted = set(creds.scopes or [])
-    want = [sc for sc in google_health_scopes() if sc in granted]
-    if not want:
-        raise RuntimeError(
-            "account for service %r has no googlehealth.* scopes granted -- "
-            "re-consent via get_auth_url() first." % service_name
-        )
-    form = urllib.parse.urlencode({
-        "client_id": creds.client_id,
-        "client_secret": creds.client_secret,
-        "refresh_token": creds.refresh_token,
-        "grant_type": "refresh_token",
-        "scope": " ".join(want),
-    }).encode()
+    key = _health_cache_key(service_name)
+    with _health_lock():
+        now = time.monotonic()
+        cached = _HEALTH_TOKEN_CACHE.get(key)
+        if cached and not force_refresh and cached[1] > now:
+            return cached[0]
+        creds = load_credentials(service_name)
+        granted = set(creds.scopes or [])
+        want = [sc for sc in google_health_scopes() if sc in granted]
+        if not want:
+            raise RuntimeError(
+                "account for service %r has no googlehealth.* scopes granted -- "
+                "re-consent via get_auth_url() first." % service_name
+            )
+        form = urllib.parse.urlencode({
+            "client_id": creds.client_id,
+            "client_secret": creds.client_secret,
+            "refresh_token": creds.refresh_token,
+            "grant_type": "refresh_token",
+            "scope": " ".join(want),
+        }).encode()
+        try:
+            with urllib.request.urlopen(
+                urllib.request.Request("https://oauth2.googleapis.com/token", data=form),
+                timeout=30,
+            ) as resp:
+                payload = json.loads(resp.read())
+        except urllib.error.HTTPError as e:
+            raise RuntimeError("health token mint failed: %s %r" % (e.code, e.read()[:200]))
+        token = payload["access_token"]
+        try:
+            expires_in = float(payload.get("expires_in") or 3600)
+        except (TypeError, ValueError):
+            expires_in = 3600.0
+        ttl = max(30.0, expires_in - _HEALTH_TOKEN_TTL_SKEW)
+        _HEALTH_TOKEN_CACHE[key] = (token, now + ttl)
+        logger.debug("gws_auth: minted health token for %s (ttl=%.0fs)", key, ttl)
+        return token
+
+
+def _health_error_details(exc) -> tuple:
+    """Return (status, reason, message, retry_after) for an HTTPError."""
+    import email.utils
+    status = getattr(exc, "code", None) or 0
+    reason = ""
+    message = ""
+    retry_after = None
     try:
-        with urllib.request.urlopen(
-            urllib.request.Request("https://oauth2.googleapis.com/token", data=form),
-            timeout=30,
-        ) as resp:
-            return json.loads(resp.read())["access_token"]
-    except urllib.error.HTTPError as e:
-        raise RuntimeError("health token mint failed: %s %r" % (e.code, e.read()[:200]))
+        headers = getattr(exc, "headers", None)
+        if headers is not None:
+            ra = headers.get("Retry-After")
+            if ra:
+                try:
+                    retry_after = float(ra)
+                except (TypeError, ValueError):
+                    dt = email.utils.parsedate_to_datetime(ra)
+                    if dt is not None:
+                        retry_after = max(0.0, dt.timestamp() - time.time())
+    except Exception:
+        pass
+    try:
+        raw = exc.read()
+        if raw:
+            payload = json.loads(raw)
+            err = payload.get("error", {}) or {}
+            message = err.get("message", "") or payload.get("message", "")
+            reasons = []
+            for item in (err.get("errors") or []):
+                if item.get("reason"):
+                    reasons.append(item["reason"])
+            if err.get("status"):
+                reasons.append(err["status"])
+            reason = reasons[0] if reasons else ""
+    except Exception:
+        pass
+    return status, reason, message or str(exc), retry_after
+
+
+def _health_backoff_delay(attempt: int, retry_after=None) -> float:
+    """Exponential backoff with full jitter, honouring Retry-After."""
+    import random
+    base = min(16.0, 1.0 * (2 ** attempt))
+    delay = random.uniform(0.0, base)
+    if retry_after is not None:
+        delay = max(delay, float(retry_after))
+    return min(30.0, delay)
 
 
 def google_health_request(method, path, service_name: str = "google-gmail",
-                          params: dict = None, json_body: dict = None):
+                          params: dict = None, json_body: dict = None,
+                          *, max_attempts: int | None = None):
     """Call the Google Health API and return parsed JSON (``{}`` if empty body).
 
     ``path`` is relative to ``health.googleapis.com/v4`` (leading slash
@@ -594,25 +694,132 @@ def google_health_request(method, path, service_name: str = "google-gmail",
     are allowed). ``json_body`` sends a JSON POST/PATCH body. Reads need the
     matching ``*.readonly`` scope; create/edit/delete of OUR OWN entries need
     ``*.writeonly``. Raises ``RuntimeError`` on non-2xx.
+
+    GETs retry automatically with exponential backoff + jitter on 429/5xx and
+    transient network errors, honouring ``Retry-After``.  Write methods retry
+    only on 429/503 (to avoid creating duplicate data points); pass
+    ``max_attempts=1`` to disable retries entirely.
     """
     import urllib.request, urllib.parse, urllib.error
-    token = google_health_access_token(service_name)
+    method = method.upper()
+    is_read = method == "GET"
+    attempts = max_attempts if max_attempts is not None else (5 if is_read else 3)
+    attempts = max(1, int(attempts))
     url = "%s/%s" % (GOOGLE_HEALTH_BASE, path.lstrip("/"))
     if params:
         url += "?" + urllib.parse.urlencode(params)
     data = json.dumps(json_body).encode() if json_body is not None else None
-    headers = {"Authorization": "Bearer " + token}
-    if data is not None:
-        headers["Content-Type"] = "application/json"
-    req = urllib.request.Request(url, data=data, headers=headers, method=method.upper())
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            body = resp.read()
-            return json.loads(body) if body else {}
-    except urllib.error.HTTPError as e:
-        raise RuntimeError("health API %s %s -> %s %s" % (
-            method, path, e.code, e.read().decode()[:300]))
+    reauthed = False
+    last_error = None
+    for attempt in range(attempts):
+        token = google_health_access_token(service_name, force_refresh=reauthed)
+        reauthed = False
+        headers = {"Authorization": "Bearer " + token}
+        if data is not None:
+            headers["Content-Type"] = "application/json"
+        req = urllib.request.Request(url, data=data, headers=headers, method=method)
+        try:
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                body = resp.read()
+                return json.loads(body) if body else {}
+        except urllib.error.HTTPError as e:
+            status, reason, message, retry_after = _health_error_details(e)
+            last_error = "%s %s" % (status, (message or "")[:300])
+            if status == 401 and not reauthed:
+                reauthed = True
+                logger.warning("gws_auth: health token rejected (401); re-minting once")
+                continue
+            retryable = status in _HEALTH_RETRY_STATUSES
+            if status == 403 and reason in _HEALTH_RATE_LIMIT_REASONS:
+                retryable = True
+            if not is_read and status not in (429, 503):
+                retryable = False
+            if not retryable or attempt >= attempts - 1:
+                raise RuntimeError("health API %s %s -> %s" % (method, path, last_error))
+            delay = _health_backoff_delay(attempt, retry_after)
+            logger.warning(
+                "gws_auth: health API %s %s -> %s (%s); retry %d/%d in %.1fs",
+                method, path, status, reason or message[:80], attempt + 1,
+                attempts - 1, delay,
+            )
+            time.sleep(delay)
+        except (urllib.error.URLError, TimeoutError, ConnectionError, OSError) as e:
+            last_error = "network error: %s" % str(e)[:300]
+            if attempt >= attempts - 1:
+                raise RuntimeError("health API %s %s -> %s" % (method, path, last_error))
+            delay = _health_backoff_delay(attempt)
+            logger.warning(
+                "gws_auth: health API %s %s network error (%s); retry %d/%d in %.1fs",
+                method, path, str(e)[:80], attempt + 1, attempts - 1, delay,
+            )
+            time.sleep(delay)
+    raise RuntimeError("health API %s %s failed: %s" % (method, path, last_error))
 
+
+def google_health_list_data_points(data_type: str, *, data_filter: str | None = None,
+                                   page_size: int | None = None,
+                                   service_name: str = "google-gmail",
+                                   max_pages: int | None = None,
+                                   data_source_family: str | None = None,
+                                   fields: str | None = None) -> dict:
+    """List every data point for one type, paging on ``nextPageToken``.
+
+    Sets an explicit ``pageSize`` because the API's default is small and
+    server-capped on dense series (the 2026-11-15 pull made 1,215 tiny pages
+    and took ~25 minutes).  Defaults: 10,000 points/page, except ``sleep`` and
+    ``exercise`` where the API maximum is 25.
+
+    Always pass a time-window ``data_filter`` for backfills (heart-rate ~3-day
+    chunks, oxygen-saturation ~4-day chunks, others 10-15 days) rather than
+    pulling all history in one pass.  Filters use only ``>=`` / ``<`` and
+    ``AND``; see the Google Health API reference.
+
+    Returns ``{"data_type", "data_points", "count", "pages", "truncated",
+    "last_page_token"}``.  ``truncated`` is True only when *max_pages* was
+    supplied and reached with a page token still outstanding.
+    """
+    if page_size is None:
+        page_size = 25 if data_type in ("sleep", "exercise") else 10000
+    page_size = int(page_size)
+    points = []
+    token = None
+    pages = 0
+    while True:
+        params = {"pageSize": page_size}
+        if data_filter:
+            params["filter"] = data_filter
+        if token:
+            params["pageToken"] = token
+        if data_source_family:
+            params["dataSourceFamily"] = data_source_family
+        if fields:
+            params["fields"] = fields
+        resp = google_health_request(
+            "GET", "users/me/dataTypes/%s/dataPoints" % data_type,
+            params=params, service_name=service_name,
+        )
+        batch = resp.get("dataPoints") or resp.get("data_points") or []
+        points.extend(batch)
+        pages += 1
+        token = resp.get("nextPageToken")
+        if not token:
+            break
+        if max_pages is not None and pages >= max_pages:
+            break
+    truncated = bool(token) and max_pages is not None and pages >= max_pages
+    logger.info(
+        "gws_auth: health list %s -> %d points in %d page(s)%s",
+        data_type, len(points), pages,
+        " (TRUNCATED at max_pages=%s)" % max_pages if truncated else "",
+    )
+    return {
+        "data_type": data_type,
+        "data_points": points,
+        "count": len(points),
+        "pages": pages,
+        "truncated": truncated,
+        "last_page_token": token,
+    }
 
 
 def get_auth_url(login_hint: str = None) -> str:

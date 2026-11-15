@@ -42,6 +42,45 @@ def _handle_smart_browser(args: dict, **_) -> str:
     import urllib.request
     import urllib.error
 
+    continuation_id = str(args.get("continuation_id") or "").strip()
+    twofa_code      = str(args.get("twofa_code") or "").strip()
+
+    # 2FA continuation: the sidecar kept the browser session alive at the
+    # verification page. The code is entered by the sidecar, not the LLM.
+    if continuation_id:
+        if not twofa_code:
+            return json.dumps({
+                "success": False, "needs_2fa": True,
+                "error": "twofa_code is required to resume",
+            })
+        resume_url = _SIDECAR_URL.rsplit("/run", 1)[0] + "/resume"
+        payload = {"continuation_id": continuation_id, "twofa_code": twofa_code}
+        if args.get("instruction"):
+            payload["instruction"] = args["instruction"]
+        try:
+            req = urllib.request.Request(
+                resume_url,
+                data=json.dumps(payload).encode(),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=420) as resp:
+                return resp.read().decode()
+        except urllib.error.HTTPError as exc:
+            try:
+                detail = exc.read().decode()
+            except Exception:
+                detail = ""
+            return json.dumps({
+                "success": False,
+                "error": f"2FA resume failed ({exc.code}): {detail[:1000]}",
+            })
+        except Exception as exc:
+            return json.dumps({
+                "success": False,
+                "error": f"{type(exc).__name__}: {exc}",
+            })
+
     instruction     = args["instruction"]
     session_id      = args.get("session_id") or uuid.uuid4().hex[:12]
     timeout_seconds = int(args.get("timeout_seconds", 120))
@@ -53,6 +92,8 @@ def _handle_smart_browser(args: dict, **_) -> str:
         "timeout_seconds": timeout_seconds,
         "max_steps":       max_steps,
     }
+    if args.get("twofa_method"):
+        payload["twofa_method"] = args["twofa_method"]
 
     # Forward the active session's LLM config so the sidecar uses the same model
     try:
@@ -88,6 +129,28 @@ def _handle_smart_browser(args: dict, **_) -> str:
         payload["platform"] = platform
     except Exception:
         pass
+
+    # Optional saved credential. The sidecar fetches the encrypted password
+    # from the vault and feeds it to browser-use's sensitive_data map; this
+    # tool never receives or forwards the plaintext.
+    if args.get("use_saved_credential"):
+        cred_user = str(
+            args.get("credential_user") or payload.get("user_id") or ""
+        ).strip()
+        cred_domain = str(args.get("credential_domain") or "").strip()
+        cred_origin = str(args.get("credential_origin") or "").strip()
+        if not cred_user or not (cred_domain or cred_origin):
+            return json.dumps({
+                "success": False, "result": None, "steps_taken": 0, "attempts": 0,
+                "error": "use_saved_credential requires credential_domain "
+                         "(and a session user)",
+            })
+        cred: dict = {"user_id": cred_user}
+        if cred_domain:
+            cred["domain"] = cred_domain
+        if cred_origin:
+            cred["origin"] = cred_origin
+        payload["credential"] = cred
 
     logger.info(
         "smart_browser → sidecar session=%s instruction=%r",
@@ -142,7 +205,13 @@ _SMART_BROWSER_SCHEMA = {
         "autonomously navigates websites, clicks, types, and extracts data, "
         "then returns a structured result. Uses stealth Chromium. "
         "Good for: scraping, form submission, multi-step web workflows, "
-        "login-gated pages, research tasks."
+        "login-gated pages, research tasks. "
+        "If a call with use_saved_credential returns needs_2fa: when "
+        "twofa_method is 'email', search the user's Gmail for the latest "
+        "LibreView/Abbott code with gws_gmail_search, passing gmail_service_hint "
+        "as service_name; when twofa_method is 'phone', ask the user for the "
+        "6-digit SMS code. Then call this tool again with continuation_id and "
+        "twofa_code. Do not ask the user for an email code unless Gmail has none."
     ),
     "parameters": {
         "type": "object",
@@ -165,6 +234,57 @@ _SMART_BROWSER_SCHEMA = {
             "max_steps": {
                 "type": "integer",
                 "description": "Maximum agent steps per attempt. Default 20.",
+            },
+            "use_saved_credential": {
+                "type": "boolean",
+                "description": (
+                    "If true, the sidecar loads the user's encrypted saved password "
+                    "for credential_domain and lets the browser agent log in without "
+                    "ever exposing the password to the model."
+                ),
+            },
+            "credential_domain": {
+                "type": "string",
+                "description": (
+                    "Website domain whose saved password should be used, e.g. "
+                    "'libreview.com'. Required when use_saved_credential is true."
+                ),
+            },
+            "credential_origin": {
+                "type": "string",
+                "description": (
+                    "Optional exact login origin (e.g. https://www.libreview.com) "
+                    "instead of / in addition to credential_domain."
+                ),
+            },
+            "credential_user": {
+                "type": "string",
+                "description": (
+                    "Optional vault user id; defaults to the current session user."
+                ),
+            },
+            "continuation_id": {
+                "type": "string",
+                "description": (
+                    "Returned by a previous call when it hit a 2FA page. Pass it "
+                    "with twofa_code to resume the same browser session."
+                ),
+            },
+            "twofa_method": {
+                "type": "string",
+                "enum": ["email", "phone"],
+                "description": (
+                    "2FA method for saved-credential logins: 'email' (default) "
+                    "fetches the code from Gmail; 'phone' asks the user for the "
+                    "SMS code. Use 'phone' if Abbott's email send fails."
+                ),
+            },
+            "twofa_code": {
+                "type": "string",
+                "description": (
+                    "The current 6-digit 2FA code. For email, fetch it from the "
+                    "user's Gmail with gws_gmail_search; for phone, ask the user."
+                ),
             },
         },
         "required": ["instruction"],

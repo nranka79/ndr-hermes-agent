@@ -176,6 +176,35 @@
       </div>
     </div>
 
+    <!-- DRA WhatsApp Access -->
+    <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+      <div class="px-6 py-4 border-b border-gray-100">
+        <h3 class="text-sm font-semibold text-gray-900 uppercase tracking-wider">DRA WhatsApp Access</h3>
+      </div>
+      <div class="p-6">
+        <p class="text-xs text-gray-400 mb-4">
+          Lets this identity open the DRA WhatsApp inbox (wa.ahfl.in) with Google sign-in and
+          use its voice-dictation and Hermes tools. Admins are allowed by default; everyone
+          else is denied until enabled here. Changes apply within a minute, no restart.
+        </p>
+        <form method="post" action="/users/{{ user_data.user_id }}/whatsapp" class="space-y-3">
+          <label class="flex items-center gap-3 cursor-pointer">
+            <input type="checkbox" name="whatsapp"
+                   class="w-4 h-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
+                   {% if whatsapp_enabled %}checked{% endif %}>
+            <span class="text-sm font-medium text-gray-700">whatsapp (wa.ahfl.in)</span>
+          </label>
+          <div class="pt-2">
+            <button type="submit"
+                    class="inline-flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium px-4 py-2 rounded-lg transition shadow-sm">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+              Save WhatsApp Access
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+
     <!-- LLM Gateway Access -->
     <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
       <div class="px-6 py-4 border-b border-gray-100">
@@ -243,6 +272,76 @@
           <p class="text-sm text-gray-400">No tokens stored</p>
         </div>
         {% endif %}
+      </div>
+    </div>
+
+    <!-- Saved Website Passwords -->
+    <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+      <div class="px-6 py-4 border-b border-gray-100">
+        <h3 class="text-sm font-semibold text-gray-900 uppercase tracking-wider">Saved Website Passwords</h3>
+      </div>
+      <div class="p-6 space-y-4">
+        <p class="text-xs text-gray-400">
+          Encrypted at rest with AES-256-GCM and bound to this user. The agent can use a saved
+          credential through the browser sidecar, but cannot read it; the plaintext never enters
+          the model. Saving here replaces the vault entry.
+        </p>
+        {% if password_entries %}
+        <div class="space-y-2">
+          {% for p in password_entries %}
+          <div class="flex items-start justify-between gap-3 px-3 py-2.5 bg-gray-50 rounded-lg">
+            <div class="min-w-0">
+              <div class="text-sm text-gray-700 font-medium">{{ p.domain }}</div>
+              <div class="text-xs text-gray-500 truncate">{{ p.username }}{% if p.label %} · {{ p.label }}{% endif %}</div>
+              <div class="text-[10px] text-gray-400">
+                updated {{ p.updated_at or '-' }}{% if p.last_used_at %} · last used {{ p.last_used_at }}{% endif %}
+              </div>
+            </div>
+            <form method="post" action="/users/{{ user_data.user_id }}/passwords/{{ p.domain }}/delete"
+                  onsubmit="return confirm('Delete the saved password for {{ p.domain }}?')">
+              <button type="submit" class="text-xs text-red-600 hover:text-red-800 font-medium">Delete</button>
+            </form>
+          </div>
+          {% endfor %}
+        </div>
+        {% else %}
+        <p class="text-sm text-gray-400">No saved passwords</p>
+        {% endif %}
+
+        <form method="post" action="/users/{{ user_data.user_id }}/passwords" class="space-y-3 pt-3 border-t border-gray-100">
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="text-xs font-medium text-gray-600">Website domain</label>
+              <input name="domain" required placeholder="libreview.com"
+                     class="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500">
+            </div>
+            <div>
+              <label class="text-xs font-medium text-gray-600">Login email / username</label>
+              <input name="username" required placeholder="user@example.com"
+                     class="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500">
+            </div>
+          </div>
+          <div>
+            <label class="text-xs font-medium text-gray-600">Password</label>
+            <input name="password" type="password" required autocomplete="new-password"
+                   class="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500">
+          </div>
+          <div>
+            <label class="text-xs font-medium text-gray-600">Extra origins (comma-separated, optional)</label>
+            <input name="origins" placeholder="https://api.libreview.io, https://api-ap.libreview.io"
+                   class="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500">
+            <p class="text-xs text-gray-400 mt-1">The domain's https:// and https://www. origins are added automatically.</p>
+          </div>
+          <div>
+            <label class="text-xs font-medium text-gray-600">Label (optional)</label>
+            <input name="label" placeholder="LibreView"
+                   class="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500">
+          </div>
+          <button type="submit"
+                  class="inline-flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium px-4 py-2 rounded-lg transition shadow-sm">
+            Save / update password
+          </button>
+        </form>
       </div>
     </div>
 
@@ -315,6 +414,34 @@
             {% if oauth_kelsa %}
             <div class="mt-2 ml-7">
               {% if 'mcp-kelsa-read' in services or 'kelsa' in services %}
+              <span class="inline-flex items-center gap-1.5 text-xs font-medium text-emerald-700">
+                <span class="w-2 h-2 rounded-full bg-emerald-400"></span>
+                Connected
+              </span>
+              {% else %}
+              <span class="inline-flex items-center gap-1.5 text-xs font-medium text-gray-400">
+                <span class="w-2 h-2 rounded-full bg-gray-300"></span>
+                No token
+              </span>
+              {% endif %}
+            </div>
+            {% endif %}
+          </div>
+
+          <!-- TailorTalk MCP -->
+          <div>
+            <label class="flex items-center gap-2 cursor-pointer">
+              <input type="checkbox" name="tailortalk"
+                     class="w-4 h-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
+                     {% if oauth_tailortalk %}checked{% endif %}>
+              <span class="text-sm font-medium text-gray-700 flex items-center gap-2">
+                <span class="w-5 h-5 flex items-center justify-center text-xs bg-amber-100 text-amber-700 rounded">T</span>
+                TailorTalk MCP
+              </span>
+            </label>
+            {% if oauth_tailortalk %}
+            <div class="mt-2 ml-7">
+              {% if 'mcp-tailortalk' in services %}
               <span class="inline-flex items-center gap-1.5 text-xs font-medium text-emerald-700">
                 <span class="w-2 h-2 rounded-full bg-emerald-400"></span>
                 Connected

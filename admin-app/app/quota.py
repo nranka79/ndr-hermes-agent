@@ -129,9 +129,14 @@ def _pool_entries(env_var: str) -> list[dict]:
     return [e for e in parsed if isinstance(e, dict)] if isinstance(parsed, list) else []
 
 
-def _label(provider: str, n: int, total: int) -> str:
+def _label(provider: str, n: int, total: int, custom: str = "") -> str:
     base = PROVIDER_LABELS.get(provider, provider or "unknown")
-    return f"{base} #{n}" if total > 1 else base
+    base = f"{base} #{n}" if total > 1 else base
+    custom = (custom or "").strip()
+    # The keys page lets an operator tag an entry with a free-text label
+    # (e.g. which account/workspace it came from) when adding it. Show it
+    # here too so the same key reads identically on both pages.
+    return f"{base} — {custom}" if custom else base
 
 
 def _discover() -> list[Account]:
@@ -155,7 +160,7 @@ def _discover() -> list[Account]:
             accounts.append(Account(
                 id=f"{bucket_id}:{e.get('id') or seq[provider]}",
                 provider=provider,
-                label=_label(provider, seq[provider], counts.get(provider, 1)),
+                label=_label(provider, seq[provider], counts.get(provider, 1), str(e.get("label") or "")),
                 api_key=key,
                 modality=spec["modality"],
                 tier=spec["tier"],

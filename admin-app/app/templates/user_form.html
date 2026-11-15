@@ -47,11 +47,11 @@
         <p class="mt-0 mb-2 text-xs text-gray-400">Tick the apps this user may use. Admins get all apps by default; employees get only what is ticked here (and can be adjusted later from the user page).</p>
         {% set perms = user_data.get('permissions', {}) %}
         {% set apps = perms.get('apps', {}) %}
-        {% for app in ['chat', 'voice', 'telegram', 'apps'] %}
+        {% for app in ['chat', 'voice', 'telegram', 'apps', 'whatsapp'] %}
         <label class="flex items-center gap-2 mb-1.5 text-sm text-gray-700">
           <input type="checkbox" name="app_{{ app }}" value="1" {% if apps.get(app) %}checked{% endif %}
                  class="w-4 h-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500">
-          {{ {'chat':'Chat (chat.ahfl.in)','voice':'Voice (voice.ahfl.in)','telegram':'Telegram (Hermes bot)','apps':'Apps (apps.ahfl.in)'}[app] }}
+          {{ {'chat':'Chat (chat.ahfl.in)','voice':'Voice (voice.ahfl.in)','telegram':'Telegram (Hermes bot)','apps':'Apps (apps.ahfl.in)','whatsapp':'DRA WhatsApp (wa.ahfl.in)'}[app] }}
         </label>
         {% endfor %}
       </div>

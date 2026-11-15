@@ -59,6 +59,8 @@ _GWS_OPS = [
     "gws_drive_permissions_list",
     "gws_drive_permissions_add",
     "gws_drive_permissions_remove",
+    "gws_sheets_get_tabs",
+    "gws_sheets_rename_tab",
 ]
 
 _GWS_DWD_OPS = [
@@ -88,6 +90,8 @@ _GWS_DWD_OPS = [
     "gws_dwd_drive_permissions_list",
     "gws_dwd_drive_permissions_add",
     "gws_dwd_drive_permissions_remove",
+    "gws_dwd_sheets_get_tabs",
+    "gws_dwd_sheets_rename_tab",
 ]
 
 # Tools that are registered + callable internally (sandbox RPC stubs, e.g.
