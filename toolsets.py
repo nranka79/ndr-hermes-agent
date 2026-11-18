@@ -150,6 +150,10 @@ _HERMES_CORE_TOOLS = [
     # TailorTalk MCP per-user OAuth (2026-10-07) -- same shape as Kelsa; see
     # tools/tailortalk_auth.py and tools/tailortalk_tool.py.
     "tailortalk_login", "tailortalk_list_tools", "tailortalk_call_tool",
+    # Tally Prime READ-ONLY (2026-11-18) -- shared company books via the
+    # playground Tally MCP server; access gated per user in the vault
+    # (hermes-system/tally-mcp). Writes disabled. See tools/tally_tool.py.
+    "tally_list_tools", "tally_call_tool",
     # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
     "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
     # Kanban multi-agent coordination — only in schema when the agent is
@@ -371,6 +375,13 @@ TOOLSETS = {
         "tools": ["send_oauth_url", "kelsa_login", "kelsa_complete_login",
                   "kelsa_list_tools", "kelsa_call_tool",
                   "tailortalk_login", "tailortalk_list_tools", "tailortalk_call_tool"],
+        "includes": []
+    },
+
+    "tally": {
+        "description": "Read-only access to the company Tally Prime books (ledgers, trial balance, "
+                       "P&L, balance sheet, stock, outstanding bills, day book). Writes disabled.",
+        "tools": ["tally_list_tools", "tally_call_tool"],
         "includes": []
     },
 
