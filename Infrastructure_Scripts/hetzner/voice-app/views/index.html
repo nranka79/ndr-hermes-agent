@@ -310,10 +310,10 @@
     </div>
 
     <div class="model-toggle">
-    <button id="nanoModelButton" class="format-button active"><i class="fas fa-bolt"></i> Universal-2</button>
+    <button id="nanoModelButton" class="format-button"><i class="fas fa-bolt"></i> Universal-2</button>
     <button id="standardModelButton" class="format-button"><i class="fas fa-brain"></i> Universal-3.5 Pro</button>
     <button id="webApiButton" class="format-button"><i class="fas fa-globe"></i> Web API</button>
-    <button id="whisperModelButton" class="format-button"><i class="fas fa-server"></i> Free Whisper</button>
+    <button id="whisperModelButton" class="format-button active" title="Groq Whisper large-v3-turbo (fastest) — falls back to local whisper / AssemblyAI"><i class="fas fa-server"></i> Whisper <span style="font-size:0.75rem;opacity:.75;font-weight:400">(Groq)</span></button>
     </div>
 
     <div class="options-row">
@@ -449,6 +449,14 @@
     <div class="status-container">
         <div id="status" class="status">Ready to record</div>
     </div>
+    <div id="pendingBanner" class="status processing" style="display: none; margin-top: 10px; text-align: left;">
+        <div id="pendingBannerText" style="margin-bottom: 8px;"></div>
+        <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+            <button id="pendingRetryButton" class="action-button warning"><i class="fas fa-redo-alt"></i> Transcribe now</button>
+            <button id="pendingDownloadButton" class="action-button info"><i class="fas fa-download"></i> Download</button>
+            <button id="pendingDiscardButton" class="action-button" style="background-color: var(--gray); color: white;"><i class="fas fa-trash"></i> Discard</button>
+        </div>
+    </div>
     </div>
 
     <div id="audioContainer" class="audio-container"></div>
@@ -467,7 +475,6 @@
 
     <div class="action-buttons">
         <button id="resubmitButton" class="action-button warning" disabled><i class="fas fa-redo-alt"></i> Resubmit Audio</button>
-        <button id="resaveButton" class="action-button success" disabled><i class="fas fa-save"></i> Resave Transcription & Audio</button>
         <button id="downloadButton" class="action-button info" disabled><i class="fas fa-download"></i> Download Audio</button>
         <button id="reformatButton" class="action-button primary" disabled><i class="fas fa-sync-alt"></i> Reformat Text</button>
     </div>
@@ -513,18 +520,31 @@
     </div>
     </div>
 
+    <!-- Signed-out overlay (shown the moment the backend session ends/revokes) -->
+    <div id="signedOutOverlay" style="display: none; position: fixed; inset: 0; background: rgba(15,17,22,0.94); z-index: 10000; align-items: center; justify-content: center; flex-direction: column; color: #fff; text-align: center; padding: 20px;">
+        <i class="fas fa-user-lock" style="font-size: 3rem; color: var(--warning); margin-bottom: 16px;"></i>
+        <h2 style="margin: 0 0 8px;">You've been signed out</h2>
+        <p style="color: #a9b2c3; margin: 0 0 20px;">Your session ended on the server. Redirecting to the sign-in page...</p>
+        <a href="/login" class="record-button" style="text-decoration: none;"><i class="fas fa-sign-in-alt"></i> Sign in again</a>
+    </div>
+
     <script type="module">
     // ===== ALL API CALLS GO THROUGH SERVER PROXY =====
     const UPLOAD_URL = '/api/assemblyai/upload';
     const TRANSCRIPT_URL = '/api/assemblyai/transcript';
     const WHISPER_TRANSCRIBE_URL = '/api/whisper/transcribe';
-    const SAVE_WEBHOOK_URL = '/api/webhook-form/save';
     const WHATSAPP_WEBHOOK_URL = '/api/webhook/whatsapp';
     const CLEANTEXT_WEBHOOK_URL = '/api/webhook/cleantext';
     const INITIAL_TIMEOUT = 30000;
     const WHISPER_INITIAL_TIMEOUT = 120000; // CPU-only local transcription can be slower than cloud APIs
     const MAX_RETRIES = 2;
     const RETRY_MULTIPLIER = 5;
+    // Audio uploads from a phone on the move drop mid-body (cell hand-offs) and
+    // nginx answers 408; the STT gateway can also answer 5xx/429 transiently.
+    // Those are all retried with backoff instead of giving up on first failure.
+    const UPLOAD_MAX_RETRIES = 5;
+    const MAX_FETCH_TIMEOUT = 300000;
+    const RETRYABLE_HTTP = new Set([408, 425, 429, 500, 502, 503, 504]);
 
     // User Profile State
     let currentUserInfo = null;
@@ -554,7 +574,6 @@
     const promptEnhancerButton = document.getElementById('promptEnhancerButton');
     const debugToggle = document.getElementById('debugToggle');
     const continueRecordButton = document.getElementById('continueRecordButton');
-    const resaveButton = document.getElementById('resaveButton');
     const webApiButton = document.getElementById('webApiButton');
     const languageSelect = document.getElementById('languageSelect');
     const autoCopyToggle = document.getElementById('autoCopyToggle');
@@ -581,7 +600,7 @@
     const audioFileInput = document.getElementById('audioFileInput');
 
     let selectedFormat = null;
-    let selectedModel = 'universal2';
+    let selectedModel = 'whisper';
     let mediaRecorder;
     let audioChunks = [];
     let startTime;
@@ -592,7 +611,6 @@
     let transcribedText = '';
     let isRecording = false;
     let isFirstRecordingInSession = true;
-    let lastSaveSuccessful = false;
     let webSpeechRecognition = null;
     let webSpeechFinalTranscript = '';
     let webSpeechCurrentSessionText = '';
@@ -609,6 +627,59 @@
         debugElement.scrollTop = debugElement.scrollHeight;
         console.log(`[${timestamp}] ${message}`);
     }
+
+    // ===== Session-expiry detection =====
+    // The backend signs users out for various reasons (session expiry, server
+    // restart, vault revocation, session-secret rotation). We detect it by
+    // (a) polling /api/auth/status every few seconds and (b) treating any API
+    // 401 as a sign-out. On detection we stop any in-flight recording, show a
+    // signed-out state, and force the user back to the sign-in page.
+    let sessionExpired = false;
+    let authPollTimer = null;
+
+    function handleSessionExpired() {
+        if (sessionExpired) return;
+        sessionExpired = true;
+        if (authPollTimer) { clearInterval(authPollTimer); authPollTimer = null; }
+        log('Session expired / signed out on backend — stopping and redirecting to sign-in.');
+        forceStopRecording();
+        const overlay = document.getElementById('signedOutOverlay');
+        if (overlay) overlay.style.display = 'flex';
+        setTimeout(() => { window.location.href = '/login'; }, 1500);
+    }
+
+    function forceStopRecording() {
+        clearInterval(timerInterval);
+        stopProcessingTimer();
+        if (webSpeechRestartTimer) { clearTimeout(webSpeechRestartTimer); webSpeechRestartTimer = null; }
+        webSpeechShouldBeRunning = false;
+        if (webSpeechRecognition) {
+            try { webSpeechRecognition.onend = null; webSpeechRecognition.onerror = null; webSpeechRecognition.stop(); } catch (e) {}
+            webSpeechRecognition = null;
+        }
+        if (mediaRecorder && mediaRecorder.state === 'recording') { try { mediaRecorder.stop(); } catch (e) {} }
+        if (stream) { try { stream.getTracks().forEach(t => t.stop()); } catch (e) {} stream = null; }
+        isRecording = false;
+    }
+
+    async function checkAuthStatus() {
+        try {
+            const res = await fetch('/api/auth/status');
+            if (res.status === 401) { handleSessionExpired(); return; }
+            const data = await res.json().catch(() => ({}));
+            if (data && data.authenticated === false) handleSessionExpired();
+        } catch (e) {
+            // Transient network errors must NOT sign the user out.
+        }
+    }
+
+    // Any API 401 means the backend session is gone/revoked -> sign out.
+    const _origFetch = window.fetch;
+    window.fetch = async (...args) => {
+        const res = await _origFetch(...args);
+        if (res.status === 401) handleSessionExpired();
+        return res;
+    };
 
     // ===== User Profile Functions =====
     async function loadUserInfo() {
@@ -684,26 +755,180 @@
         } catch (e) { apiKeyStatus.textContent = 'Error: ' + e.message; apiKeyStatus.style.color = 'var(--danger)'; log(`Error saving API key: ${e.message}`); }
     });
 
-    async function fetchWithRetries(url, options = {}, retries = MAX_RETRIES, timeout = INITIAL_TIMEOUT) {
+    function isNetworkError(error) {
+        // fetch() rejects with a TypeError when the connection is lost mid-request
+        // ("Failed to fetch", "Load failed", "NetworkError when attempting to fetch resource").
+        return !!error && (error.name === 'TypeError' || /network|failed to fetch|load failed/i.test(error.message || ''));
+    }
+
+    function waitForOnline(maxWaitMs = 5 * 60 * 1000) {
+        if (navigator.onLine !== false) return Promise.resolve(true);
+        log('Device is offline — waiting for the connection to come back...');
+        statusElement.textContent = 'Offline — waiting for connection (your recording is saved on this device)...';
+        statusElement.className = 'status processing';
+        return new Promise(resolve => {
+            let done = false;
+            const finish = (v) => { if (done) return; done = true; window.removeEventListener('online', onOnline); clearTimeout(t); resolve(v); };
+            const onOnline = () => finish(true);
+            const t = setTimeout(() => finish(false), maxWaitMs);
+            window.addEventListener('online', onOnline);
+        });
+    }
+
+    const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+    const backoffMs = (attempt) => Math.min(1000 * Math.pow(2, attempt - 1), 15000);
+
+    async function fetchWithRetries(url, options = {}, retries = MAX_RETRIES, timeout = INITIAL_TIMEOUT, attempt = 1) {
+        await waitForOnline();
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), timeout);
         const fetchOptions = { ...options, signal: controller.signal };
+        let response;
         try {
-            log(`Attempting fetch: ${url} with timeout ${timeout / 1000}s. Retries left: ${retries}`);
-            statusElement.textContent = `Contacting service... (Timeout in ${timeout / 1000}s)`;
-            const response = await fetch(url, fetchOptions);
-            clearTimeout(timeoutId);
-            return response;
+            log(`Attempting fetch: ${url.split('?')[0]} (attempt ${attempt}, timeout ${timeout / 1000}s, retries left: ${retries})`);
+            statusElement.textContent = attempt === 1 ? `Contacting service... (Timeout in ${timeout / 1000}s)` : `Retrying (attempt ${attempt})...`;
+            response = await fetch(url, fetchOptions);
         } catch (error) {
             clearTimeout(timeoutId);
-            if (error.name === 'AbortError' && retries > 0) {
-                log(`Request timed out. Retrying in a moment...`);
-                statusElement.textContent = `Request timed out. Retrying with longer wait time...`;
-                await new Promise(resolve => setTimeout(resolve, 1000));
-                return fetchWithRetries(url, options, retries - 1, timeout * RETRY_MULTIPLIER);
-            } else { log(`Fetch failed: ${error.message}`); throw error; }
+            const timedOut = error.name === 'AbortError';
+            if ((timedOut || isNetworkError(error)) && retries > 0) {
+                const delay = backoffMs(attempt);
+                log(`${timedOut ? 'Request timed out' : 'Network error (' + error.message + ')'} — retrying in ${delay / 1000}s...`);
+                statusElement.textContent = `${timedOut ? 'Request timed out' : 'Connection dropped'} — retrying in ${Math.round(delay / 1000)}s...`;
+                statusElement.className = 'status processing';
+                await sleep(delay);
+                const nextTimeout = timedOut ? Math.min(timeout * RETRY_MULTIPLIER, MAX_FETCH_TIMEOUT) : timeout;
+                return fetchWithRetries(url, options, retries - 1, nextTimeout, attempt + 1);
+            }
+            log(`Fetch failed: ${error.message}`); throw error;
         }
+        clearTimeout(timeoutId);
+        if (RETRYABLE_HTTP.has(response.status) && retries > 0) {
+            // 408 = nginx gave up waiting for the rest of the upload body (stalled mobile link).
+            const delay = backoffMs(attempt);
+            log(`Server answered HTTP ${response.status} — retrying in ${delay / 1000}s...`);
+            statusElement.textContent = `Upload interrupted (HTTP ${response.status}) — retrying in ${Math.round(delay / 1000)}s...`;
+            statusElement.className = 'status processing';
+            await sleep(delay);
+            return fetchWithRetries(url, options, retries - 1, timeout, attempt + 1);
+        }
+        return response;
     }
+
+    // ===== Unsent-recording safety net (IndexedDB) =====
+    // Every recording / uploaded file is persisted on the device *before* it is
+    // sent and only removed once a transcript comes back, so a failed upload
+    // can still be retried with the "Transcribe now" / Discard banner *within
+    // the same page load* (mobile network drop, nginx 408, Android killing
+    // the tab mid-upload).
+    // Changed 2026-11-11: it used to also auto-resubmit on every page
+    // load/reload/fresh login (restorePendingRecording() used to call
+    // retryPendingRecording()). If the saved audio was itself bad (e.g. a
+    // partial/corrupt blob that every STT backend rejects), that meant an
+    // unkillable retry loop: every hard refresh re-fired the same doomed
+    // upload forever, looking like the server was "stuck mid-session" and
+    // surviving a clean reload. Now a fresh page load/login always starts
+    // clean: any undelivered recording from a previous load is dropped,
+    // never auto-resubmitted. See CLEANUP NOTE below.
+    const PENDING_DB_NAME = 'voiceToolPending';
+    const PENDING_STORE = 'recordings';
+    let pendingRecording = null;       // { blob, type, createdAt, name, language, model, partial }
+    let transcriptionInFlight = false;
+    let pendingNeedsRetry = false;
+    const pendingBanner = document.getElementById('pendingBanner');
+    const pendingBannerText = document.getElementById('pendingBannerText');
+
+    function openPendingDb() {
+        return new Promise((resolve, reject) => {
+            if (!('indexedDB' in window)) { reject(new Error('IndexedDB unavailable')); return; }
+            const req = indexedDB.open(PENDING_DB_NAME, 1);
+            req.onupgradeneeded = () => { req.result.createObjectStore(PENDING_STORE); };
+            req.onsuccess = () => resolve(req.result);
+            req.onerror = () => reject(req.error || new Error('IndexedDB open failed'));
+        });
+    }
+    // Records are keyed by createdAt, so a new recording never overwrites an
+    // older one that still has not been transcribed.
+    async function idbPut(value) {
+        const db = await openPendingDb();
+        try { await new Promise((res, rej) => { const tx = db.transaction(PENDING_STORE, 'readwrite'); tx.objectStore(PENDING_STORE).put(value, value.createdAt); tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error); }); }
+        finally { db.close(); }
+    }
+    async function idbGetAll() {
+        const db = await openPendingDb();
+        try { return await new Promise((res, rej) => { const r = db.transaction(PENDING_STORE, 'readonly').objectStore(PENDING_STORE).getAll(); r.onsuccess = () => res(r.result || []); r.onerror = () => rej(r.error); }); }
+        finally { db.close(); }
+    }
+    async function idbDelete(key) {
+        const db = await openPendingDb();
+        try { await new Promise((res, rej) => { const tx = db.transaction(PENDING_STORE, 'readwrite'); tx.objectStore(PENDING_STORE).delete(key); tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error); }); }
+        finally { db.close(); }
+    }
+
+    async function savePendingRecording(blob, extra = {}) {
+        if (!blob || !blob.size) return;
+        try {
+            pendingRecording = {
+                blob,
+                type: blob.type || 'audio/webm',
+                createdAt: extra.createdAt || (pendingRecording && pendingRecording.createdAt) || Date.now(),
+                language: languageSelect.value,
+                model: selectedModel,
+                name: extra.name || null,
+                partial: !!extra.partial,
+            };
+            pendingNeedsRetry = false;
+            await idbPut(pendingRecording);
+            if (!extra.partial) log(`Recording saved on device (${Math.round(blob.size / 1024)} KB) — kept until a transcript comes back.`);
+        } catch (e) { log(`Could not save recording locally: ${e.message}`); }
+    }
+    async function clearPendingRecording() {
+        const key = pendingRecording && pendingRecording.createdAt;
+        pendingRecording = null; pendingNeedsRetry = false;
+        if (key) { try { await idbDelete(key); } catch (e) { /* non-fatal */ } }
+        hidePendingBanner();
+    }
+    function describePending() {
+        if (!pendingRecording) return '';
+        const when = new Date(pendingRecording.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        const what = pendingRecording.name ? `file "${pendingRecording.name}"` : 'recording';
+        return `Unsent ${what} from ${when} (${Math.round(pendingRecording.blob.size / 1024)} KB) is saved on this device.`;
+    }
+    function showPendingBanner(message) { pendingBannerText.textContent = message; pendingBanner.style.display = 'block'; }
+    function hidePendingBanner() { pendingBanner.style.display = 'none'; }
+
+    async function retryPendingRecording(reason, appendToExisting = false) {
+        if (!pendingRecording || transcriptionInFlight) return;
+        if (navigator.onLine === false) { showPendingBanner(describePending() + ' Offline — it will be sent automatically when the connection is back.'); return; }
+        log(`Re-sending saved recording (${reason})...`);
+        hidePendingBanner();
+        audioBlob = pendingRecording.blob; audioURL = URL.createObjectURL(audioBlob); createAudioElement(audioURL); downloadButton.disabled = false;
+        isFirstRecordingInSession = !appendToExisting;
+        statusElement.textContent = 'Re-sending saved recording...'; statusElement.className = 'status processing';
+        startProcessingTimer();
+        try { await transcribeAudio(audioBlob); } finally { stopProcessingTimer(); }
+    }
+    // CLEANUP NOTE (2026-11-11): on every fresh page load (hard refresh, new
+    // tab, fresh login) we wipe anything left in IndexedDB from a previous
+    // load instead of auto-resubmitting it. No background network call, no
+    // banner, no retry -- a clean start every time, matching normal in-tab
+    // behavior (failed-upload retry/discard still works fine *within* a
+    // single page load via the pendingRetryButton/pendingDiscardButton
+    // handlers below, which are unaffected by this).
+    async function restorePendingRecording() {
+        let saved = [];
+        try { saved = await idbGetAll(); } catch (e) { log(`Pending-recording check failed: ${e.message}`); return; }
+        saved = saved.filter(r => r && r.blob && r.blob.size);
+        if (!saved.length) return;
+        for (const rec of saved) {
+            try { await idbDelete(rec.createdAt); } catch (e) { log(`Could not clear stale recording: ${e.message}`); }
+        }
+        log(`Cleared ${saved.length} unsent recording(s) left over from a previous session (no auto-retry on load).`);
+    }
+    document.getElementById('pendingRetryButton').addEventListener('click', () => retryPendingRecording('manual'));
+    document.getElementById('pendingDownloadButton').addEventListener('click', () => downloadAudio());
+    document.getElementById('pendingDiscardButton').addEventListener('click', async () => { await clearPendingRecording(); statusElement.textContent = 'Unsent recording discarded.'; statusElement.className = 'status'; log('Unsent recording discarded by user.'); });
+    window.addEventListener('online', () => { log('Connection is back.'); if (pendingRecording && pendingNeedsRetry && !transcriptionInFlight) retryPendingRecording('connection restored'); });
 
     async function autoCopy(text, label) {
         try { await navigator.clipboard.writeText(text); log(`Auto-copied ${label} to clipboard`); statusElement.textContent = `Auto-copied ${label} to clipboard!`; statusElement.className = 'status success'; }
@@ -733,7 +958,6 @@
     webApiButton.addEventListener('click', () => setModel('webapi'));
     whisperModelButton.addEventListener('click', () => setModel('whisper'));
     continueRecordButton.addEventListener('click', startContinueRecording);
-    resaveButton.addEventListener('click', saveTranscriptionAndAudio);
     transcriptionResultElement.addEventListener('input', checkTranscriptionContent);
 
     function checkTranscriptionContent() {
@@ -802,22 +1026,34 @@
     function startNewRecording() {
         log('Starting a new recording session.'); isFirstRecordingInSession = true;
         transcriptionResultElement.textContent = 'Your transcribed text will appear here...'; formattedResultElement.textContent = 'Your formatted text will appear here...';
-        audioContainer.innerHTML = ''; transcribedText = ''; audioBlob = null; lastSaveSuccessful = false; startRecording();
+        audioContainer.innerHTML = ''; transcribedText = ''; audioBlob = null; startRecording();
     }
     function startContinueRecording() { log('Continuing recording session.'); isFirstRecordingInSession = false; startRecording(); }
+
+    function recorderMime(recorder) {
+        const m = ((recorder && recorder.mimeType) || '').split(';')[0].trim();
+        return m || 'audio/webm';
+    }
 
     async function startRecording() {
         try {
             log('Starting recording...'); statusElement.textContent = 'Recording... Speak now'; statusElement.className = 'status processing';
             recordButton.innerHTML = '<i class="fas fa-stop"></i> Stop Recording'; recordButton.classList.add('recording'); recordButton.style.display = 'inline-flex'; continueRecordButton.style.display = 'none';
             if(isFirstRecordingInSession) { transcriptionResultElement.textContent = 'Recording in progress...'; formattedResultElement.textContent = 'Waiting for transcription...'; }
-            copyTranscriptionButton.disabled = true; copyFormattedButton.disabled = true; resubmitButton.disabled = true; resaveButton.disabled = true; downloadButton.disabled = true; reformatButton.disabled = true;
+            copyTranscriptionButton.disabled = true; copyFormattedButton.disabled = true; resubmitButton.disabled = true; downloadButton.disabled = true; reformatButton.disabled = true;
             if (selectedModel === 'webapi') { log('Web API mode: Using SpeechRecognition ONLY'); startWebSpeechRecognition(); startTime = Date.now(); timerInterval = setInterval(updateTimer, 47); updateTimer(); timerElement.style.display = 'inline-block'; isRecording = true; return; }
             audioChunks = []; stream = await navigator.mediaDevices.getUserMedia({ audio: true });
             mediaRecorder = new MediaRecorder(stream);
-            mediaRecorder.addEventListener('dataavailable', event => { log(`Received audio chunk: ${Math.round(event.data.size / 1024)} KB`); audioChunks.push(event.data); });
-            mediaRecorder.start(); log('MediaRecorder started');
-            startTime = Date.now(); timerInterval = setInterval(updateTimer, 47); updateTimer(); timerElement.style.display = 'inline-block'; isRecording = true;
+            const recorder = mediaRecorder;
+            startTime = Date.now();
+            recorder.addEventListener('dataavailable', event => {
+                if (!event.data || !event.data.size) return;
+                log(`Received audio chunk: ${Math.round(event.data.size / 1024)} KB`); audioChunks.push(event.data);
+                // Progressive on-device save while still recording, so a killed tab loses at most one slice.
+                if (recorder.state === 'recording') savePendingRecording(new Blob(audioChunks, { type: recorderMime(recorder) }), { partial: true, createdAt: startTime });
+            });
+            recorder.start(15000); log('MediaRecorder started (15s slices)');
+            timerInterval = setInterval(updateTimer, 47); updateTimer(); timerElement.style.display = 'inline-block'; isRecording = true;
         } catch (error) { log(`Error starting recording: ${error.message}`); statusElement.textContent = 'Error: ' + error.message; statusElement.className = 'status error'; }
     }
 
@@ -896,17 +1132,20 @@
                 downloadButton.disabled = true; resubmitButton.disabled = true; startProcessingTimer(); handleWebSpeechResult().finally(stopProcessingTimer); return;
             }
             if(mediaRecorder && mediaRecorder.state === 'inactive') return;
-            mediaRecorder.stop(); log('MediaRecorder stopped');
-            if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
-            statusElement.textContent = 'Processing audio...'; statusElement.className = 'status processing';
-            mediaRecorder.addEventListener('stop', async () => {
+            const recorder = mediaRecorder;
+            recorder.addEventListener('stop', async () => {
                 try {
-                    audioBlob = new Blob(audioChunks, { type: 'audio/webm' }); log(`Recording complete. Size: ${Math.round(audioBlob.size / 1024)} KB`);
+                    audioBlob = new Blob(audioChunks, { type: recorderMime(recorder) }); log(`Recording complete. Size: ${Math.round(audioBlob.size / 1024)} KB`);
                     audioURL = URL.createObjectURL(audioBlob); createAudioElement(audioURL); downloadButton.disabled = false;
+                    // Persist first, upload second: the audio survives a failed upload or a reload.
+                    await savePendingRecording(audioBlob, { createdAt: startTime });
                     startProcessingTimer();
                     try { await transcribeAudio(audioBlob); } finally { stopProcessingTimer(); }
                 } catch (error) { log(`Error processing: ${error.message}`); statusElement.textContent = 'Error: ' + error.message; statusElement.className = 'status error'; resubmitButton.disabled = false; }
-            });
+            }, { once: true });
+            recorder.stop(); log('MediaRecorder stopped');
+            if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
+            statusElement.textContent = 'Processing audio...'; statusElement.className = 'status processing';
         } catch (error) { log(`Error stopping: ${error.message}`); statusElement.textContent = 'Error: ' + error.message; statusElement.className = 'status error'; }
     }
 
@@ -916,8 +1155,7 @@
         if (!finalText) { log('No speech recognized.'); transcriptionResultElement.textContent = 'No text detected'; statusElement.textContent = 'No speech detected.'; statusElement.className = 'status error'; reformatButton.disabled = false; return; }
         log(`Web Speech transcription complete: ${finalText.substring(0, 100)}...`); statusElement.textContent = 'Transcription complete!'; statusElement.className = 'status success';
         if (isFirstRecordingInSession) { transcribedText = finalText; } else { const existing = transcriptionResultElement.textContent.replace('Recording in progress...','').trim(); transcribedText = (existing ? existing + '\n\n' : '') + finalText; }
-        transcriptionResultElement.textContent = transcribedText;
-        await saveTranscriptionAndAudio();
+        transcriptionResultElement.textContent = transcribedText; await clearPendingRecording();
         copyTranscriptionButton.disabled = false; reformatButton.disabled = false; await reformatText();
         if (autoCopyToggle.checked && !selectedFormat) await autoCopy(transcribedText, 'transcription');
     }
@@ -943,7 +1181,6 @@
             copyTranscriptionButton.disabled = true;
             copyFormattedButton.disabled = true;
             resubmitButton.disabled = true;
-            resaveButton.disabled = true;
             downloadButton.disabled = true;
             reformatButton.disabled = true;
 
@@ -955,11 +1192,14 @@
             isFirstRecordingInSession = true;
             transcriptionResultElement.textContent = 'Transcribing uploaded audio...';
             formattedResultElement.textContent = 'Waiting for transcription...';
-            await transcribeAudio(file);
+            await savePendingRecording(file, { name: file.name, createdAt: Date.now() });
+            startProcessingTimer();
+            try { await transcribeAudio(file); } finally { stopProcessingTimer(); }
         } catch (error) {
             log(`Upload error: ${error.message}`);
             statusElement.textContent = 'Upload error: ' + error.message;
             statusElement.className = 'status error';
+        } finally {
             uploadButton.disabled = false;
             recordButton.disabled = false;
         }
@@ -989,11 +1229,25 @@
         return mapping[dropdownValue] || 'en';
     }
 
+    // Wrapper: tracks in-flight state and, if no transcript came back, keeps the
+    // saved recording and tells the user it will be retried.
     async function transcribeAudio(blobToTranscribe) {
+        transcriptionInFlight = true;
+        try { await transcribeAudioInner(blobToTranscribe); }
+        finally { transcriptionInFlight = false; }
+        if (pendingRecording) {
+            pendingNeedsRetry = true;
+            showPendingBanner(describePending() + (navigator.onLine === false
+                ? ' Offline — it will be sent automatically when the connection is back.'
+                : ' Transcription did not go through. Tap "Transcribe now" to retry, or Download to keep the audio.'));
+        }
+    }
+
+    async function transcribeAudioInner(blobToTranscribe) {
         if (selectedModel === 'whisper') { await transcribeWithFreeWhisper(blobToTranscribe); return; }
         try {
             log('Uploading audio via server proxy...'); statusElement.textContent = 'Uploading audio...';
-            const uploadResponse = await fetchWithRetries(UPLOAD_URL, { method: 'POST', body: blobToTranscribe });
+            const uploadResponse = await fetchWithRetries(UPLOAD_URL, { method: 'POST', body: blobToTranscribe }, UPLOAD_MAX_RETRIES);
             if (!uploadResponse.ok) throw new Error(`Upload failed: ${uploadResponse.status}`);
             const uploadResult = await uploadResponse.json(); const audioUrl = uploadResult.upload_url;
             log(`Audio uploaded. URL: ${audioUrl}`);
@@ -1009,10 +1263,15 @@
                 const boosted = [...new Set(vocabWords.flatMap(w => [w, w.toLowerCase()]))];
                 transcriptOptions.word_boost = boosted;
                 transcriptOptions.boost_param = "high";
-                transcriptOptions.custom_spelling = vocabWords.map(w => ({
-                    from: [w.toLowerCase(), w.toUpperCase(), w],
-                    to: w
-                }));
+                transcriptOptions.custom_spelling = vocabWords.map(w => {
+                    const variants = new Set([w.toLowerCase(), w.toUpperCase(), w]);
+                    // Known STT mishear -> correct vocab term overrides. AssemblyAI
+                    // custom_spelling only replaces exact string matches in `from`,
+                    // so a different-sounding mishear (not just a case variant) needs
+                    // its own entry here to ever get corrected.
+                    if (w.toLowerCase() === 'jeejaji') ['jaji', 'Jaji', 'JAJI'].forEach(v => variants.add(v));
+                    return { from: [...variants], to: w };
+                });
                 log(`Vocabulary boost enabled: ${boosted.length} terms, ${vocabWords.length} spelling rules`);
             }
             log(`Language: ${languageSelect.value} -> AssemblyAI code: ${assemblyaiLanguageCode}`);
@@ -1027,43 +1286,43 @@
         } catch (error) { log(`Transcription error: ${error.message}`); statusElement.textContent = 'Transcription error: ' + error.message; statusElement.className = 'status error'; resubmitButton.disabled = false; }
     }
 
-    // Free Whisper — self-hosted faster-whisper, single request/response
-    // (no upload-then-poll job model needed, unlike AssemblyAI).
+    // Whisper — routed through the universal STT gateway (Groq Whisper
+    // large-v3-turbo first, then local faster-whisper, then AssemblyAI).
+    // Single request/response, no upload-then-poll job model like AssemblyAI.
     async function transcribeWithFreeWhisper(blobToTranscribe) {
         try {
-            log('Submitting audio to Free Whisper (self-hosted)...');
-            statusElement.textContent = 'Transcribing with Free Whisper (self-hosted, may take a bit on CPU)...';
+            log('Submitting audio to Whisper (Groq, via STT gateway)...');
+            statusElement.textContent = 'Transcribing with Whisper (Groq)...';
             statusElement.className = 'status processing';
             const languageCode = getAssemblyAILanguageCode(languageSelect.value);
             const contentType = (blobToTranscribe && blobToTranscribe.type) ? blobToTranscribe.type : 'application/octet-stream';
             const vocabWords = vocabTerms.map(t => t.word).filter(w => w.length > 0);
-            let url = `${WHISPER_TRANSCRIBE_URL}?language=${encodeURIComponent(languageCode)}`;
+            let url = `${WHISPER_TRANSCRIBE_URL}?language=${encodeURIComponent(languageCode)}&model=${encodeURIComponent('whisper-large-v3-turbo')}`;
             const hotwordsStr = vocabWords.join(',');
             if (hotwordsStr) url += `&hotwords=${encodeURIComponent(hotwordsStr)}`;
-            log(`Language: ${languageSelect.value} -> Free Whisper code: ${languageCode}`);
+            log(`Language: ${languageSelect.value} -> Whisper code: ${languageCode}, model: whisper-large-v3-turbo`);
 
             const response = await fetchWithRetries(
                 url,
                 { method: 'POST', headers: { 'Content-Type': contentType }, body: blobToTranscribe },
-                MAX_RETRIES,
+                UPLOAD_MAX_RETRIES,
                 WHISPER_INITIAL_TIMEOUT
             );
             const result = await response.json().catch(() => ({}));
             if (!response.ok || !result.success) {
-                throw new Error(result.error || `Free Whisper request failed: ${response.status}`);
+                throw new Error(result.error || `Whisper request failed: ${response.status}`);
             }
 
-            log(`Free Whisper complete: audio=${result.audio_duration_sec}s, processing=${result.processing_sec}s, detected lang=${result.language}`);
+            log(`Whisper complete: audio=${result.audio_duration_sec}s, processing=${result.processing_sec}s, detected lang=${result.language}`);
             statusElement.textContent = 'Transcription complete!'; statusElement.className = 'status success';
             const newText = result.text || 'No text detected';
             if (isFirstRecordingInSession) { transcribedText = newText; } else { const existing = transcriptionResultElement.textContent.replace('Recording in progress...','').trim(); transcribedText = (existing ? existing + '\n\n' : '') + newText; }
-            transcriptionResultElement.textContent = transcribedText;
-            await saveTranscriptionAndAudio();
-            copyTranscriptionButton.disabled = false; resubmitButton.disabled = false; reformatButton.disabled = false; await reformatText();
+            transcriptionResultElement.textContent = transcribedText; await clearPendingRecording();
+                copyTranscriptionButton.disabled = false; resubmitButton.disabled = false; reformatButton.disabled = false; await reformatText();
             if (autoCopyToggle.checked && !selectedFormat) await autoCopy(transcribedText, 'transcription');
         } catch (error) {
-            log(`Free Whisper transcription error: ${error.message}`);
-            statusElement.textContent = 'Free Whisper error: ' + error.message;
+            log(`Whisper transcription error: ${error.message}`);
+            statusElement.textContent = 'Whisper error: ' + error.message;
             statusElement.className = 'status error';
             resubmitButton.disabled = false;
         }
@@ -1082,9 +1341,8 @@
                     completed = true; log('Transcription complete!'); statusElement.textContent = 'Transcription complete!'; statusElement.className = 'status success';
                     const newText = result.text || 'No text detected';
                     if (isFirstRecordingInSession) { transcribedText = newText; } else { const existing = transcriptionResultElement.textContent.replace('Recording in progress...','').trim(); transcribedText = (existing ? existing + '\n\n' : '') + newText; }
-                    transcriptionResultElement.textContent = transcribedText;
-                    await saveTranscriptionAndAudio();
-                    copyTranscriptionButton.disabled = false; resubmitButton.disabled = false; reformatButton.disabled = false; await reformatText();
+                    transcriptionResultElement.textContent = transcribedText; await clearPendingRecording();
+                                copyTranscriptionButton.disabled = false; resubmitButton.disabled = false; reformatButton.disabled = false; await reformatText();
                     if (autoCopyToggle.checked && !selectedFormat) await autoCopy(transcribedText, 'transcription');
                 } else if (result.status === 'error') { completed = true; throw new Error(`Transcription failed: ${result.error}`); }
                 else { statusElement.textContent = `Transcribing audio... (${result.status})`; }
@@ -1093,17 +1351,6 @@
         if (!completed) { log('Polling timed out'); statusElement.textContent = 'Polling timed out.'; statusElement.className = 'status error'; resubmitButton.disabled = false; }
     }
 
-    async function saveTranscriptionAndAudio() {
-        if (!transcribedText.trim()) { log('Cannot save: Missing transcription.'); return; }
-        log('Saving transcription...'); statusElement.textContent = 'Saving transcription...'; statusElement.className = 'status processing'; resaveButton.disabled = true;
-        try {
-            const formData = new FormData(); formData.append('transcription', transcribedText);
-            const response = await fetchWithRetries(SAVE_WEBHOOK_URL, { method: 'POST', body: formData });
-            if (!response.ok) { const errorText = await response.text(); throw new Error(`Save failed ${response.status}: ${errorText}`); }
-            const result = await response.json(); log(`Save successful: ${JSON.stringify(result)}`);
-            statusElement.textContent = 'Transcription saved!'; statusElement.className = 'status success'; lastSaveSuccessful = true; resaveButton.disabled = true;
-        } catch (error) { log(`Save error: ${error.message}`); statusElement.textContent = `Error saving: ${error.message}`; statusElement.className = 'status error'; lastSaveSuccessful = false; resaveButton.disabled = false; }
-    }
 
     async function reformatText() {
         transcribedText = transcriptionResultElement.textContent.trim();
@@ -1119,7 +1366,13 @@
             if (selectedFormat === 'whatsapp') webhookUrl = WHATSAPP_WEBHOOK_URL;
             else if (selectedFormat === 'email') webhookUrl = CLEANTEXT_WEBHOOK_URL;
             const response = await fetchWithRetries(webhookUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ transcription: transcribedText }) });
-            if (!response.ok) throw new Error(`Formatting failed: ${response.status}`);
+            if (!response.ok) {
+                let detail = '';
+                try { const e = await response.json(); detail = e.error || e.message || ''; } catch (_) { detail = ''; }
+                const extra = detail ? ` — ${detail}` : '';
+                log(`Formatting upstream error: ${response.status}${detail ? ` ${detail}` : ''}`);
+                throw new Error(`Formatting failed: ${response.status}${extra}`);
+            }
             const data = await response.json(); log(`Response: ${JSON.stringify(data)}`);
             let formattedText = '';
             if (data.response && data.response.text) formattedText = data.response.text;
@@ -1157,7 +1410,7 @@
         if (selectedModel === 'webapi') { log('Cannot resubmit with Web API.'); statusElement.textContent = 'Web API cannot resubmit. Switch to Universal-2/Universal-3.5 Pro/Free Whisper or record again.'; statusElement.className = 'status error'; return; }
         if (audioBlob) {
             log('Resubmitting audio...'); statusElement.textContent = 'Resubmitting audio...'; statusElement.className = 'status processing';
-            resubmitButton.disabled = true; resaveButton.disabled = true; copyTranscriptionButton.disabled = true; copyFormattedButton.disabled = true; reformatButton.disabled = true;
+            resubmitButton.disabled = true; copyTranscriptionButton.disabled = true; copyFormattedButton.disabled = true; reformatButton.disabled = true;
             isFirstRecordingInSession = true;
             startProcessingTimer();
             try { await transcribeAudio(audioBlob); } catch (error) { log(`Resubmission error: ${error.message}`); statusElement.textContent = 'Resubmission error: ' + error.message; statusElement.className = 'status error'; resubmitButton.disabled = false; } finally { stopProcessingTimer(); }
@@ -1292,7 +1545,10 @@
     log('Page loaded. Loading user info and checking microphone...');
     loadUserInfo();
     checkMicrophonePermission();
-    loadVocab();
+    loadVocab().then(restorePendingRecording, restorePendingRecording);
+    log('Starting session-status polling...');
+    authPollTimer = setInterval(checkAuthStatus, 5000);
+    checkAuthStatus();
     </script>
 </body>
 </html>
